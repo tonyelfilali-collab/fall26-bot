@@ -178,6 +178,26 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
 - **Test Bot options:** "one binary" (a single binary question) and "only model" (forecast with
   one named Gemini model), to test without using up the free quota.
 
+## Free research check (27 Sep 2026)
+
+**Grounding with Google Search is not available on the free `GEMINI_API_KEY`.** Grounded test calls
+(`"tools": [{"google_search": {}}]`) got **HTTP 429 RESOURCE_EXHAUSTED** on `gemini-3.1-flash-lite`,
+`gemini-3.5-flash-lite` and `gemini-3.5-flash`. The same models answer normal calls, and their daily
+quota wasn't used up, so the free tier allows no grounded requests. Credit check runs:
+https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36339235331,
+https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36339296741,
+https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36339321531.
+So there is no free search source while AskNews answers 402; the bot forecasts without news.
+(Credit check now has a "grounding" option to re-test this later.)
+
+## Interim safety limits (until PLAN.md Step 4)
+
+`forecast_safety.py`, applied to the final (combined) forecast in `FallBot2026._aggregate_predictions`:
+- binary: clipped to 3%–97%
+- multiple choice: if any option is under 1%, every option gets 1% plus its share of the rest
+  (sums to 1, order kept); otherwise unchanged.
+Tests: `tests/test_forecast_safety.py`.
+
 ## Three checks (PLAN.md Step 1)
 
 1. **When are forecasts submitted?** Each question's forecast is submitted as soon as that
