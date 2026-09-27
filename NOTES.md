@@ -190,6 +190,23 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36339321531.
 So there is no free search source while AskNews answers 402; the bot forecasts without news.
 (Credit check now has a "grounding" option to re-test this later.)
 
+## Free news fallback (27 Sep 2026)
+
+`free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:
+- **AskNews first.** If it fails (e.g. 402) or finds fewer than 3 articles, add free, keyless
+  sources: **Google News RSS search** and the **GDELT DOC API**.
+- The query is keywords from the question title (stopwords dropped; acronyms like EU and numbers
+  like 50 kept; at most 6 words). GDELT gets only words of 3+ letters (its rule), at most 4. If
+  fewer than 3 articles are found, Google News is searched again with the first 3 keywords.
+- Kept: articles from the last 60 days, duplicates removed, newest first, at most 10. Each has a
+  date, source, headline and (if any) a snippet of at most 80 words; the whole text is at most
+  2,000 words. Google News RSS gives no real snippet (the description repeats the headline);
+  GDELT gives none.
+- GDELT allows 1 request per 5 seconds: calls are spaced 6 s apart, with one retry on 429. A
+  failing source just contributes nothing.
+- **Public log:** only `Question N: articles found: X (AskNews a, free news f)`, never article text.
+- Tests: `tests/test_free_news.py` (no network).
+
 ## Interim safety limits (until PLAN.md Step 4)
 
 `forecast_safety.py`, applied to the final (combined) forecast in `FallBot2026._aggregate_predictions`:
