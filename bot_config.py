@@ -44,6 +44,7 @@ GEMINI_FREE_BACKUP_MODELS = ("gemini/gemini-3.7-flash", "gemini/gemini-3.5-flash
 GEMINI_FREE_REQUESTS_PER_DAY = 20
 # Every call (forecasts, parsing, retries) shares this pace, kept under 5/min.
 GEMINI_FREE_REQUESTS_PER_MINUTE = 4
+GEMINI_FREE_TRIES = 6
 # Daily budget: keep 20% in reserve and plan for about 8 questions a day, so
 # 16 calls a day = 2 per question = 1 forecast + 1 parse.
 GEMINI_FREE_RESERVE = 0.2
@@ -138,8 +139,10 @@ def _gemini_chain(pacers: dict[str, RequestPacer], **kwargs) -> ThrottledLlm:
 def _gemini_free_lineup() -> Lineup:
     # One pacer per model (the free quota is per model), shared by forecaster
     # and parser. Per question: GEMINI_FREE_FORECASTS_PER_QUESTION forecasts,
-    # each parsed once. Only 2 tries per call: a failed call can still use up
-    # the day's quota.
+    # each parsed once. The free tier is often "overloaded" (503, which Google
+    # turns away rather than counts), so each call gets several tries through
+    # the whole backup chain, 5-60 s apart. The question-close cut-off in
+    # main.py still bounds the total wait.
     pacers = {
         model: RequestPacer(GEMINI_FREE_REQUESTS_PER_MINUTE)
         for model in (GEMINI_FREE_MODEL, *GEMINI_FREE_BACKUP_MODELS)
@@ -148,12 +151,14 @@ def _gemini_free_lineup() -> Lineup:
         pacers,
         temperature=None,
         timeout=300,
-        allowed_tries=2,
+        allowed_tries=GEMINI_FREE_TRIES,
         # LiteLLM turns this into Gemini's thinkingLevel "high". (Setting
         # thinkingConfig through extra_body is overwritten with "low".)
         reasoning_effort="high",
     )
-    parser = _gemini_chain(pacers, temperature=None, timeout=180, allowed_tries=2)
+    parser = _gemini_chain(
+        pacers, temperature=None, timeout=180, allowed_tries=GEMINI_FREE_TRIES
+    )
     return Lineup(
         name="gemini-free",
         llms={

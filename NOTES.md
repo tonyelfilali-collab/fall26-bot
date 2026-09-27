@@ -143,7 +143,8 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
   work: LiteLLM overwrites it with `"low"`.
 - Parser: the same model, 1 parse per forecast. No research summary. AskNews research as before.
 - Pacing: every call (forecasts, parses, retries) waits its turn on its model's pacer,
-  `GEMINI_FREE_REQUESTS_PER_MINUTE` = 4 (`llm_throttle.py`). 2 tries per call with backoff.
+  `GEMINI_FREE_REQUESTS_PER_MINUTE` = 4 (`llm_throttle.py`). 6 tries per call (each try walks
+  the backup chain), 5–60 s apart; the close-time cut-off bounds the total wait.
 - Backups: the free tier gets "503 model overloaded" at busy times (the first budget Test Bot run
   failed 3 of 4 questions that way). If a model is overloaded, out of quota, times out or has a
   server error, the call goes to `gemini-3.7-flash`, then `gemini-3.5-flash`. Each has its own
