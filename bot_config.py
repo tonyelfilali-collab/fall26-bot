@@ -316,8 +316,9 @@ _LINEUPS = {
 }
 
 
-def get_lineup() -> Lineup:
-    lineup = _LINEUPS[ACTIVE_LINEUP]()
+def get_lineup(name: str | None = None) -> Lineup:
+    """The active lineup, or `name` if given (Test Bot passes "free")."""
+    lineup = _LINEUPS[name or ACTIVE_LINEUP]()
     if lineup.free_only:
         paid = [name for name in lineup.llm_model_names() if not is_free_model(name)]
         if paid:

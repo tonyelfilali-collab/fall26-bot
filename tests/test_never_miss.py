@@ -165,6 +165,15 @@ def test_health_ok_when_everything_is_forecast():
     assert not report.red and report.ok
 
 
+def test_health_red_when_a_question_was_missed():
+    report = health_check.Report()
+    health_check.check_missed_questions({"seasonal": [_q(7, -30, False)], "MiniBench": []}, report)
+    assert report.red == ["seasonal question 7 closed without our forecast (missed)"]
+    ok = health_check.Report()
+    health_check.check_missed_questions({"seasonal": [], "MiniBench": []}, ok)
+    assert not ok.red and ok.ok
+
+
 def test_health_red_without_a_successful_run_for_3_hours():
     report = health_check.Report()
     health_check.check_recent_success(NOW - timedelta(hours=4), NOW, report)
@@ -198,7 +207,7 @@ def test_health_warns_on_log_failures():
 
 
 def test_health_simulated_miss_is_red(monkeypatch):
-    for name in ("open_questions", "last_successful_tournament_run", "asknews_status", "recent_annotation_titles"):
+    for name in ("missed_questions", "open_questions", "last_successful_tournament_run", "asknews_status", "recent_annotation_titles"):
         monkeypatch.setattr(health_check, name, lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")))
     monkeypatch.setenv("DATA_REPO_TOKEN", "x")
     report = health_check.run(simulate_miss=True)

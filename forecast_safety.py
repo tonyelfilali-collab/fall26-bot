@@ -13,9 +13,11 @@ Binary, always in this order (PLAN.md section 3):
 Multiple choice: every option at least 1%, summing to 1.
 Numeric/discrete: the CDF must follow the platform rules; percentiles given in
 reverse are put right; if every percentile is outside the question's range
-(e.g. a x1000 unit error) the answer is re-parsed once, then replaced by a
-wide fallback distribution.
-Anything invalid becomes a safe fallback forecast, never a skipped question.
+(e.g. a x1000 unit error) the answer is re-parsed once, then that forecast is
+dropped.
+Never a pure guess (architect, 27 Sep 2026): an invalid forecast is dropped;
+a question with no real model forecast is left for the next run (a guess
+scores below zero on average, skipping scores 0).
 """
 from __future__ import annotations
 
@@ -39,7 +41,10 @@ EXTREME_LOW, EXTREME_HIGH = 0.05, 0.95
 EXTREME_PULLBACK_LOW, EXTREME_PULLBACK_HIGH = 0.10, 0.90
 EXTREME_AGREEMENT = 0.8
 BINARY_MIN, BINARY_MAX = 0.02, 0.98
-BINARY_FALLBACK = 0.5
+
+
+class NoValidForecast(ValueError):
+    """Nothing real to submit: the question is left for the next run."""
 
 
 def _logit(p: float) -> float:
@@ -75,10 +80,10 @@ def is_valid_probability(p: Any) -> bool:
 
 
 def adjust_binary(forecasts: list[float], k: float = STRETCH_K) -> float:
-    """The 5 steps, in order. Invalid forecasts are ignored; none -> fallback."""
+    """The 5 steps, in order. Invalid forecasts are ignored; none -> NoValidForecast."""
     valid = [float(f) for f in forecasts if is_valid_probability(f)]
     if not valid:
-        return BINARY_FALLBACK
+        raise NoValidForecast("no valid binary forecast")
     p = statistics.median(valid)
     p = stretch(p, k)
     # Step 3, market blend: added in PLAN.md Step 9.
@@ -112,15 +117,6 @@ def floor_multiple_choice(options: PredictedOptionList) -> PredictedOptionList:
                 + remaining * (o.probability / total if total > 0 else 1 / count),
             )
             for o in predicted
-        ]
-    )
-
-
-def uniform_multiple_choice(option_names: list[str]) -> PredictedOptionList:
-    return PredictedOptionList(
-        predicted_options=[
-            PredictedOption(option_name=name, probability=1 / len(option_names))
-            for name in option_names
         ]
     )
 
@@ -196,27 +192,6 @@ def question_range(question: Any) -> tuple[float, float]:
     lower = question.nominal_lower_bound if question.nominal_lower_bound is not None else question.lower_bound
     upper = question.nominal_upper_bound if question.nominal_upper_bound is not None else question.upper_bound
     return float(lower), float(upper)
-
-
-def wide_fallback_distribution(question: Any) -> NumericDistribution:
-    """
-    A wide, humble distribution across the question's range (evenly spread in
-    log space for log-scaled questions), used when nothing valid is left.
-    """
-    lower, upper = question_range(question)
-    heights = [0.1, 0.2, 0.4, 0.6, 0.8, 0.9]
-    log_scaled = question.zero_point is not None and lower > question.zero_point
-    values = []
-    for h in heights:
-        position = 0.05 + 0.9 * h  # stay inside the range
-        if log_scaled:
-            z = question.zero_point
-            values.append(z + (lower - z) * ((upper - z) / (lower - z)) ** position)
-        else:
-            values.append(lower + (upper - lower) * position)
-    return NumericDistribution.from_question(
-        [Percentile(percentile=h, value=v) for h, v in zip(heights, values)], question
-    )
 
 
 # ---------------------------------------------------------------- before submitting

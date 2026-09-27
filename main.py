@@ -4,7 +4,7 @@ import contextvars
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import dotenv
@@ -54,7 +54,7 @@ from forecasting_tools.data_models.forecast_report import ResearchWithPrediction
 
 from bot_config import GeminiPool, get_lineup
 from forecast_safety import (
-    BINARY_FALLBACK,
+    NoValidForecast,
     adjust_binary,
     all_outside_range,
     dates_line,
@@ -63,8 +63,6 @@ from forecast_safety import (
     floor_multiple_choice,
     question_range,
     still_open_problem,
-    uniform_multiple_choice,
-    wide_fallback_distribution,
 )
 from deadlines import planned_forecast_timeout, quick_forecast_timeout
 from free_news import collect_free_news, count_asknews_articles, format_articles
@@ -112,6 +110,16 @@ def _http_status_note(error: BaseException) -> str:
             return f" (HTTP {status})"
         current = current.__cause__ or current.__context__
     return ""
+
+
+# A question with no forecast that closes within this time can't count on a
+# later run to retry it, so the run goes red.
+RETRY_WINDOW = timedelta(minutes=25)
+
+
+def closes_within(close_time: datetime, window: timedelta) -> bool:
+    close = close_time if close_time.tzinfo else close_time.replace(tzinfo=timezone.utc)
+    return close - datetime.now(timezone.utc) <= window
 
 
 # The quick forecast (nothing else finished) tries this many passes through
@@ -220,8 +228,8 @@ class FallBot2026(ForecastBot):
     # publish_reports_to_metaculus stays False, so the bot can check that the
     # question is still open right before submitting.
     submit_forecasts = False
-    # Questions that got the safe fallback forecast this run (makes the run red).
-    fallback_count = 0
+    # Close times of questions that got no forecast this run (post id -> close).
+    unforecast_close_times: dict = {}
     # Free Gemini lineup: plans each question's forecasters within the day's
     # budget. Set in __main__ from the lineup.
     gemini_pool: GeminiPool | None = None
@@ -244,11 +252,9 @@ class FallBot2026(ForecastBot):
         if isinstance(aggregated, NumericDistribution) and isinstance(question, NumericQuestion):
             problems = distribution_problems(aggregated, question)
             if problems:
-                logger.warning(
-                    f"Question {question.id_of_post}: combined distribution broke the platform "
-                    f"rules ({'; '.join(problems)}), using the wide fallback"
+                raise NoValidForecast(
+                    f"combined distribution broke the platform rules ({'; '.join(problems)})"
                 )
-                return wide_fallback_distribution(question)
         return aggregated
 
     def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
@@ -374,24 +380,19 @@ class FallBot2026(ForecastBot):
         try:
             report = await super()._run_individual_question(question)
         except Exception as e:
-            # Never skip a question: submit a safe fallback forecast instead.
-            record["error"] = describe_exception(e)
-            try:
-                report = self._fallback_report(question, e)
-            except Exception:
-                record["submitted"] = False
-                await self._save_record(question, record, started)
-                raise e
-            self.fallback_count += 1
-            record["fallback"] = True
+            # Never a pure guess: with no real model forecast, nothing is
+            # submitted and the next run tries again (it isn't marked as
+            # forecast), until the question closes.
+            record.update(submitted=False, error=describe_exception(e))
+            self.__dict__.setdefault("unforecast_close_times", {})[
+                question.id_of_post
+            ] = question.close_time
             logger.warning(
-                f"Question {question.id_of_post}: no forecast could be made, "
-                "submitting the safe fallback forecast"
+                f"Question {question.id_of_post}: no real forecast this run, "
+                "left for the next run"
             )
-            print(
-                f"::warning title=fallback-forecast::Question {question.id_of_post}: "
-                "safe fallback forecast submitted"
-            )
+            await self._save_record(question, record, started)
+            raise
         record.update(
             submitted=await self._submit_if_still_open(question, report),
             final_forecast=to_jsonable(report.prediction),
@@ -400,32 +401,6 @@ class FallBot2026(ForecastBot):
         )
         await self._save_record(question, record, started)
         return report
-
-    def _fallback_report(self, question: MetaculusQuestion, error: Exception) -> ForecastReport:
-        from forecasting_tools.data_models.data_organizer import DataOrganizer
-
-        if isinstance(question, BinaryQuestion):
-            prediction: Any = adjust_binary(
-                [question.community_prediction_at_access_time or BINARY_FALLBACK]
-            )
-        elif isinstance(question, MultipleChoiceQuestion):
-            prediction = uniform_multiple_choice(question.options)
-        elif isinstance(question, NumericQuestion):
-            prediction = wide_fallback_distribution(question)
-        else:
-            raise error
-        report_type = DataOrganizer.get_report_type_for_question_type(type(question))
-        return report_type(
-            question=question,
-            prediction=prediction,
-            explanation=(
-                "# Safe fallback forecast\n\nNo model forecast could be made for this "
-                "question, so a deliberately cautious forecast was submitted instead."
-            ),
-            price_estimate=0,
-            minutes_taken=0,
-            errors=[describe_exception(error)],
-        )
 
     async def _submit_if_still_open(
         self, question: MetaculusQuestion, report: ForecastReport
@@ -824,7 +799,7 @@ class FallBot2026(ForecastBot):
         """
         Parse the percentiles, put reversed ones right, and catch unit errors:
         if every value is outside the question's range, re-parse once with a
-        warning about units; if still outside, use the wide fallback.
+        warning about units; if still outside, this forecast is dropped.
         """
         lower, upper = question_range(question)
         instructions = parsing_instructions
@@ -851,15 +826,13 @@ class FallBot2026(ForecastBot):
                 """
             )
         else:
-            return wide_fallback_distribution(question)
+            raise NoValidForecast("every parsed value is outside the question's range, twice")
         distribution = NumericDistribution.from_question(percentile_list, question)
         problems = distribution_problems(distribution, question)
         if problems:
-            logger.warning(
-                f"Question {question.id_of_post}: distribution broke the platform rules "
-                f"({'; '.join(problems)}), using the wide fallback"
+            raise NoValidForecast(
+                f"distribution broke the platform rules ({'; '.join(problems)})"
             )
-            return wide_fallback_distribution(question)
         return distribution
 
     ##################################### DATE QUESTIONS #####################################
@@ -1114,6 +1087,12 @@ if __name__ == "__main__":
         help="Test mode: forecast only one binary question",
     )
     parser.add_argument(
+        "--lineup",
+        choices=["free", "gemini-free", "credit"],
+        default=None,
+        help="Model lineup (default: ACTIVE_LINEUP in bot_config.py). Test Bot uses 'free'.",
+    )
+    parser.add_argument(
         "--fail-planned-forecasts",
         action="store_true",
         help="Make every planned forecast fail (to check the quick forecast still submits)",
@@ -1131,7 +1110,7 @@ if __name__ == "__main__":
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
     # All model choices live in bot_config.py.
-    lineup = get_lineup()
+    lineup = get_lineup(args.lineup)
     if lineup.test_only and run_mode != "test_questions":
         # OpenRouter ':free' models are for the bot-testing-area only (see CLAUDE.md).
         raise SystemExit(
@@ -1251,11 +1230,22 @@ if __name__ == "__main__":
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
-    if template_bot.fallback_count:
-        logger.error(
-            f"{template_bot.fallback_count} question(s) got the safe fallback forecast"
+    if failures:
+        # Red (non-zero exit) when a question may now be missed: in test mode
+        # always; in live modes only if it closes before the next runs can
+        # retry it. Otherwise it's retried by the next run (a warning).
+        closing_soon = [
+            post
+            for post, close in template_bot.__dict__.get("unforecast_close_times", {}).items()
+            if close is None or closes_within(close, RETRY_WINDOW)
+        ]
+        if run_mode == "test_questions" or closing_soon or failures > len(
+            template_bot.__dict__.get("unforecast_close_times", {})
+        ):
+            logger.error(f"{failures} question(s) failed")
+            sys.exit(1)
+        logger.warning(f"{failures} question(s) left for the next run")
+        print(
+            f"::warning title=question-retry::{failures} question(s) got no forecast "
+            "this run; the next run will try again"
         )
-    if failures or template_bot.fallback_count:
-        # A non-zero exit makes the Actions run fail (red).
-        logger.error(f"{failures} question(s) failed")
-        sys.exit(1)

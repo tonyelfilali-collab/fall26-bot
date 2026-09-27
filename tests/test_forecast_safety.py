@@ -99,10 +99,12 @@ def test_non_extreme_forecasts_pass_through():
     assert fs.adjust_binary([0.07, 0.3, 0.6]) == pytest.approx(0.3)
 
 
-def test_invalid_binary_forecasts_are_ignored_or_fall_back():
+def test_invalid_binary_forecasts_are_ignored_never_guessed():
     assert fs.adjust_binary([float("nan"), 1.7, 0.3]) == pytest.approx(0.3)
-    assert fs.adjust_binary([]) == fs.BINARY_FALLBACK
-    assert fs.adjust_binary([float("nan")]) == fs.BINARY_FALLBACK
+    with pytest.raises(fs.NoValidForecast):
+        fs.adjust_binary([])
+    with pytest.raises(fs.NoValidForecast):
+        fs.adjust_binary([float("nan")])
 
 
 # ---------------------------------------------------------------- multiple choice
@@ -118,11 +120,6 @@ def test_multiple_choice_floor_lifts_small_options_and_sums_to_one():
 def test_multiple_choice_unchanged_when_already_fine():
     given = options(0.2, 0.3, 0.5)
     assert fs.floor_multiple_choice(given) == given
-
-
-def test_uniform_multiple_choice_fallback():
-    result = fs.uniform_multiple_choice(["a", "b", "c", "d"])
-    assert [o.probability for o in result.predicted_options] == pytest.approx([0.25] * 4)
 
 
 # ---------------------------------------------------------------- numeric / discrete
@@ -185,20 +182,6 @@ def test_increasing_percentiles_are_left_alone():
 def test_disaster_x1000_unit_error_is_detected():
     assert fs.all_outside_range(percentiles(100e3, 200e3, 350e3, 500e3, 700e3, 850e3), 0, 1000)
     assert not fs.all_outside_range(percentiles(100, 200, 350, 500, 700, 1200), 0, 1000)
-
-
-def test_wide_fallback_distribution_is_valid():
-    question = numeric_question()
-    fallback = fs.wide_fallback_distribution(question)
-    assert fs.distribution_problems(fallback, question) == []
-    values = [p.value for p in fallback.declared_percentiles]
-    assert values[0] > 0 and values[-1] < 1000
-
-
-def test_wide_fallback_distribution_log_scaled():
-    question = numeric_question(lower_bound=1.0, upper_bound=1e6, zero_point=0.0, open_lower_bound=True)
-    fallback = fs.wide_fallback_distribution(question)
-    assert fs.distribution_problems(fallback, question) == []
 
 
 # ---------------------------------------------------------------- before submitting
@@ -292,13 +275,12 @@ def test_disaster_x1000_unit_error_is_reparsed_once(monkeypatch):
     assert [p.value for p in result.declared_percentiles] == [100, 200, 350, 500, 700, 850]
 
 
-def test_disaster_x1000_unit_error_twice_uses_the_wide_fallback(monkeypatch):
+def test_disaster_x1000_unit_error_twice_drops_the_forecast(monkeypatch):
     question = numeric_question()
     wrong = percentiles(100e3, 200e3, 350e3, 500e3, 700e3, 850e3)
     bot = _parse_bot(monkeypatch, [wrong, wrong])
-    result = asyncio.run(bot._parse_numeric_safely(question, "reasoning", "instructions"))
-    assert fs.distribution_problems(result, question) == []
-    assert all(0 < p.value < 1000 for p in result.declared_percentiles)
+    with pytest.raises(fs.NoValidForecast):
+        asyncio.run(bot._parse_numeric_safely(question, "reasoning", "instructions"))
 
 
 def test_disaster_reversed_percentiles_in_the_bot(monkeypatch):
@@ -308,28 +290,28 @@ def test_disaster_reversed_percentiles_in_the_bot(monkeypatch):
     assert [p.value for p in result.declared_percentiles] == [100, 200, 350, 500, 700, 850]
 
 
-@pytest.mark.parametrize(
-    "question",
-    [
-        BinaryQuestion(question_text="Will X?", id_of_post=1),
-        MultipleChoiceQuestion(question_text="Which?", id_of_post=1, options=["a", "b", "c"]),
-        numeric_question(),
-    ],
-)
-def test_fallback_report_for_every_question_type(question):
-    report = _bot()._fallback_report(question, RuntimeError("everything failed"))
-    assert report.prediction is not None
-    assert report.explanation.startswith("#")
-
-
-def test_question_that_fails_completely_still_gets_a_fallback(monkeypatch):
+def test_question_with_no_real_forecast_is_not_guessed_and_left_for_next_run(monkeypatch):
     async def always_fails(self, question):
         raise RuntimeError("all models down")
 
     monkeypatch.setattr(main.ForecastBot, "_run_individual_question", always_fails)
     bot = _bot()
-    question = BinaryQuestion(question_text="Will X?", id_of_post=3)
-    [report] = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
-    assert not isinstance(report, BaseException)
-    assert report.prediction == pytest.approx(0.5)
-    assert bot.fallback_count == 1
+    bot.submit_forecasts = True
+    submitted = []
+
+    async def record_submit(self, question, report):
+        submitted.append(question.id_of_post)
+        return True
+
+    monkeypatch.setattr(main.FallBot2026, "_submit_if_still_open", record_submit)
+    question = BinaryQuestion(question_text="Will X?", id_of_post=3, close_time=NOW + timedelta(hours=2))
+    [result] = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
+    assert isinstance(result, BaseException)  # no guess made
+    assert submitted == []
+    assert bot.unforecast_close_times == {3: question.close_time}
+
+
+def test_closes_within():
+    now = datetime.now(timezone.utc)
+    assert main.closes_within(now + timedelta(minutes=10), main.RETRY_WINDOW)
+    assert not main.closes_within(now + timedelta(hours=1), main.RETRY_WINDOW)
