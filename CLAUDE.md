@@ -21,4 +21,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
 - This clone has two remotes (`origin` = our fork, `upstream` = Metaculus). Always pass
   `-R tonyelfilali-collab/fall26-bot` to `gh`, or it may target the Metaculus repo.
 - The repo is public: logs must not contain reasoning or forecast values.
+- Secrets: `METACULUS_TOKEN`, `OPENROUTER_API_KEY`, `ASKNEWS_API_KEY` (AskNews is one API key,
+  not a client ID + secret).
+- All model choices are in `bot_config.py`.
 - See NOTES.md for library version, secret names, aggregation and model IDs.

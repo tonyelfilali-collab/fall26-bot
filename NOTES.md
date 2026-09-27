@@ -39,12 +39,14 @@ The library (forecasting-tools 0.3.1):
 - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY`, `EXA_API_KEY`: other providers
   (we will not use these; ZERO SPEND)
 
-The workflows currently pass: `METACULUS_TOKEN, PERPLEXITY_API_KEY, EXA_API_KEY, OPENAI_API_KEY,
+Before Task 3 the workflows passed: `METACULUS_TOKEN, PERPLEXITY_API_KEY, EXA_API_KEY, OPENAI_API_KEY,
 OPENROUTER_API_KEY, ANTHROPIC_API_KEY, ASKNEWS_CLIENT_ID, ASKNEWS_SECRET`. They do **not** pass
 `ASKNEWS_API_KEY`.
 
-The fork currently has **no secrets set**. We need: `METACULUS_TOKEN`, `OPENROUTER_API_KEY`,
-`ASKNEWS_CLIENT_ID`, `ASKNEWS_SECRET`.
+**Secrets in the repo (27 Sep 2026): `METACULUS_TOKEN`, `OPENROUTER_API_KEY`, `ASKNEWS_API_KEY`.**
+AskNews uses **one API key** (`ASKNEWS_API_KEY`), not a client ID + secret. The library accepts
+either. PLAN.md section 2 still lists `ASKNEWS_CLIENT_ID`/`ASKNEWS_SECRET`; the architect should
+update it. Since Task 3 the workflows pass only these three secrets.
 
 **Danger:** if no `llms=` are configured, the library picks defaults by which keys exist. With
 `OPENROUTER_API_KEY` set, it picks `openrouter/openai/gpt-4o` (paid) for forecasting, and
@@ -95,6 +97,38 @@ LiteLLM (1.80.10) has prices for all four, so cost tracking works
 
 Free models that support structured output (candidates for the `:free` forecaster):
 `nvidia/nemotron-3-super-120b-a12b:free`, `qwen/qwen3.8-27b:free`.
+
+## Model settings (Task 3)
+
+All model choices are in `bot_config.py`:
+- **Free lineup (active):** `openrouter/nvidia/nemotron-3-super-120b-a12b:free` as forecaster and
+  parser. 1 forecast per question, 1 parse, no research summary, to stay inside free rate limits.
+  The code refuses to use a non-`:free` model in this lineup, and refuses to run any mode except
+  `test_questions` with it.
+- **Credit lineup (prepared, off):** Claude Opus 5.5 with high reasoning, timeout 600 s, 3 tries,
+  5 forecasts per question; Gemini 3.6 Flash as parser and summarizer.
+  Switch with `USE_CREDIT_KEY_LINEUP = True`, only once the credit key is in.
+- **Research:** AskNews news summaries. Only the question text is sent as the search query
+  (as in Metaculus's `FallTemplateBot2026`).
+- A test run forecasts the first open question of each type (binary, numeric, discrete,
+  multiple choice) in the bot-testing-area, not all of them.
+- The Actions run summary shows a cost-per-question table (id, type, status, cost only).
+
+## Three checks (PLAN.md Step 1)
+
+1. **When are forecasts submitted?** Each question's forecast is submitted as soon as that
+   question is finished, not at the end of the run. `ForecastBot._run_individual_question`
+   calls `report.publish_report_to_metaculus(...)` right after aggregating that question.
+   Questions run in parallel (`asyncio.gather`). One catch: in tournament mode `main.py` runs the
+   seasonal tournament first and MiniBench after it, so MiniBench questions wait for all seasonal
+   questions to finish.
+2. **Fall MiniBench slug/id and how long questions stay open:** not yet answered. It needs an
+   Actions run with the Metaculus token.
+3. **AskNews calls per question:** `asknews/news-summaries` makes **2** calls per research report
+   (`search_news` with strategy "latest news", then "news knowledge"), and there is 1 research
+   report per question, so **2 calls per question**. Source: `AskNewsSearcher.get_formatted_news_async`
+   in forecasting-tools 0.3.1. It waits between the two calls, because the free tier allows 1 call
+   per 10 s. No retries, so 2 is the maximum (limit: 3).
 
 ## Other things found
 

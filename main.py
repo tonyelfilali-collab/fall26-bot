@@ -12,6 +12,7 @@ from bot_helpers import (
     print_run_summary_banner,
     print_startup_banner,
     silence_noisy_dependencies,
+    write_cost_summary,
 )
 
 silence_noisy_dependencies()
@@ -41,6 +42,8 @@ from forecasting_tools import (
     structure_output,
 )
 
+from bot_config import get_lineup
+
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,20 @@ FALL_2026_TOURNAMENT_ID = "fall-futureeval-2026"  # id 33121
 # uses for the current MiniBench round; confirm it in an Actions run.
 FALL_2026_MINIBENCH_ID = "minibench"
 BOT_TESTING_AREA_ID = 32977  # https://www.metaculus.com/tournament/bot-testing-area/
+# Question types the Fall tournament uses, and how many of each to forecast
+# in a test run.
+TOURNAMENT_QUESTION_TYPES = ("binary", "numeric", "discrete", "multiple_choice")
+TEST_QUESTIONS_PER_TYPE = 1
+
+
+def pick_test_questions(
+    questions: list[MetaculusQuestion],
+) -> list[MetaculusQuestion]:
+    picked: list[MetaculusQuestion] = []
+    for question_type in TOURNAMENT_QUESTION_TYPES:
+        of_type = [q for q in questions if q.question_type == question_type]
+        picked.extend(of_type[:TEST_QUESTIONS_PER_TYPE])
+    return picked
 
 
 class FallBot2026(ForecastBot):
@@ -145,22 +162,7 @@ class FallBot2026(ForecastBot):
             research = ""
             researcher = self.get_llm("researcher")
 
-            prompt = clean_indents(
-                f"""
-                You are an assistant to a superforecaster.
-                The superforecaster will give you a question they intend to forecast on.
-                To be a great assistant, you generate a concise but detailed rundown of the most relevant news, including if the question would resolve Yes or No based on current information.
-                You do not produce forecasts yourself.
-
-                Question:
-                {question.question_text}
-
-                This question's outcome will be determined by the specific criteria below:
-                {question.resolution_criteria}
-
-                {question.fine_print}
-                """
-            )
+            prompt = self._get_research_prompt(question, researcher)
 
             if isinstance(researcher, GeneralLlm):
                 research = await researcher.invoke(prompt)
@@ -189,6 +191,33 @@ class FallBot2026(ForecastBot):
                 research = await self.get_llm("researcher", "llm").invoke(prompt)
             logger.info(f"Found Research for URL {question.page_url}:\n{research}")
             return research
+
+    @staticmethod
+    def _get_research_prompt(
+        question: MetaculusQuestion, researcher: str | GeneralLlm
+    ) -> str:
+        # AskNews searches with this text, so give it just the question
+        # rather than the long assistant prompt (as Metaculus's
+        # FallTemplateBot2026 does).
+        if GeneralLlm.to_model_name(researcher) == "asknews/news-summaries":
+            return question.question_text
+
+        return clean_indents(
+            f"""
+            You are an assistant to a superforecaster.
+            The superforecaster will give you a question they intend to forecast on.
+            To be a great assistant, you generate a concise but detailed rundown of the most relevant news, including if the question would resolve Yes or No based on current information.
+            You do not produce forecasts yourself.
+
+            Question:
+            {question.question_text}
+
+            This question's outcome will be determined by the specific criteria below:
+            {question.resolution_criteria}
+
+            {question.fine_print}
+            """
+        )
 
     ##################################### BINARY QUESTIONS #####################################
 
@@ -676,28 +705,29 @@ if __name__ == "__main__":
     publish_to_metaculus = True
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    # Configure the bot. The `llms=` block below is commented out to use
-    # whichever default models forecasting-tools picks based on your env vars;
-    # uncomment and edit to pin specific models.
+    # All model choices live in bot_config.py.
+    lineup = get_lineup()
+    if lineup.free_only and run_mode != "test_questions":
+        # Free models are for the bot-testing-area only (see CLAUDE.md).
+        raise SystemExit(
+            f"The free lineup may only run in test_questions mode, not {run_mode}. "
+            "Switch USE_CREDIT_KEY_LINEUP in bot_config.py once the credit key is in."
+        )
+    print(f"Model lineup: {lineup.name} ({', '.join(lineup.llm_model_names())})")
+
     template_bot = FallBot2026(
-        research_reports_per_question=1,
-        predictions_per_research_report=5,
+        research_reports_per_question=lineup.research_reports_per_question,
+        predictions_per_research_report=lineup.predictions_per_research_report,
         use_research_summary_to_forecast=False,
+        enable_summarize_research=lineup.summarize_research,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # llms={
-        #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o",
-        #         temperature=0.3,
-        #         timeout=40,
-        #         allowed_tries=2,
-        #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
-        # },
+        llms=lineup.llms,
+    )
+    template_bot._structure_output_validation_samples = (
+        lineup.parser_validation_samples
     )
 
     # Per-mode tournament URL shown in the summary banner footer.
@@ -738,16 +768,27 @@ if __name__ == "__main__":
         # The bot-testing-area tournament contains all question types and is
         # the recommended target for smoke-testing your bot.
         # https://www.metaculus.com/tournament/bot-testing-area/
+        # Free models have small daily limits, so forecast only the first
+        # few open questions of each type the tournament uses.
         template_bot.skip_previously_forecasted_questions = False
+        open_questions = client.get_all_open_questions_from_tournament(
+            BOT_TESTING_AREA_ID
+        )
+        test_questions = pick_test_questions(open_questions)
+        print(
+            f"Testing {len(test_questions)} of {len(open_questions)} open questions: "
+            + ", ".join(f"{q.id_of_post} ({q.question_type})" for q in test_questions)
+        )
         forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                BOT_TESTING_AREA_ID, return_exceptions=True
-            )
+            template_bot.forecast_questions(test_questions, return_exceptions=True)
         )
 
-    template_bot.log_report_summary(forecast_reports)
+    # Write the cost table and banner first: log_report_summary raises (making
+    # the run fail) if any question errored.
+    write_cost_summary(forecast_reports, lineup_name=lineup.name)
     print_run_summary_banner(
         forecast_reports,
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
+    template_bot.log_report_summary(forecast_reports)
