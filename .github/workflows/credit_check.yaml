@@ -9,6 +9,10 @@ on:
         description: "Gemini models to send one tiny test call each (space-separated; uses 1 of each model's daily quota)"
         type: string
         default: "gemini-3.6-flash"
+      gemini_grounding:
+        description: "Make the test calls with Grounding with Google Search"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -53,6 +57,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_TEST_MODELS: ${{ inputs.gemini_test_models || 'gemini-3.6-flash' }}
+          GEMINI_GROUNDING: ${{ inputs.gemini_grounding }}
         run: |
           set -uo pipefail
           if [ -z "$GEMINI_API_KEY" ]; then
@@ -77,6 +82,10 @@ jobs:
           rm -f models.json
 
           body='{"contents":[{"parts":[{"text":"Reply with the single word OK."}]}]}'
+          if [ "$GEMINI_GROUNDING" = "true" ]; then
+            body='{"contents":[{"parts":[{"text":"Using Google Search, name one news headline from today in one short line."}]}],
+                   "tools":[{"google_search":{}}]}'
+          fi
           for model in $GEMINI_TEST_MODELS; do
             status=$(curl -sS -o reply.json -w '%{http_code}' \
               -H "x-goog-api-key: $GEMINI_API_KEY" -H 'Content-Type: application/json' \
@@ -88,6 +97,9 @@ jobs:
               jq -r '
                 if .usageMetadata then
                   "- Tokens: prompt \(.usageMetadata.promptTokenCount), answer \(.usageMetadata.candidatesTokenCount // 0), thinking \(.usageMetadata.thoughtsTokenCount // 0)"
+                else empty end,
+                if .candidates[0].groundingMetadata then
+                  "- Grounded: \(.candidates[0].groundingMetadata.webSearchQueries // [] | length) search(es), \(.candidates[0].groundingMetadata.groundingChunks // [] | length) source(s)"
                 else empty end,
                 if .error then
                   "- Error: \(.error.status): \(.error.message | .[0:300])",
