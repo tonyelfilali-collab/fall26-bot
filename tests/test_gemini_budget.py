@@ -228,7 +228,7 @@ def test_everything_unavailable_raises(dummy):
         asyncio.run(chain.invoke("hi"))
 
 
-def test_parser_uses_only_2_5_models(dummy):
+def test_parser_uses_only_the_parser_models(dummy):
     pool = make_pool()
     parser = pool.parser()
     chain_models = []
@@ -237,9 +237,10 @@ def test_parser_uses_only_2_5_models(dummy):
         chain_models.append(node.model)
         node = node._backup
     assert chain_models == list(GEMINI_PARSER_MODELS)
-    dummy.behaviour["gemini-2.5-flash"] = "overloaded"
+    assert not set(chain_models) & set(GEMINI_FORECAST_MODELS)
+    dummy.behaviour["gemini-3.5-flash-lite"] = "overloaded"
     asyncio.run(parser.invoke("parse this"))
-    assert dummy.calls == ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    assert dummy.calls == ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 
 
 # ---------------------------------------------------------------- whole question (dummy server)
@@ -265,7 +266,7 @@ def test_binary_question_gets_three_forecasts_and_the_median(dummy, monkeypatch)
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.4)  # median of 0.2, 0.4, 0.9
     # 3 forecasts, from 3 different models.
-    assert len({m for m in dummy.calls if "2.5" not in m}) == 3
+    assert len({m for m in dummy.calls if "lite" not in m}) == 3
 
 
 async def _forecast_with_answer(bot, answer):

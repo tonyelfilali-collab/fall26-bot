@@ -44,8 +44,10 @@ GEMINI_FORECAST_MODELS = (
     "gemini/gemini-3.8-flash",
     "gemini/gemini-3.5-flash",
 )
-# Parser only, never a forecaster (2.5 scores badly at forecasting).
-GEMINI_PARSER_MODELS = ("gemini/gemini-2.5-flash", "gemini/gemini-2.5-flash-lite")
+# Parser only, never a forecaster. The architect asked for Gemini 2.5 Flash /
+# Flash-Lite, but Google closed both to new projects ("no longer available to
+# new users", 27 Sep 2026), so the lighter 3.x Flash-Lite models parse instead.
+GEMINI_PARSER_MODELS = ("gemini/gemini-3.5-flash-lite", "gemini/gemini-3.1-flash-lite")
 GEMINI_FREE_REQUESTS_PER_DAY = 20
 # Each model's calls are paced under the 5/minute limit.
 GEMINI_FREE_REQUESTS_PER_MINUTE = 4

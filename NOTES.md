@@ -140,7 +140,10 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
 - **Forecasting pool:** Gemini 3.6, 3.7, 3.8 and 3.5 Flash (`gemini/...`, called directly with
   `GEMINI_API_KEY`), all with `reasoning_effort="high"` (LiteLLM sends `thinkingLevel: "high"`;
   setting it via `extra_body` gets overwritten with "low").
-- **Parser only:** Gemini 2.5 Flash, then 2.5 Flash-Lite. These never forecast.
+- **Parser only:** Gemini 3.5 Flash-Lite, then 3.1 Flash-Lite. These never forecast. (The
+  architect chose 2.5 Flash / Flash-Lite, but Google answers 404 "no longer available to new
+  users" for both on this new project: Credit check run
+  https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36336713455.)
 - **Daily budget per model:** 20 requests/day each, and every attempt counts (Google counted
   failed ones too: 3 Test Bot runs used up 3.6 Flash's day on 27 Sep). 20% is held in reserve,
   so 16 are usable. Counts are kept per model for the Google day (midnight Pacific = 07:00 UTC
