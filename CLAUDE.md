@@ -28,6 +28,8 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
 - The free Gemini key allows 20 requests/day per model, and every attempt counts. Don't rerun
   Test Bot on Gemini casually; use `poetry run pytest` (dummy server) and the Test Bot
   "one binary" option. Daily counts are in `quota/gemini_free.json` in fall26-data.
+- Tests: `poetry run pytest -q` (dummy servers, no real calls). The Unit tests workflow runs them
+  on every PR.
 - Merging: Claude Code merges code PRs only after Tony relays "the architect says merge".
   Notes-only PRs (NOTES.md, PLAN.md, progress log) may be merged straight away.
 - Master switch: repository variable `BOT_ENABLED`. Real-question workflows exit at once unless

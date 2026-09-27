@@ -204,6 +204,21 @@ class GeminiPool:
             for index, model in enumerate(chosen)
         ]
 
+    def quick_forecaster(self) -> ThrottledLlm:
+        """
+        For the one quick forecast when no planned forecast finished: every
+        forecasting model, most quota left first, reserve allowed.
+        """
+        ranked = sorted(
+            GEMINI_FORECAST_MODELS,
+            key=lambda m: (-self.ledger.total_left(m), GEMINI_FORECAST_MODELS.index(m)),
+        )
+        llm: ThrottledLlm | None = None
+        for model in reversed(ranked):
+            llm = self._forecaster(model, backup=llm, allow_reserve=True)
+        assert llm is not None
+        return llm
+
     def unplanned_forecaster(self) -> ThrottledLlm:
         llm: ThrottledLlm | None = None
         for model in reversed(GEMINI_FORECAST_MODELS):
