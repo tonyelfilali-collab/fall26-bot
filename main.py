@@ -78,6 +78,7 @@ from distributions import (
 )
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
+from shadow import REFEREE_ENABLED, referee_shadow, two_line_reason, zero_cost_shadows
 from markets import match_question
 from markets import to_records as market_records
 from research import run_planned_research
@@ -258,6 +259,8 @@ class FallBot2026(ForecastBot):
     ) -> PredictionTypes:
         # Safety checks on the final forecast (forecast_safety.py, PLAN.md Step 4).
         if isinstance(question, BinaryQuestion):
+            # Step 10: free shadow variants, saved but never submitted.
+            self._record_for(question)["shadow"] = zero_cost_shadows(predictions)  # type: ignore[arg-type]
             # Median, stretch (off), [market blend], extreme check, clip 2-98%.
             return adjust_binary(predictions)  # type: ignore[arg-type]
         if isinstance(question, MultipleChoiceQuestion):
@@ -412,6 +415,24 @@ class FallBot2026(ForecastBot):
             await self._save_record(question, record, started)
             raise
         submitted = await self._submit_if_still_open(question, report)
+        # Step 10: the referee shadow (OFF until credits), saved, never submitted.
+        if REFEREE_ENABLED and isinstance(question, BinaryQuestion) and self.planner is not None:
+            try:
+                finished = [
+                    (float(f["parsed"]), two_line_reason(f["raw_output"]))
+                    for f in record["forecasts"]
+                    if f.get("status") == "ok"
+                ]
+                referee = await referee_shadow(
+                    question.question_text,
+                    finished,
+                    self.planner.quick_forecaster().invoke,
+                    parse_binary_answer,
+                )
+                if referee is not None:
+                    record.setdefault("shadow", {})["referee"] = referee
+            except Exception as e:
+                logger.warning(f"Question {question.id_of_post}: referee shadow failed ({type(e).__name__})")
         # Step 9, log-only: after submitting, find and judge matching markets
         # and save them. Never changes the forecast; a failure is only logged.
         if MARKET_MODE == "log-only" and isinstance(question, BinaryQuestion):
