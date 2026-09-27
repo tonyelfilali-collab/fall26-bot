@@ -39,3 +39,54 @@ jobs:
             echo "|---|---|"
             cat table.md
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Plan B: the free Google AI Studio key. Lists the Gemini models it can
+      # use and makes one tiny test call (free tier, no billing), reporting
+      # whether it worked, the thinking tokens used, and any quota error.
+      - name: Check the free Gemini key
+        if: always()
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_TEST_MODEL: gemini-3.6-flash
+        run: |
+          set -uo pipefail
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "GEMINI_API_KEY is not set" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          api=https://generativelanguage.googleapis.com/v1beta
+          status=$(curl -sS -o models.json -w '%{http_code}' \
+            -H "x-goog-api-key: $GEMINI_API_KEY" "$api/models?pageSize=1000")
+          {
+            echo "## Gemini key"
+            echo ""
+            echo "Model list: HTTP $status"
+            echo ""
+            echo "Gemini models that can generate text:"
+            echo ""
+            jq -r '.models[]? | select(.name | test("gemini")) |
+              select(.supportedGenerationMethods | index("generateContent")) |
+              "- `\(.name | ltrimstr("models/"))`\(if .thinking then " (thinking)" else "" end)"' models.json
+            echo ""
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -f models.json
+
+          body='{"contents":[{"parts":[{"text":"Reply with the single word OK."}]}],
+                 "generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}'
+          status=$(curl -sS -o reply.json -w '%{http_code}' \
+            -H "x-goog-api-key: $GEMINI_API_KEY" -H 'Content-Type: application/json' \
+            -d "$body" "$api/models/$GEMINI_TEST_MODEL:generateContent")
+          {
+            echo "One test call to \`$GEMINI_TEST_MODEL\` with thinking level high: HTTP $status"
+            echo ""
+            jq -r '
+              if .usageMetadata then
+                "- Tokens: prompt \(.usageMetadata.promptTokenCount), answer \(.usageMetadata.candidatesTokenCount // 0), thinking \(.usageMetadata.thoughtsTokenCount // 0)"
+              else empty end,
+              if .error then
+                "- Error: \(.error.status): \(.error.message | .[0:300])",
+                (.error.details[]? | .violations[]? |
+                  "- Quota: \(.quotaMetric // "") \(.quotaId // "") limit \(.quotaValue // "?")")
+              else empty end' reply.json
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -f reply.json

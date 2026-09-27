@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 import dotenv
@@ -163,6 +163,34 @@ class FallBot2026(ForecastBot):
     _structure_output_validation_samples = 2
     # Test switch: make every question fail, to prove a failed run shows red.
     break_on_purpose = False
+    # Forecasts still running this close to a question's close time are
+    # abandoned, and the forecasts already made are submitted.
+    deadline_margin = timedelta(minutes=5)
+
+    async def _make_prediction(
+        self, question: MetaculusQuestion, research: str
+    ) -> ReasonedPrediction[PredictionTypes]:
+        # E.g. waiting on a free-tier rate limit must not run past the
+        # question's close. Forecasts cut off here count as failed; the
+        # library combines and submits the ones that finished.
+        if question.close_time is None:
+            return await super()._make_prediction(question, research)
+        close_time = question.close_time
+        if close_time.tzinfo is None:
+            close_time = close_time.replace(tzinfo=timezone.utc)
+        seconds_left = (
+            close_time - datetime.now(timezone.utc) - self.deadline_margin
+        ).total_seconds()
+        try:
+            return await asyncio.wait_for(
+                super()._make_prediction(question, research),
+                timeout=max(seconds_left, 30),
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Question {question.id_of_post}: a forecast was cut off near the close time"
+            )
+            raise
 
     ##################################### RESEARCH #####################################
 
@@ -708,11 +736,11 @@ if __name__ == "__main__":
 
     # All model choices live in bot_config.py.
     lineup = get_lineup()
-    if lineup.free_only and run_mode != "test_questions":
-        # Free models are for the bot-testing-area only (see CLAUDE.md).
+    if lineup.test_only and run_mode != "test_questions":
+        # OpenRouter ':free' models are for the bot-testing-area only (see CLAUDE.md).
         raise SystemExit(
-            f"The free lineup may only run in test_questions mode, not {run_mode}. "
-            "Switch USE_CREDIT_KEY_LINEUP in bot_config.py once the credit key is in."
+            f"The {lineup.name} lineup may only run in test_questions mode, not {run_mode}. "
+            "Change ACTIVE_LINEUP in bot_config.py."
         )
     print(f"Model lineup: {lineup.name} ({', '.join(lineup.llm_model_names())})")
 
@@ -792,7 +820,9 @@ if __name__ == "__main__":
     # Not template_bot.log_report_summary: it prints reasoning, and the logs
     # are public.
     failures = log_question_statuses(forecast_reports)
-    write_cost_summary(forecast_reports, lineup_name=lineup.name)
+    write_cost_summary(
+        forecast_reports, lineup_name=lineup.name, billed=not lineup.free_only
+    )
     print_run_summary_banner(
         forecast_reports,
         will_publish=publish_to_metaculus,
