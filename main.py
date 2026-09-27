@@ -65,6 +65,7 @@ from forecast_safety import (
     still_open_problem,
 )
 from deadlines import planned_forecast_timeout, quick_forecast_timeout
+from distributions import combine_numeric, median_multiple_choice, pchip_distribution
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
@@ -246,16 +247,20 @@ class FallBot2026(ForecastBot):
         if isinstance(question, BinaryQuestion):
             # Median, stretch (off), [market blend], extreme check, clip 2-98%.
             return adjust_binary(predictions)  # type: ignore[arg-type]
-        aggregated = await super()._aggregate_predictions(predictions, question)
-        if isinstance(aggregated, PredictedOptionList):
-            return floor_multiple_choice(aggregated)
-        if isinstance(aggregated, NumericDistribution) and isinstance(question, NumericQuestion):
+        if isinstance(question, MultipleChoiceQuestion):
+            # Step 8: median per option, renormalise, 1% floor, renormalise.
+            return median_multiple_choice(predictions)  # type: ignore[arg-type]
+        if isinstance(question, NumericQuestion):
+            # Step 8: pointwise median of the models' CDFs, then 95% of it with
+            # 5% uniform over the question's range; then the Step 4 checks.
+            aggregated = combine_numeric(predictions, question)  # type: ignore[arg-type]
             problems = distribution_problems(aggregated, question)
             if problems:
                 raise NoValidForecast(
                     f"combined distribution broke the platform rules ({'; '.join(problems)})"
                 )
-        return aggregated
+            return aggregated
+        return await super()._aggregate_predictions(predictions, question)
 
     def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
         # A planned forecast uses the model chain chosen for it.
@@ -742,7 +747,7 @@ class FallBot2026(ForecastBot):
             Formatting Instructions:
             - Please notice the units requested and give your answer in these units (e.g. whether you represent a number as 1,000,000 or 1 million).
             - Never use scientific notation.
-            - Always start with a smaller number (more negative if negative) and then increase from there. The value for percentile 10 should always be less than the value for percentile 20, and so on.
+            - Always start with a smaller number (more negative if negative) and then increase from there. The value for percentile 2.5 should always be less than the value for percentile 5, and so on.
 
             Before answering you write:
             (a) The time left until the outcome to the question is known.
@@ -757,12 +762,15 @@ class FallBot2026(ForecastBot):
 
             The last thing you write is your final answer as:
             "
-            Percentile 10: XX (lowest number value)
-            Percentile 20: XX
-            Percentile 40: XX
-            Percentile 60: XX
-            Percentile 80: XX
-            Percentile 90: XX (highest number value)
+            Percentile 2.5: XX (lowest number value)
+            Percentile 5: XX
+            Percentile 10: XX
+            Percentile 25: XX
+            Percentile 50: XX
+            Percentile 75: XX
+            Percentile 90: XX
+            Percentile 95: XX
+            Percentile 97.5: XX (highest number value)
             "
             """
         )
@@ -827,7 +835,8 @@ class FallBot2026(ForecastBot):
             )
         else:
             raise NoValidForecast("every parsed value is outside the question's range, twice")
-        distribution = NumericDistribution.from_question(percentile_list, question)
+        # Step 8: this model's CDF via PCHIP through its percentiles.
+        distribution = pchip_distribution(percentile_list, question)
         problems = distribution_problems(distribution, question)
         if problems:
             raise NoValidForecast(

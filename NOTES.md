@@ -241,6 +241,25 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - **Public log:** only `Question N: articles found: X (AskNews a, free news f)`, never article text.
 - Tests: `tests/test_free_news.py` (no network).
 
+## Numeric and multiple choice (PLAN.md Step 8)
+
+`distributions.py`, tests with worked examples in `tests/test_distributions.py`:
+- **Numeric/discrete:** the prompt asks for percentiles 2.5, 5, 10, 25, 50, 75, 90, 95, 97.5.
+  Each model's CDF is built with **PCHIP** (monotone, no overshoot; own numpy implementation,
+  no scipy) through those points, in the question's own x-axis, so log-scaled questions work.
+  Closed bounds pin the CDF to 0/1; open bounds extend the tails in line. The library's
+  standardising then makes it platform-valid.
+- **Combining:** pointwise median of the models' declared CDFs, then
+  `final(x) = 0.95 × median + 0.05 × location(x)` (uniform over the range, in the question's
+  x-axis), then the Step 4 checks. Metaculus' own standardising (0.99·F + 0.01·location for
+  closed bounds, slightly different for open ones) is applied once more when submitting.
+  Combining on the declared CDFs (not re-standardised copies) avoids stacking that 1% blur
+  several times.
+- **Multiple choice:** median per option → renormalise → every option at least 1% → the extra
+  comes from the other options in proportion (`floor_probabilities`). Note: the library itself
+  clamps options to 1% and renormalises whenever an option list is built, which leaves them just
+  under 1% (0.99%); we floor on plain numbers first to avoid that.
+
 ## Safety checks (PLAN.md Step 4)
 
 `forecast_safety.py` (pure functions, `tests/test_forecast_safety.py`), used in `main.py`:

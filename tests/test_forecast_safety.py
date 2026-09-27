@@ -117,6 +117,13 @@ def test_multiple_choice_floor_lifts_small_options_and_sums_to_one():
     assert result[0] <= result[1] <= result[2]
 
 
+def test_worked_example_floor_takes_the_extra_proportionally():
+    # 0% and 0.5% are lifted to 1%; 99.5% gives up the 1.5% needed: 0.98.
+    assert fs.floor_probabilities([0.0, 0.005, 0.995]) == pytest.approx([0.01, 0.01, 0.98])
+    # Unnormalised input is renormalised first: (2, 3, 5) -> (0.2, 0.3, 0.5).
+    assert fs.floor_probabilities([2, 3, 5]) == pytest.approx([0.2, 0.3, 0.5])
+
+
 def test_multiple_choice_unchanged_when_already_fine():
     given = options(0.2, 0.3, 0.5)
     assert fs.floor_multiple_choice(given) == given
@@ -256,6 +263,18 @@ def test_every_prompt_includes_the_dates(monkeypatch):
     assert "Today is " in seen[0]
 
 
+def cdf_at(distribution, value):
+    """The distribution's CDF at `value` (linear between its points)."""
+    import numpy as np
+
+    cdf = distribution.get_cdf()
+    return float(np.interp(value, [p.value for p in cdf], [p.percentile for p in cdf]))
+
+
+def _passes_through(distribution, points, tolerance=0.02):
+    return all(abs(cdf_at(distribution, p.value) - p.percentile) <= tolerance for p in points)
+
+
 def _parse_bot(monkeypatch, parses):
     answers = iter(parses)
 
@@ -272,7 +291,7 @@ def test_disaster_x1000_unit_error_is_reparsed_once(monkeypatch):
     question = numeric_question()
     bot = _parse_bot(monkeypatch, [percentiles(100e3, 200e3, 350e3, 500e3, 700e3, 850e3), percentiles(100, 200, 350, 500, 700, 850)])
     result = asyncio.run(bot._parse_numeric_safely(question, "reasoning", "instructions"))
-    assert [p.value for p in result.declared_percentiles] == [100, 200, 350, 500, 700, 850]
+    assert _passes_through(result, percentiles(100, 200, 350, 500, 700, 850))
 
 
 def test_disaster_x1000_unit_error_twice_drops_the_forecast(monkeypatch):
@@ -287,7 +306,7 @@ def test_disaster_reversed_percentiles_in_the_bot(monkeypatch):
     question = numeric_question()
     bot = _parse_bot(monkeypatch, [percentiles(850, 700, 500, 350, 200, 100)])
     result = asyncio.run(bot._parse_numeric_safely(question, "reasoning", "instructions"))
-    assert [p.value for p in result.declared_percentiles] == [100, 200, 350, 500, 700, 850]
+    assert _passes_through(result, percentiles(100, 200, 350, 500, 700, 850))
 
 
 def test_question_with_no_real_forecast_is_not_guessed_and_left_for_next_run(monkeypatch):
