@@ -9,6 +9,14 @@ on:
         description: "Make every question fail, to check a failed run shows red"
         type: boolean
         default: false
+      one_binary:
+        description: "Forecast only one binary question (saves free quota)"
+        type: boolean
+        default: false
+      only_model:
+        description: "Forecast with only this Gemini model, e.g. gemini/gemini-3.8-flash (blank = normal plan)"
+        type: string
+        default: ""
 
 # Shared with every workflow that forecasts, so they never run at the same time.
 concurrency:
@@ -38,16 +46,20 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Run bot
         run: |
-          if [ "$BREAK_ON_PURPOSE" = "true" ]; then
-            poetry run python main.py --mode test_questions --break-on-purpose
-          else
-            poetry run python main.py --mode test_questions
-          fi
+          args=(--mode test_questions)
+          if [ "$BREAK_ON_PURPOSE" = "true" ]; then args+=(--break-on-purpose); fi
+          if [ "$ONE_BINARY" = "true" ]; then args+=(--one-binary); fi
+          if [ -n "$ONLY_MODEL" ]; then args+=(--only-model "$ONLY_MODEL"); fi
+          poetry run python main.py "${args[@]}"
         env:
           BREAK_ON_PURPOSE: ${{ inputs.break_on_purpose }}
+          ONE_BINARY: ${{ inputs.one_binary }}
+          ONLY_MODEL: ${{ inputs.only_model }}
           # Only the secrets the bot uses (see NOTES.md). No paid services.
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
           # Free Google AI Studio key (no billing), for the gemini-free lineup.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Writes the Gemini daily quota ledger to the private fall26-data repo.
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}

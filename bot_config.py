@@ -18,6 +18,7 @@ from typing import Literal
 
 from forecasting_tools import GeneralLlm
 
+from gemini_budget import QuotaLedger, make_store
 from llm_throttle import RequestPacer, ThrottledLlm
 
 ACTIVE_LINEUP: Literal["free", "gemini-free", "credit"] = "gemini-free"
@@ -34,31 +35,29 @@ HIGH_REASONING = {"reasoning": {"effort": "high"}}
 FREE_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 
 # Google AI Studio directly (LiteLLM "gemini/" prefix, reads GEMINI_API_KEY).
-GEMINI_FREE_MODEL = "gemini/gemini-3.6-flash"
-# Tried in order when the model before is overloaded or out of quota. Each
-# has its own free quota on the same key (limits are per model).
-GEMINI_FREE_BACKUP_MODELS = ("gemini/gemini-3.7-flash", "gemini/gemini-3.5-flash")
-# Free-tier limits for Gemini 3.6 Flash, from the AI Studio rate-limit page
-# (27 Sep 2026): 5 requests/minute, 250K tokens/minute, 20 requests/day
-# (per project; the day resets at midnight Pacific).
-GEMINI_FREE_REQUESTS_PER_DAY = 20
-# Every call (forecasts, parsing, retries) shares this pace, kept under 5/min.
-GEMINI_FREE_REQUESTS_PER_MINUTE = 4
-GEMINI_FREE_TRIES = 6
-# Daily budget: keep 20% in reserve and plan for about 8 questions a day, so
-# 16 calls a day = 2 per question = 1 forecast + 1 parse.
-GEMINI_FREE_RESERVE = 0.2
-GEMINI_FREE_QUESTIONS_PER_DAY = 8
-GEMINI_FREE_CALLS_PER_FORECAST = 2  # the forecast itself + parsing it
-GEMINI_FREE_FORECASTS_PER_QUESTION = max(
-    1,
-    int(
-        GEMINI_FREE_REQUESTS_PER_DAY
-        * (1 - GEMINI_FREE_RESERVE)
-        / GEMINI_FREE_QUESTIONS_PER_DAY
-        / GEMINI_FREE_CALLS_PER_FORECAST
-    ),
+# Free tier (AI Studio rate-limit page, 27 Sep 2026): 5 requests/minute and
+# 20 requests/day, per model, per project. The day resets at midnight Pacific.
+# Forecasting pool: each question gets forecasts from different versions.
+GEMINI_FORECAST_MODELS = (
+    "gemini/gemini-3.6-flash",
+    "gemini/gemini-3.7-flash",
+    "gemini/gemini-3.8-flash",
+    "gemini/gemini-3.5-flash",
 )
+# Parser only, never a forecaster (2.5 scores badly at forecasting).
+GEMINI_PARSER_MODELS = ("gemini/gemini-2.5-flash", "gemini/gemini-2.5-flash-lite")
+GEMINI_FREE_REQUESTS_PER_DAY = 20
+# Each model's calls are paced under the 5/minute limit.
+GEMINI_FREE_REQUESTS_PER_MINUTE = 4
+# 20% of each model's day is held back for questions that would otherwise
+# get no forecast at all.
+GEMINI_FREE_RESERVE = 0.2
+GEMINI_MAX_FORECASTS_PER_QUESTION = 3
+# Budget counts as "low" below this share of the pool's usable daily total;
+# then MiniBench questions get 1 forecast (seasonal ones still up to 3).
+GEMINI_LOW_BUDGET_FRACTION = 0.25
+# The day's counts live in the private fall26-data repo.
+GEMINI_LEDGER_PATH = "quota/gemini_free.json"
 
 CREDIT_FORECASTER_MODEL = "openrouter/anthropic/claude-opus-5.5"
 CREDIT_HELPER_MODEL = "openrouter/google/gemini-3.6-flash"
@@ -90,6 +89,8 @@ class Lineup:
     free_only: bool
     # Only allowed in test_questions mode (the bot-testing-area).
     test_only: bool
+    # Free Gemini lineup: plans each question's forecasters within the daily budget.
+    gemini_pool: GeminiPool | None = None
 
     def llm_model_names(self) -> list[str]:
         """Model names of the LLMs and their backups (AskNews is not an LLM)."""
@@ -127,52 +128,132 @@ def _free_lineup() -> Lineup:
     )
 
 
-def _gemini_chain(pacers: dict[str, RequestPacer], **kwargs) -> ThrottledLlm:
-    """GEMINI_FREE_MODEL with its backups behind it, each on its model's pacer."""
-    llm: ThrottledLlm | None = None
-    for model in reversed((GEMINI_FREE_MODEL, *GEMINI_FREE_BACKUP_MODELS)):
-        llm = ThrottledLlm(model=model, pacer=pacers[model], backup=llm, **kwargs)
-    assert llm is not None
-    return llm
+@dataclass
+class GeminiPool:
+    """
+    Plans which free Gemini models forecast each question, within the day's
+    budget (see gemini_budget.QuotaLedger).
+    """
+
+    ledger: QuotaLedger
+    pacers: dict[str, RequestPacer]
+
+    def _forecaster(self, model: str, **kwargs) -> ThrottledLlm:
+        return ThrottledLlm(
+            model=model,
+            pacer=self.pacers[model],
+            ledger=self.ledger,
+            temperature=None,
+            timeout=300,
+            # No retries on the same model: a failed call moves on to the next
+            # model, so retries don't eat the day's quota.
+            allowed_tries=1,
+            # LiteLLM turns this into Gemini's thinkingLevel "high". (Setting
+            # thinkingConfig through extra_body is overwritten with "low".)
+            reasoning_effort="high",
+            **kwargs,
+        )
+
+    def _chain(self, models: list[str], allow_reserve: bool) -> ThrottledLlm:
+        """models[0] (booked) with the rest behind it as backups."""
+        llm: ThrottledLlm | None = None
+        for position, model in reversed(list(enumerate(models))):
+            llm = self._forecaster(
+                model, backup=llm, booked=position == 0, allow_reserve=allow_reserve
+            )
+        assert llm is not None
+        return llm
+
+    def is_budget_low(self) -> bool:
+        usable_left = sum(
+            max(0, self.ledger.usable_left(m)) for m in GEMINI_FORECAST_MODELS
+        )
+        usable_total = len(GEMINI_FORECAST_MODELS) * GEMINI_FREE_REQUESTS_PER_DAY * (
+            1 - GEMINI_FREE_RESERVE
+        )
+        return usable_left < GEMINI_LOW_BUDGET_FRACTION * usable_total
+
+    def plan(self, seasonal: bool, only_model: str | None = None) -> list[ThrottledLlm]:
+        """
+        One forecaster chain per forecast for a question: up to 3 different
+        models with usable budget (MiniBench: 1 when the budget is low). If no
+        model has usable budget, 1 forecast from the reserve. Empty if the
+        day's quota is gone.
+        """
+        models = (only_model,) if only_model else GEMINI_FORECAST_MODELS
+        ranked = sorted(
+            models,
+            key=lambda m: (-self.ledger.usable_left(m), GEMINI_FORECAST_MODELS.index(m)),
+        )
+        most = (
+            GEMINI_MAX_FORECASTS_PER_QUESTION
+            if seasonal or not self.is_budget_low()
+            else 1
+        )
+        chosen = [m for m in ranked if self.ledger.usable_left(m) > 0][:most]
+        if not chosen:
+            chosen = [m for m in ranked if self.ledger.total_left(m) > 0][:1]
+        for model in chosen:
+            self.ledger.book(model)
+        spare = [m for m in ranked if m not in chosen]
+        return [
+            # The first forecast may use the reserve, so every question gets one.
+            self._chain([model, *spare], allow_reserve=index == 0)
+            for index, model in enumerate(chosen)
+        ]
+
+    def unplanned_forecaster(self) -> ThrottledLlm:
+        llm: ThrottledLlm | None = None
+        for model in reversed(GEMINI_FORECAST_MODELS):
+            llm = self._forecaster(model, backup=llm)
+        assert llm is not None
+        return llm
+
+    def parser(self) -> ThrottledLlm:
+        llm: ThrottledLlm | None = None
+        for model in reversed(GEMINI_PARSER_MODELS):
+            llm = ThrottledLlm(
+                model=model,
+                pacer=self.pacers[model],
+                ledger=self.ledger,
+                backup=llm,
+                allow_reserve=True,
+                temperature=None,
+                timeout=180,
+                allowed_tries=2,
+            )
+        assert llm is not None
+        return llm
 
 
 def _gemini_free_lineup() -> Lineup:
-    # One pacer per model (the free quota is per model), shared by forecaster
-    # and parser. Per question: GEMINI_FREE_FORECASTS_PER_QUESTION forecasts,
-    # each parsed once. The free tier is often "overloaded" (503, which Google
-    # turns away rather than counts), so each call gets several tries through
-    # the whole backup chain, 5-60 s apart. The question-close cut-off in
-    # main.py still bounds the total wait.
-    pacers = {
-        model: RequestPacer(GEMINI_FREE_REQUESTS_PER_MINUTE)
-        for model in (GEMINI_FREE_MODEL, *GEMINI_FREE_BACKUP_MODELS)
-    }
-    forecaster = _gemini_chain(
-        pacers,
-        temperature=None,
-        timeout=300,
-        allowed_tries=GEMINI_FREE_TRIES,
-        # LiteLLM turns this into Gemini's thinkingLevel "high". (Setting
-        # thinkingConfig through extra_body is overwritten with "low".)
-        reasoning_effort="high",
+    all_models = (*GEMINI_FORECAST_MODELS, *GEMINI_PARSER_MODELS)
+    pool = GeminiPool(
+        ledger=QuotaLedger(
+            make_store(GEMINI_LEDGER_PATH),
+            daily_limits={m: GEMINI_FREE_REQUESTS_PER_DAY for m in all_models},
+            reserve_fraction=GEMINI_FREE_RESERVE,
+        ),
+        pacers={m: RequestPacer(GEMINI_FREE_REQUESTS_PER_MINUTE) for m in all_models},
     )
-    parser = _gemini_chain(
-        pacers, temperature=None, timeout=180, allowed_tries=GEMINI_FREE_TRIES
-    )
+    parser = pool.parser()
     return Lineup(
         name="gemini-free",
         llms={
-            "default": forecaster,
+            # Forecasts normally use the chains from pool.plan(); this is
+            # only a fallback: the whole pool, never the reserve.
+            "default": pool.unplanned_forecaster(),
             "parser": parser,
             "summarizer": parser,
             "researcher": RESEARCHER,
         },
         research_reports_per_question=1,
-        predictions_per_research_report=GEMINI_FREE_FORECASTS_PER_QUESTION,
+        predictions_per_research_report=GEMINI_MAX_FORECASTS_PER_QUESTION,
         parser_validation_samples=1,
         summarize_research=False,
         free_only=True,
         test_only=False,
+        gemini_pool=pool,
     )
 
 

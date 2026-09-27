@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import contextvars
 import logging
 import sys
 from datetime import datetime, timedelta, timezone
@@ -47,7 +48,9 @@ from forecasting_tools import (
     structure_output,
 )
 
-from bot_config import get_lineup
+from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
+
+from bot_config import GeminiPool, get_lineup
 
 dotenv.load_dotenv()
 # Only this logger's messages reach the public Actions log in full; see
@@ -77,6 +80,12 @@ def pick_test_questions(
         of_type = [q for q in questions if q.question_type == question_type]
         picked.extend(of_type[:TEST_QUESTIONS_PER_TYPE])
     return picked
+
+
+# The forecaster chain for the forecast running in the current asyncio task.
+_planned_forecaster: contextvars.ContextVar = contextvars.ContextVar(
+    "planned_forecaster", default=None
+)
 
 
 class FallBot2026(ForecastBot):
@@ -166,6 +175,67 @@ class FallBot2026(ForecastBot):
     # Forecasts still running this close to a question's close time are
     # abandoned, and the forecasts already made are submitted.
     deadline_margin = timedelta(minutes=5)
+    # Free Gemini lineup: plans each question's forecasters within the day's
+    # budget. Set in __main__ from the lineup.
+    gemini_pool: GeminiPool | None = None
+    # Whether the tournament being forecast is the seasonal one (it gets
+    # priority when the budget is low). Set per tournament in __main__.
+    forecasting_seasonal = True
+    # Test switch: forecast with only this Gemini model.
+    only_model: str | None = None
+
+    def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
+        # A planned forecast uses the model chain chosen for it.
+        if purpose == "default":
+            planned = _planned_forecaster.get()
+            if planned is not None:
+                return planned
+        return super().get_llm(purpose, guarantee_type)
+
+    async def _research_and_make_predictions(
+        self, question: MetaculusQuestion
+    ) -> ResearchWithPredictions[PredictionTypes]:
+        if self.gemini_pool is None:
+            return await super()._research_and_make_predictions(question)
+        # As in ForecastBot, but the number of forecasts and their models come
+        # from the day's Gemini budget (up to 3 different models, at least 1).
+        notepad = await self._get_notepad(question)
+        notepad.total_research_reports_attempted += 1
+        research = await self.run_research(question)
+        summary_report = await self.summarize_research(question, research)
+        forecasters = self.gemini_pool.plan(
+            seasonal=self.forecasting_seasonal, only_model=self.only_model
+        )
+        if not forecasters:
+            raise RuntimeError(
+                f"Question {question.id_of_post}: no Gemini quota left today"
+            )
+        logger.info(
+            f"Question {question.id_of_post}: {len(forecasters)} forecast(s) planned "
+            f"({', '.join(f.model for f in forecasters)})"
+        )
+
+        async def forecast_with(forecaster):  # type: ignore[no-untyped-def]
+            _planned_forecaster.set(forecaster)
+            return await self._make_prediction(question, research)
+
+        valid_predictions, errors, exception_group = (
+            await self._gather_results_and_exceptions(
+                [forecast_with(f) for f in forecasters]
+            )
+        )
+        await asyncio.to_thread(self.gemini_pool.ledger.save)
+        if len(valid_predictions) == 0:
+            assert exception_group, "Exception group should not be None"
+            self._reraise_exception_with_prepended_message(
+                exception_group, "Error while running research and predictions"
+            )
+        return ResearchWithPredictions(
+            research_report=research,
+            summary_report=summary_report,
+            errors=errors,
+            predictions=valid_predictions,
+        )
 
     async def _make_prediction(
         self, question: MetaculusQuestion, research: str
@@ -727,6 +797,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Make every question fail (to check a failed run shows red)",
     )
+    parser.add_argument(
+        "--one-binary",
+        action="store_true",
+        help="Test mode: forecast only one binary question",
+    )
+    parser.add_argument(
+        "--only-model",
+        default=None,
+        help="Forecast with only this Gemini model (e.g. gemini/gemini-3.8-flash)",
+    )
     args = parser.parse_args()
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
 
@@ -762,6 +842,8 @@ if __name__ == "__main__":
         lineup.parser_validation_samples
     )
     template_bot.break_on_purpose = args.break_on_purpose
+    template_bot.gemini_pool = lineup.gemini_pool
+    template_bot.only_model = args.only_model
 
     # Per-mode tournament URL shown in the summary banner footer.
     TOURNAMENT_URLS = {
@@ -777,8 +859,10 @@ if __name__ == "__main__":
     if run_mode == "tournament":
         # Each tournament is fetched and forecast on its own, so a failure in
         # one (e.g. the question list not loading) doesn't stop the other.
+        # Seasonal first: it's worth more, and gets priority for the budget.
         forecast_reports = []
         for tournament_id in (FALL_2026_TOURNAMENT_ID, FALL_2026_MINIBENCH_ID):
+            template_bot.forecasting_seasonal = tournament_id == FALL_2026_TOURNAMENT_ID
             try:
                 forecast_reports += asyncio.run(
                     template_bot.forecast_on_tournament(
@@ -812,12 +896,22 @@ if __name__ == "__main__":
             BOT_TESTING_AREA_ID
         )
         test_questions = pick_test_questions(open_questions)
+        if args.one_binary:
+            test_questions = [q for q in test_questions if q.question_type == "binary"][:1]
         print(
             f"Testing {len(test_questions)} of {len(open_questions)} open questions: "
             + ", ".join(f"{q.id_of_post} ({q.question_type})" for q in test_questions)
         )
         forecast_reports = asyncio.run(
             template_bot.forecast_questions(test_questions, return_exceptions=True)
+        )
+
+    if lineup.gemini_pool is not None:
+        ledger = lineup.gemini_pool.ledger
+        ledger.save()
+        print(
+            f"Gemini requests used today ({ledger.day}, Pacific): "
+            + ", ".join(f"{m.removeprefix('gemini/')} {n}" for m, n in sorted(ledger.used.items()))
         )
 
     # Not template_bot.log_report_summary: it prints reasoning, and the logs
