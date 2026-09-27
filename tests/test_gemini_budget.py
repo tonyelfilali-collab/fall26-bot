@@ -251,7 +251,7 @@ def test_parser_uses_only_the_parser_models(dummy):
     assert not set(chain_models) & set(GEMINI_FORECAST_MODELS)
     dummy.behaviour["gemini-3.5-flash-lite"] = "overloaded"
     asyncio.run(parser.invoke("parse this"))
-    assert dummy.calls == ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+    assert dummy.calls == ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]  # first backup answered
 
 
 # ---------------------------------------------------------------- whole question (dummy server)

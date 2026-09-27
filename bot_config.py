@@ -23,9 +23,10 @@ from llm_throttle import RequestPacer, ThrottledLlm
 
 ACTIVE_LINEUP: Literal["free", "gemini-free", "credit"] = "gemini-free"
 
-# AskNews news summaries: 2 AskNews calls per research report (latest news +
-# news archive). Reads the ASKNEWS_API_KEY secret.
-RESEARCHER = "asknews/news-summaries"
+# PLAN.md Step 7 (research.py): planner -> AskNews (at most 3 calls per
+# question, ASKNEWS_API_KEY) or free news -> dossier -> gap-fill. The planner
+# and dossier writer are the lineup's parser model.
+RESEARCHER = "planned-research"
 
 # How OpenRouter is asked for high reasoning effort (see NOTES.md).
 HIGH_REASONING = {"reasoning": {"effort": "high"}}
@@ -47,7 +48,14 @@ GEMINI_FORECAST_MODELS = (
 # Parser only, never a forecaster. The architect asked for Gemini 2.5 Flash /
 # Flash-Lite, but Google closed both to new projects ("no longer available to
 # new users", 27 Sep 2026), so the lighter 3.x Flash-Lite models parse instead.
-GEMINI_PARSER_MODELS = ("gemini/gemini-3.5-flash-lite", "gemini/gemini-3.1-flash-lite")
+# Step 7 also runs the research planner and dossier writer on these (2 calls
+# per question), so a third model adds capacity; if it shares a quota with
+# another, Google's 429 simply marks it used up.
+GEMINI_PARSER_MODELS = (
+    "gemini/gemini-3.5-flash-lite",
+    "gemini/gemini-3.1-flash-lite",
+    "gemini/gemini-3.1-flash-lite-preview",
+)
 GEMINI_FREE_REQUESTS_PER_DAY = 20
 # Each model's calls are paced under the 5/minute limit.
 GEMINI_FREE_REQUESTS_PER_MINUTE = 4

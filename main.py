@@ -68,6 +68,7 @@ from deadlines import planned_forecast_timeout, quick_forecast_timeout
 from distributions import combine_numeric, median_multiple_choice, pchip_distribution
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
+from research import run_planned_research
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
@@ -485,6 +486,8 @@ class FallBot2026(ForecastBot):
 
         if isinstance(researcher, GeneralLlm):
             research = await researcher.invoke(prompt)
+        elif researcher == "planned-research":
+            research = await self._planned_research(question)
         elif researcher == "asknews/news-summaries":
             research = await self._asknews_with_free_fallback(question, prompt)
         elif (
@@ -510,6 +513,35 @@ class FallBot2026(ForecastBot):
         else:
             research = await self.get_llm("researcher", "llm").invoke(prompt)
         return research
+
+    async def _planned_research(self, question: MetaculusQuestion) -> str:
+        """
+        PLAN.md Step 7 (research.py): planner -> AskNews (max 3 calls) or free
+        news -> dossier -> gap-fill. The planner and dossier writer use the
+        parser model (Flash-Lite on the free key), never the forecasting quota.
+        Logs counts only.
+        """
+        helper = self.get_llm("parser", "llm")
+        result = await run_planned_research(
+            question, dates_line(question), helper.invoke
+        )
+        logger.info(
+            f"Question {question.id_of_post}: articles found: {result.articles} "
+            f"(AskNews {result.asknews_articles} in {result.asknews_calls} call(s), "
+            f"free news {result.free_articles}); {len(result.queries)} queries; "
+            f"dossier {'written' if result.dossier_written else 'not written, using the articles'}"
+            f"{', gap-filled' if result.gap_filled else ''}; "
+            f"{len(result.dossier.split())} words"
+        )
+        self._record_for(question)["research_detail"] = {
+            "queries": result.queries,
+            "asknews_calls": result.asknews_calls,
+            "asknews_articles": result.asknews_articles,
+            "free_articles": result.free_articles,
+            "gap_filled": result.gap_filled,
+            "dossier_written": result.dossier_written,
+        }
+        return result.dossier
 
     # AskNews finding fewer articles than this gets topped up with free news.
     min_asknews_articles = 3
