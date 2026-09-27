@@ -159,6 +159,8 @@ class QuotaLedger:
             self._store.save(self.snapshot())
         except Exception as e:
             logger.warning(f"Quota ledger could not be saved ({type(e).__name__})")
+            # A GitHub Actions annotation, found by the daily health check.
+            print("::warning title=quota-ledger-failed::Quota ledger could not be saved")
 
 
 def make_store(path: str) -> MemoryStore | GitHubFileStore:

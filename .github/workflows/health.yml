@@ -1,0 +1,62 @@
+name: Daily health check
+
+# Runs at 07:00 UK time and fails (red, so GitHub emails Tony) if a question is
+# about to be missed, the bot hasn't run successfully for 3 hours, or Gemini
+# quota is low. See health_check.py. Read-only: forecasts nothing, spends
+# nothing (one AskNews search to see if it still returns 402).
+on:
+  schedule:
+    - cron: "0 6 * * *" # 07:00 UK in summer time (BST)
+    - cron: "0 7 * * *" # 07:00 UK in winter time (GMT)
+  workflow_dispatch:
+    inputs:
+      simulate_miss:
+        description: "Pretend a question is about to be missed (to check the alarm goes red)"
+        type: boolean
+        default: false
+  # On a pull request that changes the health check, run it with a simulated
+  # miss: that run is expected to be red, proving the alarm works.
+  pull_request:
+    paths:
+      - health_check.py
+      - .github/workflows/health.yml
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+jobs:
+  health:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Health check
+        run: |
+          args=()
+          if [ "$EVENT" = "schedule" ]; then args+=(--cron "$CRON"); fi
+          if [ "$SIMULATE_MISS" = "true" ] || [ "$EVENT" = "pull_request" ]; then
+            args+=(--simulate-miss)
+          fi
+          poetry run python health_check.py "${args[@]}"
+        env:
+          EVENT: ${{ github.event_name }}
+          CRON: ${{ github.event.schedule }}
+          SIMULATE_MISS: ${{ inputs.simulate_miss }}
+          GITHUB_TOKEN: ${{ github.token }}
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}

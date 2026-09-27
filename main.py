@@ -3,7 +3,8 @@ import asyncio
 import contextvars
 import logging
 import sys
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import datetime, timezone
 from typing import Literal
 
 import dotenv
@@ -38,6 +39,7 @@ from forecasting_tools import (
     Percentile,
     ConditionalQuestion,
     ConditionalPrediction,
+    ForecastReport,
     PredictionTypes,
     PredictionAffirmed,
     BinaryPrediction,
@@ -52,7 +54,10 @@ from forecasting_tools.data_models.forecast_report import ResearchWithPrediction
 
 from bot_config import GeminiPool, get_lineup
 from forecast_safety import clip_binary, floor_multiple_choice
+from deadlines import planned_forecast_timeout, quick_forecast_timeout
 from free_news import collect_free_news, count_asknews_articles, format_articles
+from llm_throttle import answered_models
+from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
 # Only this logger's messages reach the public Actions log in full; see
@@ -96,6 +101,11 @@ def _http_status_note(error: BaseException) -> str:
         current = current.__cause__ or current.__context__
     return ""
 
+
+# The quick forecast (nothing else finished) tries this many passes through
+# the Gemini models, this far apart.
+QUICK_FORECAST_PASSES = 3
+QUICK_FORECAST_RETRY_WAIT_SECONDS = 30
 
 # The forecaster chain for the forecast running in the current asyncio task.
 _planned_forecaster: contextvars.ContextVar = contextvars.ContextVar(
@@ -187,9 +197,13 @@ class FallBot2026(ForecastBot):
     _structure_output_validation_samples = 2
     # Test switch: make every question fail, to prove a failed run shows red.
     break_on_purpose = False
-    # Forecasts still running this close to a question's close time are
-    # abandoned, and the forecasts already made are submitted.
-    deadline_margin = timedelta(minutes=5)
+    # Test switch: make every planned forecast fail, to prove the quick
+    # forecast still submits one.
+    fail_planned_forecasts = False
+    # Where per-question JSON records go (None = not saved), and the run mode
+    # used in their path. Set in __main__.
+    question_log: QuestionLogWriter | None = None
+    run_mode = "tournament"
     # Free Gemini lineup: plans each question's forecasters within the day's
     # budget. Set in __main__ from the lineup.
     gemini_pool: GeminiPool | None = None
@@ -227,32 +241,83 @@ class FallBot2026(ForecastBot):
         # from the day's Gemini budget (up to 3 different models, at least 1).
         notepad = await self._get_notepad(question)
         notepad.total_research_reports_attempted += 1
+        record = self._record_for(question)
         research = await self.run_research(question)
+        record["research"] = {"fetched_at": utc_now(), "text": research}
         summary_report = await self.summarize_research(question, research)
         forecasters = self.gemini_pool.plan(
             seasonal=self.forecasting_seasonal, only_model=self.only_model
         )
-        if not forecasters:
-            raise RuntimeError(
-                f"Question {question.id_of_post}: no Gemini quota left today"
-            )
         logger.info(
             f"Question {question.id_of_post}: {len(forecasters)} forecast(s) planned "
-            f"({', '.join(f.model for f in forecasters)})"
+            f"({', '.join(f.model for f in forecasters) or 'none: no quota left'})"
         )
 
-        async def forecast_with(forecaster):  # type: ignore[no-untyped-def]
+        async def forecast_with(forecaster, kind: str, timeout: float | None):  # type: ignore[no-untyped-def]
             _planned_forecaster.set(forecaster)
-            return await self._make_prediction(question, research)
+            answered_models.set([])
+            entry = {"kind": kind, "planned_model": forecaster.model, "started_at": utc_now()}
+            record["forecasts"].append(entry)
+            started = time.monotonic()
+            try:
+                if kind == "planned" and self.fail_planned_forecasts:
+                    raise RuntimeError("Deliberate failure (--fail-planned-forecasts)")
+                # ForecastBot's own _make_prediction: the time limit is set here.
+                prediction = await asyncio.wait_for(
+                    ForecastBot._make_prediction(self, question, research), timeout
+                )
+            except BaseException as e:
+                entry.update(status="failed", error=describe_exception(e))
+                if isinstance(e, asyncio.TimeoutError):
+                    logger.warning(
+                        f"Question {question.id_of_post}: a {kind} forecast ran out of time"
+                    )
+                raise
+            finally:
+                entry["seconds"] = round(time.monotonic() - started, 1)
+                entry["answered_models"] = list(answered_models.get() or [])
+            entry.update(
+                status="ok",
+                raw_output=prediction.reasoning,
+                parsed=to_jsonable(prediction.prediction_value),
+            )
+            return prediction
 
+        # The full set must be done 15 minutes before the close; what finished
+        # by then is combined (median).
+        timeout = planned_forecast_timeout(question.close_time)
         valid_predictions, errors, exception_group = (
             await self._gather_results_and_exceptions(
-                [forecast_with(f) for f in forecasters]
+                [forecast_with(f, "planned", timeout) for f in forecasters]
             )
         )
+        # Nothing finished: one quick forecast with whichever model has quota.
+        # Google's free tier is often briefly overloaded, so it gets a few
+        # passes through the models, while time before the close allows.
+        for quick_pass in range(QUICK_FORECAST_PASSES):
+            if valid_predictions:
+                break
+            quick_timeout = quick_forecast_timeout(question.close_time)
+            if quick_timeout == 0 or not self.gemini_pool.any_quota_left():
+                break
+            if quick_pass > 0:
+                await asyncio.sleep(QUICK_FORECAST_RETRY_WAIT_SECONDS)
+            logger.warning(
+                f"Question {question.id_of_post}: no planned forecast finished, "
+                f"making one quick forecast (pass {quick_pass + 1})"
+            )
+            valid_predictions, quick_errors, exception_group = (
+                await self._gather_results_and_exceptions(
+                    [forecast_with(self.gemini_pool.quick_forecaster(), "quick", quick_timeout)]
+                )
+            )
+            errors = errors + quick_errors
         await asyncio.to_thread(self.gemini_pool.ledger.save)
         if len(valid_predictions) == 0:
-            assert exception_group, "Exception group should not be None"
+            if exception_group is None:
+                raise RuntimeError(
+                    f"Question {question.id_of_post}: no forecast could be made"
+                )
             self._reraise_exception_with_prepended_message(
                 exception_group, "Error while running research and predictions"
             )
@@ -263,30 +328,56 @@ class FallBot2026(ForecastBot):
             predictions=valid_predictions,
         )
 
+    def _record_for(self, question: MetaculusQuestion) -> dict:
+        records = self.__dict__.setdefault("_question_records", {})
+        return records.setdefault(
+            id(question),
+            {
+                "question": question_snapshot(question),
+                "mode": self.run_mode,
+                "seasonal": self.forecasting_seasonal,
+                "started_at": utc_now(),
+                "forecasts": [],
+            },
+        )
+
+    async def _run_individual_question(self, question: MetaculusQuestion) -> ForecastReport:
+        started = datetime.now(timezone.utc)
+        record = self._record_for(question)
+        try:
+            report = await super()._run_individual_question(question)
+        except Exception as e:
+            record.update(submitted=False, error=describe_exception(e))
+            await self._save_record(question, record, started)
+            raise
+        record.update(
+            submitted=self.publish_reports_to_metaculus,
+            final_forecast=to_jsonable(report.prediction),
+            minutes=report.minutes_taken,
+            list_price_cost=report.price_estimate,
+        )
+        await self._save_record(question, record, started)
+        return report
+
+    async def _save_record(self, question, record: dict, started: datetime) -> None:  # type: ignore[no-untyped-def]
+        # Saved after submission; a failure here never affects the forecast.
+        self.__dict__.get("_question_records", {}).pop(id(question), None)
+        if self.question_log is None:
+            return
+        record["finished_at"] = utc_now()
+        await asyncio.to_thread(
+            self.question_log.save, record_path(self.run_mode, question, started), record
+        )
+
     async def _make_prediction(
         self, question: MetaculusQuestion, research: str
     ) -> ReasonedPrediction[PredictionTypes]:
-        # E.g. waiting on a free-tier rate limit must not run past the
-        # question's close. Forecasts cut off here count as failed; the
-        # library combines and submits the ones that finished.
-        if question.close_time is None:
-            return await super()._make_prediction(question, research)
-        close_time = question.close_time
-        if close_time.tzinfo is None:
-            close_time = close_time.replace(tzinfo=timezone.utc)
-        seconds_left = (
-            close_time - datetime.now(timezone.utc) - self.deadline_margin
-        ).total_seconds()
-        try:
-            return await asyncio.wait_for(
-                super()._make_prediction(question, research),
-                timeout=max(seconds_left, 30),
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"Question {question.id_of_post}: a forecast was cut off near the close time"
-            )
-            raise
+        # Lineups without the Gemini pool: forecasts not done by the 15-minute
+        # cut-off count as failed; the finished ones are combined.
+        return await asyncio.wait_for(
+            super()._make_prediction(question, research),
+            planned_forecast_timeout(question.close_time),
+        )
 
     ##################################### RESEARCH #####################################
 
@@ -886,6 +977,11 @@ if __name__ == "__main__":
         help="Test mode: forecast only one binary question",
     )
     parser.add_argument(
+        "--fail-planned-forecasts",
+        action="store_true",
+        help="Make every planned forecast fail (to check the quick forecast still submits)",
+    )
+    parser.add_argument(
         "--only-model",
         default=None,
         help="Forecast with only this Gemini model (e.g. gemini/gemini-3.8-flash)",
@@ -930,6 +1026,9 @@ if __name__ == "__main__":
     template_bot.break_on_purpose = args.break_on_purpose
     template_bot.gemini_pool = lineup.gemini_pool
     template_bot.only_model = args.only_model
+    template_bot.fail_planned_forecasts = args.fail_planned_forecasts
+    template_bot.run_mode = run_mode
+    template_bot.question_log = QuestionLogWriter()
 
     # Per-mode tournament URL shown in the summary banner footer.
     TOURNAMENT_URLS = {
@@ -992,6 +1091,8 @@ if __name__ == "__main__":
             template_bot.forecast_questions(test_questions, return_exceptions=True)
         )
 
+    if template_bot.question_log.saved:
+        print(f"Question JSON logs saved to fall26-data: {len(template_bot.question_log.saved)}")
     if lineup.gemini_pool is not None:
         ledger = lineup.gemini_pool.ledger
         ledger.save()

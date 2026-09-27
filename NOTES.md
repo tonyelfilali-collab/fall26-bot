@@ -190,6 +190,36 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36339321531.
 So there is no free search source while AskNews answers 402; the bot forecasts without news.
 (Credit check now has a "grounding" option to re-test this later.)
 
+## Never miss (PLAN.md Step 3, adapted to Plan B)
+
+- **Deadline rule** (`deadlines.py`): the planned forecasts must finish 15 minutes before the
+  question closes. Forecasts still running then are dropped and the finished ones are combined
+  (median). Inside the last 15 minutes, a forecast gets all the time left minus 2 minutes.
+- **Quick forecast:** if no planned forecast finished (errors, overload, time), one quick forecast
+  is made with whichever Gemini forecasting model has quota (most left first, reserve allowed),
+  ending 2 minutes before the close. Because the free tier is often briefly overloaded, it gets
+  up to 3 passes through the models, 30 s apart, while time allows. The question only fails if
+  all of those fail.
+- **Per-question JSON** (`question_log.py`): after submission, one file per question in
+  `fall26-data` at `questions/<mode>/<date>/<post id>_<HHMMSS>.json`: question snapshot, research
+  text + time, each forecast (planned or quick, the models that answered, raw output, parsed
+  value, seconds, error), final forecast, list-price cost. A save failure never blocks a forecast;
+  it logs a warning and a GitHub annotation (`question-log-failed`; `quota-ledger-failed` for the
+  ledger).
+- **healthchecks.io:** the tournament workflow pings `HEALTHCHECK_URL` at the end of every run
+  (with `/fail` if the run failed). No ping when `BOT_ENABLED` is off.
+- **Daily health check** (`health.yml` + `health_check.py`) at 07:00 UK time. Two UTC triggers
+  (06:00 for BST, 07:00 for GMT); the script runs only for the right one. **Red** if an open
+  seasonal/MiniBench question closes within 60 min without our forecast, if there has been no
+  successful tournament run for 3 hours, if any Gemini model (forecasters and parsers) has under
+  20% of its daily quota left, or if a check can't run. **Warning** if AskNews returns 402, or if
+  any tournament run in the last 24 h had a JSON log or ledger save failure. Manual option
+  "simulate miss". On pull requests that change the health check it runs with a simulated miss,
+  so that run is **expected to be red**.
+- Caveat: 07:00 UK is 23:00 Pacific, the end of Google's quota day, so the quota check will
+  often be red on busy days.
+- Test Bot has a "fail planned forecasts" option to prove the quick forecast.
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:

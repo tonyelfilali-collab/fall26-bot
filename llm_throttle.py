@@ -10,6 +10,7 @@ Calling free Gemini models without going over their limits.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
 
@@ -31,6 +32,13 @@ _TRY_BACKUP_ERRORS = (
     litellm.RateLimitError,
     litellm.Timeout,
     litellm.APIConnectionError,
+)
+
+
+# The models that answered in the current asyncio task (one forecast: the
+# forecaster, then the parser). main.py sets a fresh list per forecast.
+answered_models: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "answered_models", default=None
 )
 
 
@@ -109,6 +117,9 @@ class ThrottledLlm(GeneralLlm):
                 self._ledger.mark_used_up(self.model)
             return await self._hand_over(prompt, type(e).__name__)
         logger.info(f"{self.model}: answered")
+        answered = answered_models.get()
+        if answered is not None:
+            answered.append(self.model)
         return response
 
     async def _hand_over(self, prompt, reason: str):  # type: ignore[no-untyped-def]

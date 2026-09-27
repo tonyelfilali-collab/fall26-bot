@@ -66,3 +66,17 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Writes the Gemini daily quota ledger to the private fall26-data repo.
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+      # Tell healthchecks.io the bot is alive (/fail if this run failed). If
+      # no ping arrives for a while, healthchecks.io emails Tony.
+      - name: Ping healthchecks.io
+        if: always() && steps.gate.outputs.enabled == 'true'
+        env:
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ -z "$HEALTHCHECK_URL" ]; then echo "HEALTHCHECK_URL not set"; exit 0; fi
+          suffix=""
+          if [ "$JOB_STATUS" != "success" ]; then suffix="/fail"; fi
+          curl -fsS -m 10 --retry 3 -o /dev/null "${HEALTHCHECK_URL%/}$suffix" \
+            && echo "Pinged healthchecks.io${suffix:+ (fail)}" \
+            || echo "::warning title=healthcheck-ping-failed::Could not ping healthchecks.io"
