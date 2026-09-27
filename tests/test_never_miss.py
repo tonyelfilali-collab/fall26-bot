@@ -89,6 +89,27 @@ def test_quick_forecast_when_every_planned_forecast_fails(dummy, monkeypatch):  
     assert kinds.count(("planned", "failed")) == 3 and ("quick", "ok") in kinds
 
 
+def test_quick_forecast_retries_after_overload(dummy, monkeypatch):  # noqa: F811
+    pool = make_pool()
+    bot = _bot(pool, None)
+    bot.fail_planned_forecasts = True
+    models = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash"]
+    for m in models:
+        dummy.behaviour[m] = "overloaded"
+
+    async def wait_then_recover(seconds):
+        for m in models:
+            dummy.behaviour[m] = "ok"
+
+    monkeypatch.setattr(main.asyncio, "sleep", wait_then_recover)
+    monkeypatch.setattr(main.FallBot2026, "_binary_prompt_to_forecast", lambda self, q, p: _answer(self, 0.7))
+    [report] = asyncio.run(bot.forecast_questions([_question()], return_exceptions=True))
+    assert not isinstance(report, BaseException), report
+    assert report.prediction == pytest.approx(0.7)
+    [(_, record)] = bot.question_log.records
+    assert [f["status"] for f in record["forecasts"] if f["kind"] == "quick"] == ["failed", "ok"]
+
+
 def test_slow_forecasts_are_cut_off_and_the_finished_ones_submitted(dummy, monkeypatch):  # noqa: F811
     pool = make_pool()
     bot = _bot(pool, None)

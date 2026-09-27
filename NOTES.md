@@ -197,7 +197,9 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   (median). Inside the last 15 minutes, a forecast gets all the time left minus 2 minutes.
 - **Quick forecast:** if no planned forecast finished (errors, overload, time), one quick forecast
   is made with whichever Gemini forecasting model has quota (most left first, reserve allowed),
-  ending 2 minutes before the close. The question only fails if that fails too.
+  ending 2 minutes before the close. Because the free tier is often briefly overloaded, it gets
+  up to 3 passes through the models, 30 s apart, while time allows. The question only fails if
+  all of those fail.
 - **Per-question JSON** (`question_log.py`): after submission, one file per question in
   `fall26-data` at `questions/<mode>/<date>/<post id>_<HHMMSS>.json`: question snapshot, research
   text + time, each forecast (planned or quick, the models that answered, raw output, parsed

@@ -204,6 +204,9 @@ class GeminiPool:
             for index, model in enumerate(chosen)
         ]
 
+    def any_quota_left(self) -> bool:
+        return any(self.ledger.total_left(m) > 0 for m in GEMINI_FORECAST_MODELS)
+
     def quick_forecaster(self) -> ThrottledLlm:
         """
         For the one quick forecast when no planned forecast finished: every

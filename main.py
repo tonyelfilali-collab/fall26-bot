@@ -102,6 +102,11 @@ def _http_status_note(error: BaseException) -> str:
     return ""
 
 
+# The quick forecast (nothing else finished) tries this many passes through
+# the Gemini models, this far apart.
+QUICK_FORECAST_PASSES = 3
+QUICK_FORECAST_RETRY_WAIT_SECONDS = 30
+
 # The forecaster chain for the forecast running in the current asyncio task.
 _planned_forecaster: contextvars.ContextVar = contextvars.ContextVar(
     "planned_forecaster", default=None
@@ -286,20 +291,27 @@ class FallBot2026(ForecastBot):
                 [forecast_with(f, "planned", timeout) for f in forecasters]
             )
         )
-        if not valid_predictions:
-            # Nothing finished: one quick forecast with whichever model has quota.
+        # Nothing finished: one quick forecast with whichever model has quota.
+        # Google's free tier is often briefly overloaded, so it gets a few
+        # passes through the models, while time before the close allows.
+        for quick_pass in range(QUICK_FORECAST_PASSES):
+            if valid_predictions:
+                break
             quick_timeout = quick_forecast_timeout(question.close_time)
-            if quick_timeout != 0:
-                logger.warning(
-                    f"Question {question.id_of_post}: no planned forecast finished, "
-                    "making one quick forecast"
+            if quick_timeout == 0 or not self.gemini_pool.any_quota_left():
+                break
+            if quick_pass > 0:
+                await asyncio.sleep(QUICK_FORECAST_RETRY_WAIT_SECONDS)
+            logger.warning(
+                f"Question {question.id_of_post}: no planned forecast finished, "
+                f"making one quick forecast (pass {quick_pass + 1})"
+            )
+            valid_predictions, quick_errors, exception_group = (
+                await self._gather_results_and_exceptions(
+                    [forecast_with(self.gemini_pool.quick_forecaster(), "quick", quick_timeout)]
                 )
-                valid_predictions, quick_errors, exception_group = (
-                    await self._gather_results_and_exceptions(
-                        [forecast_with(self.gemini_pool.quick_forecaster(), "quick", quick_timeout)]
-                    )
-                )
-                errors = errors + quick_errors
+            )
+            errors = errors + quick_errors
         await asyncio.to_thread(self.gemini_pool.ledger.save)
         if len(valid_predictions) == 0:
             if exception_group is None:
