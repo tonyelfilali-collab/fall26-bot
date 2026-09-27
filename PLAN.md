@@ -38,7 +38,7 @@ Version 1.1, 27 Sep 2026. Repo: https://github.com/tonyelfilali-collab/fall26-bo
 3. **The bot runs only on GitHub Actions.** The code repo is public; the data repo is private.
 4. **One small pull request per task.** Claude Code merges it only when checks are green and the architect has said "merge". Notes-only changes (NOTES.md, the progress log) may be merged without waiting.
 5. **Every change that affects forecasts is tested before it goes live** (see section 6).
-6. **A missed question scores 0.** Reliability always comes before cleverness.
+6. **A missed question scores 0, and a pure guess scores below 0 on average.** Reliability always comes before cleverness. Never submit a pure guess (50% binary, equal odds, flat numeric) on a real question. With at least one real model forecast, submit it (the median of what's finished). With none, leave the question for the next run and keep retrying until it closes. Only if nothing works by the close is it skipped and logged (health.yml flags it).
 
 ---
 
@@ -99,7 +99,7 @@ Opus 5.5 and Fable 5.1 are too new to appear yet.
    - Market prices are kept **out** of the dossier.
 4. **Forecast.** Several models from different AI families each forecast independently, at high reasoning effort.
 5. **Combine and adjust** in a fixed order (below).
-6. **Check.** The forecast must pass the platform rules and sanity checks. If it fails, submit a safe fallback forecast. Never skip a question.
+6. **Check.** The forecast must pass the platform rules and sanity checks. A forecast that fails them is dropped, never replaced by a guess. If at least one real forecast passes, submit the median of those. If none does, leave the question for the next run (every 10 minutes) until it closes; if nothing works by then it's skipped and health.yml flags it.
 7. **Submit** the forecast with a private comment, as soon as that question is ready.
 8. **Record.** Save everything to the private data repo and ping the "bot is alive" monitor.
 
@@ -435,3 +435,4 @@ Step 11 (Tuning). Using resolved questions in fall26-data, fit the stretch facto
 | 27 Sep 2026 (night) | PR #10 merged (interim limits: binary 3%–97%, multiple choice 1% floor; Search grounding not available on the free key). PR #12 merged: free news fallback. When AskNews fails (402) or finds <3 articles, Google News RSS + GDELT supply up to 10 dated articles (last 60 days, ≤2,000 words). Test Bot: "articles found: 10". Log shows counts only. | AskNews reply; watch live runs; Step 2 when the credit key arrives |
 | 27 Sep 2026 (night, later) | Found that GitHub never runs scheduled workflows in a fork: the tournament schedule had never fired. Tony detached fall26-bot from the Metaculus fork network (architect approved); secrets and `BOT_ENABLED` survived. Until the schedule is proven, Claude Code starts the tournament workflow by hand once an hour (first 18:30 UTC). | Confirm the first scheduled run; then stop the hourly manual runs |
 | 27 Sep 2026 (night) | Step 3 (Never miss) merged, PR #15: 15-minute cut-off with median of finished forecasts; quick forecast (up to 3 passes) if none finished; one JSON file per question in fall26-data; healthchecks.io ping each tournament run; daily health.yml at 07:00 UK. Proofs: health red on a simulated miss; forced failure still submitted; JSON files present; 67 unit tests green. AskNews answered again (16 articles) in the last test. Scheduled runs still not seen; hourly manual runs continue. | Confirm first scheduled run; then stop hourly runs |
+| 27 Sep 2026 (late night) | cron-job.org starts the tournament workflow every 10 min (runs 19:52, 20:02, 20:12 UTC confirmed); hourly manual runs stopped. GitHub's own schedule never fired after detaching, but is kept. Step 4 (Safety checks) merged, PR #18: binary 5-step order (stretch k=1.0 off, clip 2%–98%), MC 1% floor, platform CDF rules, reversed percentiles fixed, unit-error re-parse, dates in every prompt, re-check still open before submitting. Architect decisions in the same PR: success-only Gemini quota counting (today's ledger reset to 3.6 Flash only); never a pure guess (rule 6 rewritten); Test Bot on free OpenRouter models only. Test Bot green on all 4 types; 101 unit tests. PR #17 (quota check = warning) waiting for approval. | Architect: PR #17; watch tonight's first seasonal questions (00:00 UTC) |

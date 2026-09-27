@@ -1,6 +1,9 @@
 """
 Daily health check (health.yml, 07:00 UK time). Fails the run (red, so GitHub
 emails Tony) if:
+- a seasonal or MiniBench question closed in the last 24 hours without our
+  forecast (missed: the bot never guesses, so a question with no real model
+  forecast by its close is skipped);
 - an open seasonal or MiniBench question closes within 60 minutes without our
   forecast;
 - there has been no successful tournament run for 3 hours.
@@ -76,6 +79,18 @@ def check_open_questions(questions_by_tournament: dict, now: datetime, report: R
         report.red += missing
     else:
         report.ok.append(f"No open question closes within 60 minutes without our forecast ({checked} open)")
+
+
+def check_missed_questions(missed_by_tournament: dict, report: Report) -> None:
+    missed = [
+        f"{tournament} question {q.id_of_post} closed without our forecast (missed)"
+        for tournament, questions in missed_by_tournament.items()
+        for q in questions
+    ]
+    if missed:
+        report.red += missed
+    else:
+        report.ok.append("No question closed without our forecast in the last 24 hours")
 
 
 def check_recent_success(last_success: datetime | None, now: datetime, report: Report) -> None:
@@ -167,6 +182,28 @@ def open_questions() -> dict:
     }
 
 
+def missed_questions(since: datetime) -> dict:
+    """Tournament questions that closed since `since` without our forecast."""
+    from forecasting_tools import ApiFilter, MetaculusClient
+
+    from main import FALL_2026_MINIBENCH_ID, FALL_2026_TOURNAMENT_ID
+
+    client = MetaculusClient()
+    missed = {}
+    for label, tournament in (("seasonal", FALL_2026_TOURNAMENT_ID), ("MiniBench", FALL_2026_MINIBENCH_ID)):
+        api_filter = ApiFilter(
+            allowed_tournaments=[tournament],
+            allowed_statuses=["closed", "resolved"],
+            close_time_gt=since,
+            is_previously_forecasted_by_user=False,
+            group_question_mode="unpack_subquestions",
+        )
+        missed[label] = asyncio.run(
+            client.get_questions_matching_filter(api_filter, error_if_question_target_missed=False)
+        )
+    return missed
+
+
 def asknews_status() -> int | None:
     from asknews_sdk import AsyncAskNewsSDK
 
@@ -194,6 +231,7 @@ def run(simulate_miss: bool) -> Report:
     now = datetime.now(timezone.utc)
     report = Report()
     checks = [
+        ("missed questions", lambda: check_missed_questions(missed_questions(now - timedelta(hours=24)), report)),
         ("open questions", lambda: check_open_questions(open_questions(), now, report)),
         ("recent runs", lambda: check_recent_success(last_successful_tournament_run(), now, report)),
         (
