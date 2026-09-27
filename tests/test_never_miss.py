@@ -175,14 +175,15 @@ def test_health_red_without_a_successful_run_for_3_hours():
     assert not ok.red
 
 
-def test_health_red_when_gemini_quota_is_low():
+def test_health_warns_but_is_not_red_when_gemini_quota_is_low():
     report = health_check.Report()
     health_check.check_gemini_quota({"day": "2026-09-28", "used": {"gemini/gemini-3.8-flash": 17}}, "2026-09-28", report)
-    assert report.red and "3.8-flash 3/20" in report.red[0]
+    assert not report.red
+    assert report.warnings and "3.8-flash 3/20" in report.warnings[0]
     fresh = health_check.Report()
     # Yesterday's counts don't count today.
     health_check.check_gemini_quota({"day": "2026-09-27", "used": {"gemini/gemini-3.8-flash": 20}}, "2026-09-28", fresh)
-    assert not fresh.red
+    assert not fresh.red and not fresh.warnings
 
 
 def test_health_asknews_402_is_a_warning_not_red():
