@@ -52,6 +52,7 @@ from forecasting_tools.data_models.forecast_report import ResearchWithPrediction
 
 from bot_config import GeminiPool, get_lineup
 from forecast_safety import clip_binary, floor_multiple_choice
+from free_news import collect_free_news, count_asknews_articles, format_articles
 
 dotenv.load_dotenv()
 # Only this logger's messages reach the public Actions log in full; see
@@ -315,9 +316,10 @@ class FallBot2026(ForecastBot):
 
         if isinstance(researcher, GeneralLlm):
             research = await researcher.invoke(prompt)
+        elif researcher == "asknews/news-summaries":
+            research = await self._asknews_with_free_fallback(question, prompt)
         elif (
-            researcher == "asknews/news-summaries"
-            or researcher == "asknews/deep-research/low-depth"
+            researcher == "asknews/deep-research/low-depth"
             or researcher == "asknews/deep-research/medium-depth"
             or researcher == "asknews/deep-research/high-depth"
         ):
@@ -339,6 +341,48 @@ class FallBot2026(ForecastBot):
         else:
             research = await self.get_llm("researcher", "llm").invoke(prompt)
         return research
+
+    # AskNews finding fewer articles than this gets topped up with free news.
+    min_asknews_articles = 3
+
+    async def _asknews_with_free_fallback(
+        self, question: MetaculusQuestion, prompt: str
+    ) -> str:
+        """
+        AskNews first. If it fails (e.g. 402) or finds fewer than 3 articles,
+        add up to 10 recent articles from free sources (Google News, GDELT).
+        Logs only the article counts, never the text.
+        """
+        asknews_research = ""
+        try:
+            asknews_research = await AskNewsSearcher().call_preconfigured_version(
+                "asknews/news-summaries", prompt
+            )
+        except Exception as e:
+            logger.warning(
+                f"Question {question.id_of_post}: AskNews failed{_http_status_note(e)}, "
+                "using free news sources"
+            )
+        asknews_count = count_asknews_articles(asknews_research)
+        free_articles = []
+        if asknews_count < self.min_asknews_articles:
+            free_articles = await asyncio.to_thread(
+                collect_free_news, question.question_text
+            )
+        logger.info(
+            f"Question {question.id_of_post}: articles found: "
+            f"{asknews_count + len(free_articles)} "
+            f"(AskNews {asknews_count}, free news {len(free_articles)})"
+        )
+        parts = [
+            part
+            for part in (
+                asknews_research if asknews_count else "",
+                format_articles(free_articles),
+            )
+            if part
+        ]
+        return "\n\n".join(parts) or "No recent news articles were found."
 
     @staticmethod
     def _get_research_prompt(
