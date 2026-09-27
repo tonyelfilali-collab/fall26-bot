@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import warnings
 from typing import Any, Sequence
@@ -147,3 +148,52 @@ def print_run_summary_banner(
 
     print(banner)
     print()
+
+
+_POST_URL_PATTERN = re.compile(r"metaculus\.com/questions/(\d+)")
+
+
+def write_cost_summary(
+    forecast_reports: Sequence[Any], lineup_name: str
+) -> None:
+    """
+    Cost per question as a markdown table in the GitHub Actions run summary
+    ($GITHUB_STEP_SUMMARY), or printed when run elsewhere. Shows only the
+    question id, type, status and cost, never forecasts or reasoning, since
+    the repo and its run pages are public.
+    """
+    from forecasting_tools import ForecastReport
+
+    lines = [
+        f"## Cost per question (lineup: {lineup_name})",
+        "",
+        "| Question | Type | Status | Cost (USD) |",
+        "|---|---|---|---|",
+    ]
+    total_cost = 0.0
+    for report in forecast_reports:
+        if isinstance(report, ForecastReport):
+            question = report.question
+            cost = report.price_estimate or 0.0
+            total_cost += cost
+            status = "ok" if not report.errors else f"ok, {len(report.errors)} minor error(s)"
+            lines.append(
+                f"| [{question.id_of_post}]({question.page_url}) "
+                f"| {question.question_type} | {status} | {cost:.4f} |"
+            )
+        else:
+            match = _POST_URL_PATTERN.search(str(report))
+            post = match.group(1) if match else "?"
+            lines.append(
+                f"| {post} | ? | failed: {type(report).__name__} | ? |"
+            )
+    if not forecast_reports:
+        lines.append("| - | - | no new questions | 0 |")
+    lines += ["", f"**Total cost: ${total_cost:.4f}**", ""]
+    summary = "\n".join(lines)
+
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(summary + "\n")
+    print(summary)
