@@ -16,16 +16,20 @@ concurrency:
 
 # Scores how the bot's resolved forecasts turned out. Read-only: it makes no
 # forecasts, spends nothing on LLMs, and publishes nothing.
-# The weekly run is off by default: set the repository variable REVIEW_BOT_ENABLED to
-# true to turn it on. Running it by hand always works.
+# The weekly run is off by default: it needs both repository variables
+# REVIEW_BOT_ENABLED and BOT_ENABLED set to true. Running it by hand always works.
+permissions:
+  contents: read
+
 jobs:
   review_job:
-    if: vars.REVIEW_BOT_ENABLED == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    if: (vars.REVIEW_BOT_ENABLED == 'true' && vars.BOT_ENABLED == 'true') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # bot-review pins forecasting-tools <0.3, so it gets its own isolated
@@ -41,7 +45,7 @@ jobs:
       - name: Show the summary in the run page
         run: cat review.md >> $GITHUB_STEP_SUMMARY
       - name: Keep the review
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: review
           path: |

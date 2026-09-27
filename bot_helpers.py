@@ -12,8 +12,13 @@ import logging
 import os
 import re
 import sys
+import traceback
 import warnings
 from typing import Any, Sequence
+
+# The repo and its Actions logs are public. Only this logger's messages are
+# shown in full; the bot's own code logs question ids, status and cost only.
+PUBLIC_LOGGER_NAME = "fall26"
 
 
 # Placeholder values shipped in .env.template. If a real env var still equals
@@ -141,10 +146,7 @@ def print_run_summary_banner(
     if exceptions:
         print()
         for exc in exceptions:
-            msg = str(exc)
-            if len(msg) > 200:
-                msg = msg[:200] + "..."
-            print(f"  ❌ {type(exc).__name__}: {msg}")
+            print(f"  ❌ question {question_id_from_exception(exc)}: {describe_exception(exc)}")
 
     print(banner)
     print()
@@ -182,10 +184,9 @@ def write_cost_summary(
                 f"| {question.question_type} | {status} | {cost:.4f} |"
             )
         else:
-            match = _POST_URL_PATTERN.search(str(report))
-            post = match.group(1) if match else "?"
             lines.append(
-                f"| {post} | ? | failed: {type(report).__name__} | ? |"
+                f"| {question_id_from_exception(report)} | ? "
+                f"| failed: {type(report).__name__} | ? |"
             )
     if not forecast_reports:
         lines.append("| - | - | no new questions | 0 |")
@@ -197,3 +198,102 @@ def write_cost_summary(
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(summary + "\n")
     print(summary)
+
+
+def describe_exception(exc: BaseException) -> str:
+    """
+    Error types and where they were raised, without the error messages:
+    library error messages can quote the model's reasoning or forecast.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(parts) < 6:
+        seen.add(id(current))
+        part = type(current).__name__
+        if current.__traceback__ is not None:
+            frame = traceback.extract_tb(current.__traceback__)[-1]
+            part += f" at {os.path.basename(frame.filename)}:{frame.lineno}"
+        if isinstance(current, BaseExceptionGroup):
+            part += " [" + "; ".join(describe_exception(e) for e in current.exceptions[:3]) + "]"
+        if not parts or parts[-1] != part:
+            parts.append(part)
+        current = current.__cause__ or current.__context__
+    return " <- ".join(parts)
+
+
+def question_id_from_exception(exc: BaseException) -> str:
+    match = _POST_URL_PATTERN.search(str(exc))
+    return match.group(1) if match else "?"
+
+
+class _PublicLogFilter(logging.Filter):
+    """Hide the text of every log record not written by our own code."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == PUBLIC_LOGGER_NAME or record.name.startswith(
+            PUBLIC_LOGGER_NAME + "."
+        ):
+            return True
+        if record.levelno < logging.WARNING:
+            return False
+        detail = ""
+        if record.exc_info and record.exc_info[1] is not None:
+            detail = f" ({describe_exception(record.exc_info[1])})"
+        record.msg = f"[message hidden: public repo]{detail}"
+        record.args = None
+        record.exc_info = None
+        record.exc_text = None
+        return True
+
+
+def configure_public_logging() -> None:
+    """
+    Logging for a public repo: our own INFO messages (ids, status, cost), and
+    only the level and logger name of warnings/errors from libraries. Python
+    warnings and uncaught errors go through the same filter.
+    """
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    handler.addFilter(_PublicLogFilter())
+    root = logging.getLogger()
+    root.handlers = [handler]
+    root.setLevel(logging.INFO)
+    logging.getLogger(PUBLIC_LOGGER_NAME).setLevel(logging.INFO)
+    # LiteLLM has its own handlers; route it through ours instead.
+    for name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
+        litellm_logger = logging.getLogger(name)
+        litellm_logger.handlers = []
+        litellm_logger.propagate = True
+    # e.g. pydantic serializer warnings, which can quote model output.
+    logging.captureWarnings(True)
+
+    def _excepthook(exc_type, exc, tb):  # type: ignore[no-untyped-def]
+        print(f"Unhandled error: {describe_exception(exc)}", file=sys.stderr)
+        print("".join(traceback.format_tb(tb)), file=sys.stderr)
+
+    sys.excepthook = _excepthook
+
+
+def log_question_statuses(forecast_reports: Sequence[Any]) -> int:
+    """Log one line per question (id, status, cost). Returns the number of failures."""
+    from forecasting_tools import ForecastReport
+
+    logger = logging.getLogger(PUBLIC_LOGGER_NAME)
+    failures = 0
+    for report in forecast_reports:
+        if isinstance(report, ForecastReport):
+            minor = f", {len(report.errors)} minor error(s)" if report.errors else ""
+            logger.info(
+                f"Question {report.question.id_of_post}: submitted{minor}, "
+                f"cost ${report.price_estimate or 0:.4f}"
+            )
+        else:
+            failures += 1
+            logger.error(
+                f"Question {question_id_from_exception(report)}: FAILED, "
+                f"{describe_exception(report)}"
+            )
+    return failures

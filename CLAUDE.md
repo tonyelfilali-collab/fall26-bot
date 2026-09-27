@@ -24,4 +24,9 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
 - Secrets: `METACULUS_TOKEN`, `OPENROUTER_API_KEY`, `ASKNEWS_API_KEY` (AskNews is one API key,
   not a client ID + secret).
 - All model choices are in `bot_config.py`.
+- Master switch: repository variable `BOT_ENABLED`. Real-question workflows exit at once unless
+  it is `true`. Emergency stop = set it to `false`.
+- Logs are public: never log research, reasoning or forecast values. Use the `fall26` logger
+  (`PUBLIC_LOGGER_NAME`) for our own messages (question id, status, cost only); every other
+  logger's text is hidden by `bot_helpers.configure_public_logging`.
 - See NOTES.md for library version, secret names, aggregation and model IDs.

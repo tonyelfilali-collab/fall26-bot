@@ -1,0 +1,41 @@
+name: Credit check
+
+# Manual only. Asks OpenRouter how much credit the OPENROUTER_API_KEY has.
+# Free: it reads the key's info and runs no model.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  credit_check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Ask OpenRouter for this key's limit and usage
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -uo pipefail
+          status=$(curl -sS -o key.json -w '%{http_code}' \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            https://openrouter.ai/api/v1/key)
+          if [ "$status" != "200" ]; then
+            echo "OpenRouter answered HTTP $status"
+            exit 1
+          fi
+          # Only these numbers are printed: never the key or its label.
+          jq -r '.data |
+            "| Limit (USD) | \(if .limit == null then "no limit" else .limit end) |",
+            "| Used (USD) | \(.usage) |",
+            "| Remaining (USD) | \(if .limit_remaining == null then "no limit" else .limit_remaining end) |",
+            "| Free tier key | \(.is_free_tier) |"' key.json > table.md
+          rm key.json
+          {
+            echo "## OpenRouter credit"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            cat table.md
+          } | tee -a "$GITHUB_STEP_SUMMARY"

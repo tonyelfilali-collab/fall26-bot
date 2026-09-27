@@ -3,43 +3,60 @@ name: Forecast on new AI tournament questions
 on:
   workflow_dispatch:
   schedule:
-    - cron: "7,27,47 * * * *" # every 20 min, offset off the hour. Make sure to skip already-forecasted questions!
+    # Two schedules, every 10 minutes between them, offset off the hour.
+    # Already-forecasted questions are skipped.
+    - cron: "7,27,47 * * * *"
+    - cron: "17,37,57 * * * *"
 
-# Add concurrency group to prevent parallel runs
+# One group shared by every workflow that forecasts, so they never run at
+# the same time. A new run waits for the current one instead of cancelling it.
 concurrency:
-  group: ${{ github.workflow }}
+  group: forecast-bot
   cancel-in-progress: false
 
+permissions:
+  contents: read
 
-# Daily job to run the simple forecast bot
 jobs:
   forecast_job:
-    runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
-    steps: # sets up the steps that will be run in order
-      # setup repository with all necessary dependencies - keep as is
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # Master switch: the repository variable BOT_ENABLED must be 'true'.
+      # Emergency stop = set it to anything else.
+      - name: Check BOT_ENABLED
+        id: gate
+        env:
+          BOT_ENABLED: ${{ vars.BOT_ENABLED }}
+        run: |
+          if [ "$BOT_ENABLED" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "BOT_ENABLED is not true, exiting"
+            echo "BOT_ENABLED is not true, exiting" >> "$GITHUB_STEP_SUMMARY"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Check out repository
-        uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        if: steps.gate.outputs.enabled == 'true'
         with:
           python-version: "3.11"
       - name: Install poetry
+        if: steps.gate.outputs.enabled == 'true'
         uses: snok/install-poetry@v1
         with:
           virtualenvs-create: true
           virtualenvs-in-project: true
           installer-parallel: true
-      # Adding the below will make the workflow faster, but will mean you don't automatically get updates from forecasting-tools and other packages
-      # - name: Load cached venv
-      #   id: cached-poetry-dependencies
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: .venv
-      #     key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
       - name: Install dependencies
+        if: steps.gate.outputs.enabled == 'true'
         run: poetry install --no-interaction --no-root
       - name: Run bot
+        if: steps.gate.outputs.enabled == 'true'
         run: |
-          poetry run python main.py
+          poetry run python main.py --mode tournament
         env:
           # Only the secrets the bot uses (see NOTES.md). No paid services.
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
