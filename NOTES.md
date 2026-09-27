@@ -130,6 +130,39 @@ All model choices are in `bot_config.py`:
    in forecasting-tools 0.3.1. It waits between the two calls, because the free tier allows 1 call
    per 10 s. No retries, so 2 is the maximum (limit: 3).
 
+## Workflows and what triggers them (Task 4)
+
+All run on `ubuntu-24.04` (pinned; `ubuntu-latest` moves to Ubuntu 26 on 19 Oct 2026) with
+`actions/checkout@v7` and `actions/setup-python@v7` (Node 24).
+
+| Workflow | File | Triggers | Can spend / forecast real questions? |
+|---|---|---|---|
+| Forecast on new AI tournament questions | `run_bot_on_tournament.yaml` | schedule `7,27,47 * * * *` and `17,37,57 * * * *`; manual | Yes, but only if `BOT_ENABLED` is `true`; otherwise logs "BOT_ENABLED is not true, exiting" and stops before checkout |
+| Forecast on Metaculus Cup | `run_bot_on_metaculus_cup.yaml` | manual only | Same `BOT_ENABLED` gate |
+| Test Bot | `test_bot.yaml` | manual only (option: break on purpose) | bot-testing-area only; free lineup costs $0 |
+| Review recent forecasts | `review_bot.yaml` | schedule Mondays 06:00 UTC; manual | Never spends or forecasts (read-only). The schedule also needs `REVIEW_BOT_ENABLED` and `BOT_ENABLED` both `true` |
+| Credit check | `credit_check.yaml` | manual only | No: reads the key's limit/usage, runs no model |
+| Tournament info | `tournament_info.yaml` | manual only | No: read-only Metaculus API |
+| Keepalive | `keepalive.yaml` | schedule Mondays 05:00 UTC; manual | No: one empty commit to `main` so schedules never pause |
+
+Extra safety in code: while `bot_config.USE_CREDIT_KEY_LINEUP` is `False`, `main.py` refuses to run
+any mode except `test_questions`, and the free lineup rejects any non-`:free` model.
+
+The three forecasting workflows share one concurrency group (`forecast-bot`) and have a
+60-minute timeout. GitHub keeps at most one run waiting in a group: if a second run queues up
+behind it, the older waiting run is cancelled (the running one never is).
+
+## Logs (Task 4)
+
+- Our code logs only question id, status and cost (`fall26` logger).
+- Every library log line at WARNING or above is shown as `[message hidden: public repo]` with the
+  logger name, plus the error types if there was an exception. Library INFO/DEBUG lines are dropped.
+- Errors show types and file:line (e.g. `RuntimeError at main.py:171`), never messages, because
+  library error messages can quote model output.
+- Trade-off: when something breaks, the public log says where but not why. Full details will go
+  to the private `fall26-data` repo (PLAN.md Step 3).
+- A run fails (red) if any question failed (`sys.exit(1)`), after writing the cost table.
+
 ## Other things found
 
 - The fork has no workflows registered and no secrets yet. Forked repos keep Actions workflows

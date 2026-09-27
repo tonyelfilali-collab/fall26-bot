@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import sys
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -8,7 +9,11 @@ import dotenv
 
 # Runtime helpers (env validation, banners, dependency-warning suppression).
 from bot_helpers import (
+    PUBLIC_LOGGER_NAME,
     check_environment,
+    configure_public_logging,
+    describe_exception,
+    log_question_statuses,
     print_run_summary_banner,
     print_startup_banner,
     silence_noisy_dependencies,
@@ -45,7 +50,9 @@ from forecasting_tools import (
 from bot_config import get_lineup
 
 dotenv.load_dotenv()
-logger = logging.getLogger(__name__)
+# Only this logger's messages reach the public Actions log in full; see
+# bot_helpers.configure_public_logging.
+logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 
 
 # Fall 2026 targets. Set explicitly rather than via the forecasting-tools
@@ -154,10 +161,14 @@ class FallBot2026(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
+    # Test switch: make every question fail, to prove a failed run shows red.
+    break_on_purpose = False
 
     ##################################### RESEARCH #####################################
 
     async def run_research(self, question: MetaculusQuestion) -> str:
+        if self.break_on_purpose:
+            raise RuntimeError("Deliberate failure (--break-on-purpose)")
         async with self._concurrency_limiter:
             research = ""
             researcher = self.get_llm("researcher")
@@ -189,7 +200,7 @@ class FallBot2026(ForecastBot):
                 research = ""
             else:
                 research = await self.get_llm("researcher", "llm").invoke(prompt)
-            logger.info(f"Found Research for URL {question.page_url}:\n{research}")
+            logger.info(f"Question {question.id_of_post}: research done")
             return research
 
     @staticmethod
@@ -267,7 +278,6 @@ class FallBot2026(ForecastBot):
         prompt: str,
     ) -> ReasonedPrediction[float]:
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         binary_prediction: BinaryPrediction = await structure_output(
             reasoning,
             BinaryPrediction,
@@ -276,9 +286,7 @@ class FallBot2026(ForecastBot):
         )
         decimal_pred = max(0.01, min(0.99, binary_prediction.prediction_in_decimal))
 
-        logger.info(
-            f"Forecasted URL {question.page_url} with prediction: {decimal_pred}."
-        )
+        logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning)
 
     ##################################### MULTIPLE CHOICE QUESTIONS #####################################
@@ -341,7 +349,6 @@ class FallBot2026(ForecastBot):
             """
         )
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         predicted_option_list: PredictedOptionList = await structure_output(
             text_to_structure=reasoning,
             output_type=PredictedOptionList,
@@ -350,9 +357,7 @@ class FallBot2026(ForecastBot):
             additional_instructions=parsing_instructions,
         )
 
-        logger.info(
-            f"Forecasted URL {question.page_url} with prediction: {predicted_option_list}."
-        )
+        logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(
             prediction_value=predicted_option_list, reasoning=reasoning
         )
@@ -424,7 +429,6 @@ class FallBot2026(ForecastBot):
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
             The text given to you is trying to give a forecast distribution for a numeric question.
@@ -446,9 +450,7 @@ class FallBot2026(ForecastBot):
             num_validation_samples=self._structure_output_validation_samples,
         )
         prediction = NumericDistribution.from_question(percentile_list, question)
-        logger.info(
-            f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
-        )
+        logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
 
     ##################################### DATE QUESTIONS #####################################
@@ -518,7 +520,6 @@ class FallBot2026(ForecastBot):
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
             The text given to you is trying to give a forecast distribution for a date question.
@@ -544,9 +545,7 @@ class FallBot2026(ForecastBot):
             for percentile in date_percentile_list
         ]
         prediction = NumericDistribution.from_question(percentile_list, question)
-        logger.info(
-            f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
-        )
+        logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
 
     def _create_upper_and_lower_bound_messages(
@@ -685,10 +684,7 @@ class FallBot2026(ForecastBot):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    configure_public_logging()
 
     parser = argparse.ArgumentParser(description="Run the template forecasting bot")
     parser.add_argument(
@@ -697,6 +693,11 @@ if __name__ == "__main__":
         choices=["tournament", "metaculus_cup", "test_questions"],
         default="tournament",
         help="What to forecast on (default: tournament)",
+    )
+    parser.add_argument(
+        "--break-on-purpose",
+        action="store_true",
+        help="Make every question fail (to check a failed run shows red)",
     )
     args = parser.parse_args()
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
@@ -729,6 +730,7 @@ if __name__ == "__main__":
     template_bot._structure_output_validation_samples = (
         lineup.parser_validation_samples
     )
+    template_bot.break_on_purpose = args.break_on_purpose
 
     # Per-mode tournament URL shown in the summary banner footer.
     TOURNAMENT_URLS = {
@@ -742,17 +744,21 @@ if __name__ == "__main__":
     # summary printers below.
     client = MetaculusClient()
     if run_mode == "tournament":
-        seasonal_tournament_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                FALL_2026_TOURNAMENT_ID, return_exceptions=True
-            )
-        )
-        minibench_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                FALL_2026_MINIBENCH_ID, return_exceptions=True
-            )
-        )
-        forecast_reports = seasonal_tournament_reports + minibench_reports
+        # Each tournament is fetched and forecast on its own, so a failure in
+        # one (e.g. the question list not loading) doesn't stop the other.
+        forecast_reports = []
+        for tournament_id in (FALL_2026_TOURNAMENT_ID, FALL_2026_MINIBENCH_ID):
+            try:
+                forecast_reports += asyncio.run(
+                    template_bot.forecast_on_tournament(
+                        tournament_id, return_exceptions=True
+                    )
+                )
+            except Exception as e:
+                logger.error(
+                    f"Tournament {tournament_id}: could not run, {describe_exception(e)}"
+                )
+                forecast_reports.append(e)
     elif run_mode == "metaculus_cup":
         # The Metaculus Cup may be uninitialized near the start of a season
         # (Jan/May/Sep). MetaculusClient.ACX_2025_TOURNAMENT = 32564 and
@@ -783,12 +789,16 @@ if __name__ == "__main__":
             template_bot.forecast_questions(test_questions, return_exceptions=True)
         )
 
-    # Write the cost table and banner first: log_report_summary raises (making
-    # the run fail) if any question errored.
+    # Not template_bot.log_report_summary: it prints reasoning, and the logs
+    # are public.
+    failures = log_question_statuses(forecast_reports)
     write_cost_summary(forecast_reports, lineup_name=lineup.name)
     print_run_summary_banner(
         forecast_reports,
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
-    template_bot.log_report_summary(forecast_reports)
+    if failures:
+        # A non-zero exit makes the Actions run fail (red).
+        logger.error(f"{failures} question(s) failed")
+        sys.exit(1)

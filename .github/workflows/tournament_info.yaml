@@ -1,0 +1,32 @@
+name: Tournament info
+
+# Manual only. Read-only: shows our target tournaments' ids, slugs and dates,
+# and when their open questions open and close. Forecasts nothing, spends nothing.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tournament_info:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Show tournament info
+        run: poetry run python tournament_info.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}

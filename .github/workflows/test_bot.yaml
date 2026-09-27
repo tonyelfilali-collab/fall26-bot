@@ -1,23 +1,31 @@
 name: Test Bot
 
+# Manual only. Forecasts on the bot-testing-area (not real questions), so it
+# does not need BOT_ENABLED.
 on:
   workflow_dispatch:
+    inputs:
+      break_on_purpose:
+        description: "Make every question fail, to check a failed run shows red"
+        type: boolean
+        default: false
 
-# Add concurrency group to prevent parallel runs
+# Shared with every workflow that forecasts, so they never run at the same time.
 concurrency:
-  group: ${{ github.workflow }}
+  group: forecast-bot
   cancel-in-progress: false
 
+permissions:
+  contents: read
 
-# Daily job to run the simple forecast bot
 jobs:
   forecast_job:
-    runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
-    steps: # sets up the steps that will be run in order
-      # setup repository with all necessary dependencies - keep as is
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
       - name: Check out repository
-        uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install poetry
@@ -26,19 +34,17 @@ jobs:
           virtualenvs-create: true
           virtualenvs-in-project: true
           installer-parallel: true
-      # Adding the below will make the workflow faster, but will mean you don't automatically get updates from forecasting-tools and other packages
-      # - name: Load cached venv
-      #   id: cached-poetry-dependencies
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: .venv
-      #     key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
       - name: Run bot
         run: |
-          poetry run python main.py --mode test_questions
+          if [ "$BREAK_ON_PURPOSE" = "true" ]; then
+            poetry run python main.py --mode test_questions --break-on-purpose
+          else
+            poetry run python main.py --mode test_questions
+          fi
         env:
+          BREAK_ON_PURPOSE: ${{ inputs.break_on_purpose }}
           # Only the secrets the bot uses (see NOTES.md). No paid services.
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
