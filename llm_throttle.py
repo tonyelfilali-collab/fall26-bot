@@ -22,8 +22,10 @@ from gemini_budget import QuotaLedger
 logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 
 # Errors that mean "this model can't serve us right now", as opposed to a bad
-# request: overloaded (503), server error, out of quota (429), timeout.
+# request: overloaded (503), server error, out of quota (429), timeout, or not
+# offered to this key (404, e.g. older models closed to new projects).
 _TRY_BACKUP_ERRORS = (
+    litellm.NotFoundError,
     litellm.ServiceUnavailableError,
     litellm.InternalServerError,
     litellm.RateLimitError,

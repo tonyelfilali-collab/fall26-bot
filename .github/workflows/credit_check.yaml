@@ -4,6 +4,11 @@ name: Credit check
 # Free: it reads the key's info and runs no model.
 on:
   workflow_dispatch:
+    inputs:
+      gemini_test_models:
+        description: "Gemini models to send one tiny test call each (space-separated; uses 1 of each model's daily quota)"
+        type: string
+        default: "gemini-3.6-flash"
 
 permissions:
   contents: read
@@ -47,7 +52,7 @@ jobs:
         if: always()
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_TEST_MODEL: gemini-3.6-flash
+          GEMINI_TEST_MODELS: ${{ inputs.gemini_test_models || 'gemini-3.6-flash' }}
         run: |
           set -uo pipefail
           if [ -z "$GEMINI_API_KEY" ]; then
@@ -71,22 +76,24 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
           rm -f models.json
 
-          body='{"contents":[{"parts":[{"text":"Reply with the single word OK."}]}],
-                 "generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}'
-          status=$(curl -sS -o reply.json -w '%{http_code}' \
-            -H "x-goog-api-key: $GEMINI_API_KEY" -H 'Content-Type: application/json' \
-            -d "$body" "$api/models/$GEMINI_TEST_MODEL:generateContent")
-          {
-            echo "One test call to \`$GEMINI_TEST_MODEL\` with thinking level high: HTTP $status"
-            echo ""
-            jq -r '
-              if .usageMetadata then
-                "- Tokens: prompt \(.usageMetadata.promptTokenCount), answer \(.usageMetadata.candidatesTokenCount // 0), thinking \(.usageMetadata.thoughtsTokenCount // 0)"
-              else empty end,
-              if .error then
-                "- Error: \(.error.status): \(.error.message | .[0:300])",
-                (.error.details[]? | .violations[]? |
-                  "- Quota: \(.quotaMetric // "") \(.quotaId // "") limit \(.quotaValue // "?")")
-              else empty end' reply.json
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          rm -f reply.json
+          body='{"contents":[{"parts":[{"text":"Reply with the single word OK."}]}]}'
+          for model in $GEMINI_TEST_MODELS; do
+            status=$(curl -sS -o reply.json -w '%{http_code}' \
+              -H "x-goog-api-key: $GEMINI_API_KEY" -H 'Content-Type: application/json' \
+              -d "$body" "$api/models/$model:generateContent")
+            {
+              echo ""
+              echo "One test call to \`$model\`: HTTP $status"
+              echo ""
+              jq -r '
+                if .usageMetadata then
+                  "- Tokens: prompt \(.usageMetadata.promptTokenCount), answer \(.usageMetadata.candidatesTokenCount // 0), thinking \(.usageMetadata.thoughtsTokenCount // 0)"
+                else empty end,
+                if .error then
+                  "- Error: \(.error.status): \(.error.message | .[0:300])",
+                  (.error.details[]? | .violations[]? |
+                    "- Quota: \(.quotaMetric // "") \(.quotaId // "") limit \(.quotaValue // "?")")
+                else empty end' reply.json
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            rm -f reply.json
+          done

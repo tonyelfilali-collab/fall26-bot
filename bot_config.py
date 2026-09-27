@@ -220,7 +220,8 @@ class GeminiPool:
                 allow_reserve=True,
                 temperature=None,
                 timeout=180,
-                allowed_tries=2,
+                # structure_output already retries a bad parse up to 3 times.
+                allowed_tries=1,
             )
         assert llm is not None
         return llm
