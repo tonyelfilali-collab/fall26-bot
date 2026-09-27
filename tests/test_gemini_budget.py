@@ -277,3 +277,21 @@ async def _forecast_with_answer(bot, answer):
     await bot.get_llm("default", "llm").invoke("forecast")
     probability = float(answer.split(":")[1].strip(" %")) / 100
     return ReasonedPrediction(prediction_value=probability, reasoning=answer)
+
+
+def test_failed_research_still_gives_a_forecast_input(monkeypatch):
+    from forecasting_tools import BinaryQuestion
+
+    import main
+
+    async def broken_research(self, question):
+        raise RuntimeError("news search down")
+
+    monkeypatch.setattr(main.FallBot2026, "_run_research_unguarded", broken_research)
+    bot = main.FallBot2026(
+        llms={"default": "openrouter/x:free", "parser": "openrouter/x:free", "summarizer": "openrouter/x:free", "researcher": "no_research"},
+        publish_reports_to_metaculus=False,
+    )
+    question = BinaryQuestion(question_text="Will X happen?", id_of_post=1)
+    research = asyncio.run(bot.run_research(question))
+    assert research == "No research is available: the news search failed."

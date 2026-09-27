@@ -82,6 +82,19 @@ def pick_test_questions(
     return picked
 
 
+def _http_status_note(error: BaseException) -> str:
+    """ " (HTTP 429)" if an HTTP status code is somewhere in the error chain."""
+    current: BaseException | None = error
+    for _ in range(6):
+        if current is None:
+            break
+        status = getattr(getattr(current, "response", None), "status_code", None)
+        if isinstance(status, int):
+            return f" (HTTP {status})"
+        current = current.__cause__ or current.__context__
+    return ""
+
+
 # The forecaster chain for the forecast running in the current asyncio task.
 _planned_forecaster: contextvars.ContextVar = contextvars.ContextVar(
     "planned_forecaster", default=None
@@ -268,38 +281,52 @@ class FallBot2026(ForecastBot):
         if self.break_on_purpose:
             raise RuntimeError("Deliberate failure (--break-on-purpose)")
         async with self._concurrency_limiter:
-            research = ""
-            researcher = self.get_llm("researcher")
-
-            prompt = self._get_research_prompt(question, researcher)
-
-            if isinstance(researcher, GeneralLlm):
-                research = await researcher.invoke(prompt)
-            elif (
-                researcher == "asknews/news-summaries"
-                or researcher == "asknews/deep-research/low-depth"
-                or researcher == "asknews/deep-research/medium-depth"
-                or researcher == "asknews/deep-research/high-depth"
-            ):
-                research = await AskNewsSearcher().call_preconfigured_version(
-                    researcher, prompt
+            try:
+                research = await self._run_research_unguarded(question)
+            except Exception as e:
+                # A missed question scores 0: forecast without news rather
+                # than not at all.
+                logger.warning(
+                    f"Question {question.id_of_post}: research failed"
+                    f"{_http_status_note(e)}, forecasting without it "
+                    f"({describe_exception(e)})"
                 )
-            elif researcher.startswith("smart-searcher"):
-                model_name = researcher.removeprefix("smart-searcher/")
-                searcher = SmartSearcher(
-                    model=model_name,
-                    temperature=0,
-                    num_searches_to_run=2,
-                    num_sites_per_search=10,
-                    use_advanced_filters=False,
-                )
-                research = await searcher.invoke(prompt)
-            elif not researcher or researcher == "None" or researcher == "no_research":
-                research = ""
-            else:
-                research = await self.get_llm("researcher", "llm").invoke(prompt)
+                return "No research is available: the news search failed."
             logger.info(f"Question {question.id_of_post}: research done")
             return research
+
+    async def _run_research_unguarded(self, question: MetaculusQuestion) -> str:
+        research = ""
+        researcher = self.get_llm("researcher")
+
+        prompt = self._get_research_prompt(question, researcher)
+
+        if isinstance(researcher, GeneralLlm):
+            research = await researcher.invoke(prompt)
+        elif (
+            researcher == "asknews/news-summaries"
+            or researcher == "asknews/deep-research/low-depth"
+            or researcher == "asknews/deep-research/medium-depth"
+            or researcher == "asknews/deep-research/high-depth"
+        ):
+            research = await AskNewsSearcher().call_preconfigured_version(
+                researcher, prompt
+            )
+        elif researcher.startswith("smart-searcher"):
+            model_name = researcher.removeprefix("smart-searcher/")
+            searcher = SmartSearcher(
+                model=model_name,
+                temperature=0,
+                num_searches_to_run=2,
+                num_sites_per_search=10,
+                use_advanced_filters=False,
+            )
+            research = await searcher.invoke(prompt)
+        elif not researcher or researcher == "None" or researcher == "no_research":
+            research = ""
+        else:
+            research = await self.get_llm("researcher", "llm").invoke(prompt)
+        return research
 
     @staticmethod
     def _get_research_prompt(
