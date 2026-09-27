@@ -114,6 +114,41 @@ All model choices are in `bot_config.py`:
   multiple choice) in the bot-testing-area, not all of them.
 - The Actions run summary shows a cost-per-question table (id, type, status, cost only).
 
+## Plan B: free Gemini key (27 Sep 2026)
+
+Secret `GEMINI_API_KEY`: Google AI Studio free tier, no billing.
+
+**What the key can use** (Credit check run on the Plan B branch,
+https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
+- It lists 30+ Gemini models, including `gemini-3.6-flash`, and also the newer `gemini-3.7-flash`,
+  `gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.1-pro-preview` and `gemini-2.5-pro`.
+- One test call to `gemini-3.6-flash` with thinking level "high" worked: HTTP 200, 146 thinking
+  tokens for a one-word answer, so high reasoning is supported and on.
+- **Rate limits are not published.** Google's docs say they are per project (not per key), daily
+  limits reset at midnight Pacific time, and the numbers are only shown in AI Studio
+  (https://aistudio.google.com/rate-limit). One third-party page claims about **20 requests/day**
+  for Gemini 3.6 Flash; others say about 1,500/day for Flash models. **Unconfirmed**: check the
+  AI Studio page. With 5 forecasts + 5 parses per question (10 calls), 20/day would cover
+  only 2 questions a day.
+
+**The `gemini-free` lineup** (`bot_config.py`, now the active lineup):
+- `gemini/gemini-3.6-flash` (LiteLLM calls Google directly with `GEMINI_API_KEY`), 5 forecasts
+  per question with `reasoning_effort="high"`, which LiteLLM sends as `thinkingLevel: "high"`
+  (checked against a dummy server). Setting `thinkingConfig` through `extra_body` does **not**
+  work: LiteLLM overwrites it with `"low"`.
+- Parser: the same model, 1 parse per forecast. No research summary. AskNews research as before.
+- Pacing: every call (forecasts, parses, retries) waits its turn on one shared pacer,
+  `GEMINI_FREE_REQUESTS_PER_MINUTE` = 8 (`llm_throttle.py`). Retries: 3 tries with backoff (5–60 s).
+- Deadline: a forecast still running 5 minutes before the question closes is cut off (at least
+  30 s is always allowed). The forecasts already made are combined and submitted. The question
+  only fails if none finished.
+- Free-only guard: `is_free_model` allows OpenRouter `:free` models and `gemini/` models (Google
+  AI Studio key, can't be charged), and rejects everything else, including every paid OpenRouter
+  model. `gemini-free` may run on real questions (still behind `BOT_ENABLED`); the OpenRouter
+  `free` lineup stays testing-area only.
+- Cost table: LiteLLM prices Gemini 3.6 Flash at list price ($0.75/M input), so the run summary
+  says "Billed: $0 (free tier)" and shows the list-price equivalent separately.
+
 ## Three checks (PLAN.md Step 1)
 
 1. **When are forecasts submitted?** Each question's forecast is submitted as soon as that

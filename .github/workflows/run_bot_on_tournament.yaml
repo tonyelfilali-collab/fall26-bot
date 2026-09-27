@@ -62,3 +62,5 @@ jobs:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
+          # Free Google AI Studio key (no billing), for the gemini-free lineup.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

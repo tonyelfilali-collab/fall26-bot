@@ -156,7 +156,7 @@ _POST_URL_PATTERN = re.compile(r"metaculus\.com/questions/(\d+)")
 
 
 def write_cost_summary(
-    forecast_reports: Sequence[Any], lineup_name: str
+    forecast_reports: Sequence[Any], lineup_name: str, billed: bool = True
 ) -> None:
     """
     Cost per question as a markdown table in the GitHub Actions run summary
@@ -190,7 +190,15 @@ def write_cost_summary(
             )
     if not forecast_reports:
         lines.append("| - | - | no new questions | 0 |")
-    lines += ["", f"**Total cost: ${total_cost:.4f}**", ""]
+    if billed:
+        lines += ["", f"**Total cost: ${total_cost:.4f}**", ""]
+    else:
+        # LiteLLM prices free-tier models at list price; nothing is billed.
+        lines += [
+            "",
+            f"**Billed: $0 (free tier).** List-price equivalent: ${total_cost:.4f}",
+            "",
+        ]
     summary = "\n".join(lines)
 
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")

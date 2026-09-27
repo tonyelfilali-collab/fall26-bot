@@ -22,8 +22,11 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   `-R tonyelfilali-collab/fall26-bot` to `gh`, or it may target the Metaculus repo.
 - The repo is public: logs must not contain reasoning or forecast values.
 - Secrets: `METACULUS_TOKEN`, `OPENROUTER_API_KEY`, `ASKNEWS_API_KEY` (AskNews is one API key,
-  not a client ID + secret).
-- All model choices are in `bot_config.py`.
+  not a client ID + secret), `GEMINI_API_KEY` (Google AI Studio free tier, no billing).
+- All model choices are in `bot_config.py` (`ACTIVE_LINEUP`). Only models passing
+  `bot_config.is_free_model` may be used until the Metaculus credit key arrives.
+- Merging: Claude Code merges code PRs only after Tony relays "the architect says merge".
+  Notes-only PRs (NOTES.md, PLAN.md, progress log) may be merged straight away.
 - Master switch: repository variable `BOT_ENABLED`. Real-question workflows exit at once unless
   it is `true`. Emergency stop = set it to `false`.
 - Logs are public: never log research, reasoning or forecast values. Use the `fall26` logger
