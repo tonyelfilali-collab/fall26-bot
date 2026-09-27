@@ -105,25 +105,36 @@ def test_ledger_usable_and_reserve():
     ledger = make_pool({"gemini/gemini-3.6-flash": 15}).ledger
     assert ledger.usable_left("gemini/gemini-3.6-flash") == 1  # 16 usable - 15
     assert ledger.total_left("gemini/gemini-3.6-flash") == 5  # 20 - 15
-    assert ledger.claim("gemini/gemini-3.6-flash", booked=False, allow_reserve=False)
-    assert not ledger.claim("gemini/gemini-3.6-flash", booked=False, allow_reserve=False)
-    assert ledger.claim("gemini/gemini-3.6-flash", booked=False, allow_reserve=True)
+    assert ledger.start("gemini/gemini-3.6-flash", booked=False, allow_reserve=False)
+    # The one usable request is in flight, so no more without the reserve.
+    assert not ledger.start("gemini/gemini-3.6-flash", booked=False, allow_reserve=False)
+    assert ledger.start("gemini/gemini-3.6-flash", booked=False, allow_reserve=True)
 
 
-def test_ledger_booking_is_held_then_claimed():
+def test_ledger_booking_is_held_then_used():
     ledger = make_pool({"gemini/gemini-3.8-flash": 15}).ledger
     ledger.book("gemini/gemini-3.8-flash")
     assert ledger.usable_left("gemini/gemini-3.8-flash") == 0
-    assert ledger.claim("gemini/gemini-3.8-flash", booked=True, allow_reserve=False)
-    assert ledger.used["gemini/gemini-3.8-flash"] == 16
+    assert ledger.start("gemini/gemini-3.8-flash", booked=True, allow_reserve=False)
     assert ledger.pending["gemini/gemini-3.8-flash"] == 0
+    ledger.finish("gemini/gemini-3.8-flash", succeeded=True)
+    assert ledger.used["gemini/gemini-3.8-flash"] == 16
+
+
+def test_only_successful_calls_count():
+    ledger = make_pool().ledger
+    ledger.start("gemini/gemini-3.7-flash", booked=False, allow_reserve=False)
+    ledger.finish("gemini/gemini-3.7-flash", succeeded=False)
+    assert ledger.used.get("gemini/gemini-3.7-flash", 0) == 0
+    assert ledger.usable_left("gemini/gemini-3.7-flash") == 16
 
 
 def test_ledger_persists_and_resets_on_a_new_day(monkeypatch):
     store = MemoryStore({"day": gemini_budget.quota_day(), "used": {"gemini/gemini-3.6-flash": 7}})
     ledger = QuotaLedger(store, {m: 20 for m in ALL_MODELS}, 0.2)
     assert ledger.used == {"gemini/gemini-3.6-flash": 7}
-    ledger.claim("gemini/gemini-3.6-flash", booked=False, allow_reserve=False)
+    ledger.start("gemini/gemini-3.6-flash", booked=False, allow_reserve=False)
+    ledger.finish("gemini/gemini-3.6-flash", succeeded=True)
     ledger.save()
     assert store.data["used"]["gemini/gemini-3.6-flash"] == 8
     # A saved ledger from an earlier day starts from zero.
@@ -201,8 +212,8 @@ def test_overloaded_model_hands_over_without_retrying(dummy):
     dummy.behaviour["gemini-3.6-flash"] = "overloaded"
     assert asyncio.run(chain.invoke("hi")) == "Probability: 40%"
     assert dummy.calls == ["gemini-3.6-flash", "gemini-3.8-flash"]
-    # Both attempts are counted.
-    assert pool.ledger.used == {"gemini/gemini-3.6-flash": 1, "gemini/gemini-3.8-flash": 1}
+    # Only the successful call counts; the overloaded one doesn't.
+    assert pool.ledger.used == {"gemini/gemini-3.8-flash": 1}
 
 
 def test_daily_quota_error_marks_model_used_up(dummy):

@@ -38,7 +38,7 @@ Version 1.1, 27 Sep 2026. Repo: https://github.com/tonyelfilali-collab/fall26-bo
 3. **The bot runs only on GitHub Actions.** The code repo is public; the data repo is private.
 4. **One small pull request per task.** Claude Code merges it only when checks are green and the architect has said "merge". Notes-only changes (NOTES.md, the progress log) may be merged without waiting.
 5. **Every change that affects forecasts is tested before it goes live** (see section 6).
-6. **A missed question scores 0.** Reliability always comes before cleverness.
+6. **A missed question scores 0, and a pure guess scores below 0 on average.** Reliability always comes before cleverness. Never submit a pure guess (50% binary, equal odds, flat numeric) on a real question. With at least one real model forecast, submit it (the median of what's finished). With none, leave the question for the next run and keep retrying until it closes. Only if nothing works by the close is it skipped and logged (health.yml flags it).
 
 ---
 
@@ -99,7 +99,7 @@ Opus 5.5 and Fable 5.1 are too new to appear yet.
    - Market prices are kept **out** of the dossier.
 4. **Forecast.** Several models from different AI families each forecast independently, at high reasoning effort.
 5. **Combine and adjust** in a fixed order (below).
-6. **Check.** The forecast must pass the platform rules and sanity checks. If it fails, submit a safe fallback forecast. Never skip a question.
+6. **Check.** The forecast must pass the platform rules and sanity checks. A forecast that fails them is dropped, never replaced by a guess. If at least one real forecast passes, submit the median of those. If none does, leave the question for the next run (every 10 minutes) until it closes; if nothing works by then it's skipped and health.yml flags it.
 7. **Submit** the forecast with a private comment, as soon as that question is ready.
 8. **Record.** Save everything to the private data repo and ping the "bot is alive" monitor.
 

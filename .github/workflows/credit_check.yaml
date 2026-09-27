@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       gemini_test_models:
-        description: "Gemini models to send one tiny test call each (space-separated; uses 1 of each model's daily quota)"
+        description: "Gemini models to send one tiny test call each (space-separated; uses 1 of each model's live daily quota; blank = none)"
         type: string
-        default: "gemini-3.6-flash"
+        default: ""
       gemini_grounding:
         description: "Make the test calls with Grounding with Google Search"
         type: boolean
@@ -56,7 +56,7 @@ jobs:
         if: always()
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_TEST_MODELS: ${{ inputs.gemini_test_models || 'gemini-3.6-flash' }}
+          GEMINI_TEST_MODELS: ${{ inputs.gemini_test_models }}
           GEMINI_GROUNDING: ${{ inputs.gemini_grounding }}
         run: |
           set -uo pipefail

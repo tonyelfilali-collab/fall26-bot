@@ -4,8 +4,8 @@ import contextvars
 import logging
 import sys
 import time
-from datetime import datetime, timezone
-from typing import Literal
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
 
 import dotenv
 
@@ -53,7 +53,17 @@ from forecasting_tools import (
 from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
 
 from bot_config import GeminiPool, get_lineup
-from forecast_safety import clip_binary, floor_multiple_choice
+from forecast_safety import (
+    NoValidForecast,
+    adjust_binary,
+    all_outside_range,
+    dates_line,
+    distribution_problems,
+    fix_reversed_percentiles,
+    floor_multiple_choice,
+    question_range,
+    still_open_problem,
+)
 from deadlines import planned_forecast_timeout, quick_forecast_timeout
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
@@ -100,6 +110,16 @@ def _http_status_note(error: BaseException) -> str:
             return f" (HTTP {status})"
         current = current.__cause__ or current.__context__
     return ""
+
+
+# A question with no forecast that closes within this time can't count on a
+# later run to retry it, so the run goes red.
+RETRY_WINDOW = timedelta(minutes=25)
+
+
+def closes_within(close_time: datetime, window: timedelta) -> bool:
+    close = close_time if close_time.tzinfo else close_time.replace(tzinfo=timezone.utc)
+    return close - datetime.now(timezone.utc) <= window
 
 
 # The quick forecast (nothing else finished) tries this many passes through
@@ -204,6 +224,12 @@ class FallBot2026(ForecastBot):
     # used in their path. Set in __main__.
     question_log: QuestionLogWriter | None = None
     run_mode = "tournament"
+    # Whether to submit forecasts to Metaculus. The library's own
+    # publish_reports_to_metaculus stays False, so the bot can check that the
+    # question is still open right before submitting.
+    submit_forecasts = False
+    # Close times of questions that got no forecast this run (post id -> close).
+    unforecast_close_times: dict = {}
     # Free Gemini lineup: plans each question's forecasters within the day's
     # budget. Set in __main__ from the lineup.
     gemini_pool: GeminiPool | None = None
@@ -216,12 +242,19 @@ class FallBot2026(ForecastBot):
     async def _aggregate_predictions(
         self, predictions: list[PredictionTypes], question: MetaculusQuestion
     ) -> PredictionTypes:
-        # Interim safety limits on the final forecast (see forecast_safety.py).
+        # Safety checks on the final forecast (forecast_safety.py, PLAN.md Step 4).
+        if isinstance(question, BinaryQuestion):
+            # Median, stretch (off), [market blend], extreme check, clip 2-98%.
+            return adjust_binary(predictions)  # type: ignore[arg-type]
         aggregated = await super()._aggregate_predictions(predictions, question)
-        if isinstance(question, BinaryQuestion) and isinstance(aggregated, float):
-            return clip_binary(aggregated)
         if isinstance(aggregated, PredictedOptionList):
             return floor_multiple_choice(aggregated)
+        if isinstance(aggregated, NumericDistribution) and isinstance(question, NumericQuestion):
+            problems = distribution_problems(aggregated, question)
+            if problems:
+                raise NoValidForecast(
+                    f"combined distribution broke the platform rules ({'; '.join(problems)})"
+                )
         return aggregated
 
     def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
@@ -347,17 +380,57 @@ class FallBot2026(ForecastBot):
         try:
             report = await super()._run_individual_question(question)
         except Exception as e:
+            # Never a pure guess: with no real model forecast, nothing is
+            # submitted and the next run tries again (it isn't marked as
+            # forecast), until the question closes.
             record.update(submitted=False, error=describe_exception(e))
+            self.__dict__.setdefault("unforecast_close_times", {})[
+                question.id_of_post
+            ] = question.close_time
+            logger.warning(
+                f"Question {question.id_of_post}: no real forecast this run, "
+                "left for the next run"
+            )
             await self._save_record(question, record, started)
             raise
         record.update(
-            submitted=self.publish_reports_to_metaculus,
+            submitted=await self._submit_if_still_open(question, report),
             final_forecast=to_jsonable(report.prediction),
             minutes=report.minutes_taken,
             list_price_cost=report.price_estimate,
         )
         await self._save_record(question, record, started)
         return report
+
+    async def _submit_if_still_open(
+        self, question: MetaculusQuestion, report: ForecastReport
+    ) -> bool:
+        if not self.submit_forecasts:
+            return False
+        try:
+            fresh = await asyncio.to_thread(
+                self.metaculus_client.get_question_by_post_id,
+                question.id_of_post,
+                "unpack_subquestions",
+            )
+            if isinstance(fresh, list):
+                fresh = next(
+                    (q for q in fresh if q.id_of_question == question.id_of_question),
+                    question,
+                )
+            problem = still_open_problem(fresh)
+        except Exception as e:
+            # Can't check: submit anyway rather than risk skipping the question.
+            logger.warning(
+                f"Question {question.id_of_post}: could not re-check that it's open "
+                f"({type(e).__name__}); submitting anyway"
+            )
+            problem = None
+        if problem:
+            logger.warning(f"Question {question.id_of_post}: not submitted, {problem}")
+            return False
+        await report.publish_report_to_metaculus(metaculus_client=self.metaculus_client)
+        return True
 
     async def _save_record(self, question, record: dict, started: datetime) -> None:  # type: ignore[no-untyped-def]
         # Saved after submission; a failure here never affects the forecast.
@@ -527,7 +600,7 @@ class FallBot2026(ForecastBot):
             Your research assistant says:
             {research}
 
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
+            {dates_line(question)}
 
             Before answering you write:
             (a) The time left until the outcome to the question is known.
@@ -587,7 +660,7 @@ class FallBot2026(ForecastBot):
             Your research assistant says:
             {research}
 
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
+            {dates_line(question)}
 
             Before answering you write:
             (a) The time left until the outcome to the question is known.
@@ -661,7 +734,7 @@ class FallBot2026(ForecastBot):
             Your research assistant says:
             {research}
 
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
+            {dates_line(question)}
 
             {lower_bound_message}
             {upper_bound_message}
@@ -714,16 +787,53 @@ class FallBot2026(ForecastBot):
             - Turn any values that are in scientific notation into regular numbers.
             """
         )
-        percentile_list: list[Percentile] = await structure_output(
-            reasoning,
-            list[Percentile],
-            model=self.get_llm("parser", "llm"),
-            additional_instructions=parsing_instructions,
-            num_validation_samples=self._structure_output_validation_samples,
+        prediction = await self._parse_numeric_safely(
+            question, reasoning, parsing_instructions
         )
-        prediction = NumericDistribution.from_question(percentile_list, question)
         logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
+
+    async def _parse_numeric_safely(
+        self, question: NumericQuestion, reasoning: str, parsing_instructions: str
+    ) -> NumericDistribution:
+        """
+        Parse the percentiles, put reversed ones right, and catch unit errors:
+        if every value is outside the question's range, re-parse once with a
+        warning about units; if still outside, this forecast is dropped.
+        """
+        lower, upper = question_range(question)
+        instructions = parsing_instructions
+        for attempt in range(2):
+            percentile_list: list[Percentile] = await structure_output(
+                reasoning,
+                list[Percentile],
+                model=self.get_llm("parser", "llm"),
+                additional_instructions=instructions,
+                num_validation_samples=self._structure_output_validation_samples,
+            )
+            percentile_list = fix_reversed_percentiles(percentile_list)
+            if not all_outside_range(percentile_list, lower, upper):
+                break
+            logger.warning(
+                f"Question {question.id_of_post}: every parsed value is outside the "
+                f"question's range (attempt {attempt + 1}); possible unit error"
+            )
+            instructions = parsing_instructions + clean_indents(
+                f"""
+                - IMPORTANT: a previous parse gave values that were all outside the question's
+                  range ({lower} to {upper} {question.unit_of_measure}). Check the units very
+                  carefully (thousands vs millions vs billions, percent vs fraction).
+                """
+            )
+        else:
+            raise NoValidForecast("every parsed value is outside the question's range, twice")
+        distribution = NumericDistribution.from_question(percentile_list, question)
+        problems = distribution_problems(distribution, question)
+        if problems:
+            raise NoValidForecast(
+                f"distribution broke the platform rules ({'; '.join(problems)})"
+            )
+        return distribution
 
     ##################################### DATE QUESTIONS #####################################
 
@@ -750,7 +860,7 @@ class FallBot2026(ForecastBot):
             Your research assistant says:
             {research}
 
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
+            {dates_line(question)}
 
             {lower_bound_message}
             {upper_bound_message}
@@ -977,6 +1087,12 @@ if __name__ == "__main__":
         help="Test mode: forecast only one binary question",
     )
     parser.add_argument(
+        "--lineup",
+        choices=["free", "gemini-free", "credit"],
+        default=None,
+        help="Model lineup (default: ACTIVE_LINEUP in bot_config.py). Test Bot uses 'free'.",
+    )
+    parser.add_argument(
         "--fail-planned-forecasts",
         action="store_true",
         help="Make every planned forecast fail (to check the quick forecast still submits)",
@@ -994,7 +1110,7 @@ if __name__ == "__main__":
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
     # All model choices live in bot_config.py.
-    lineup = get_lineup()
+    lineup = get_lineup(args.lineup)
     if lineup.test_only and run_mode != "test_questions":
         # OpenRouter ':free' models are for the bot-testing-area only (see CLAUDE.md).
         raise SystemExit(
@@ -1011,7 +1127,8 @@ if __name__ == "__main__":
         predictions_per_research_report=lineup.predictions_per_research_report,
         use_research_summary_to_forecast=False,
         enable_summarize_research=lineup.summarize_research,
-        publish_reports_to_metaculus=publish_to_metaculus,
+        # The bot submits itself, after checking the question is still open.
+        publish_reports_to_metaculus=False,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
@@ -1028,6 +1145,7 @@ if __name__ == "__main__":
     template_bot.only_model = args.only_model
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
+    template_bot.submit_forecasts = publish_to_metaculus
     template_bot.question_log = QuestionLogWriter()
 
     # Per-mode tournament URL shown in the summary banner footer.
@@ -1113,6 +1231,21 @@ if __name__ == "__main__":
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
     if failures:
-        # A non-zero exit makes the Actions run fail (red).
-        logger.error(f"{failures} question(s) failed")
-        sys.exit(1)
+        # Red (non-zero exit) when a question may now be missed: in test mode
+        # always; in live modes only if it closes before the next runs can
+        # retry it. Otherwise it's retried by the next run (a warning).
+        closing_soon = [
+            post
+            for post, close in template_bot.__dict__.get("unforecast_close_times", {}).items()
+            if close is None or closes_within(close, RETRY_WINDOW)
+        ]
+        if run_mode == "test_questions" or closing_soon or failures > len(
+            template_bot.__dict__.get("unforecast_close_times", {})
+        ):
+            logger.error(f"{failures} question(s) failed")
+            sys.exit(1)
+        logger.warning(f"{failures} question(s) left for the next run")
+        print(
+            f"::warning title=question-retry::{failures} question(s) got no forecast "
+            "this run; the next run will try again"
+        )

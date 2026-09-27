@@ -5,6 +5,11 @@ name: Test Bot
 on:
   workflow_dispatch:
     inputs:
+      lineup:
+        description: "Model lineup. 'free' (default) never touches the live Gemini quota."
+        type: choice
+        options: [free, gemini-free]
+        default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
         type: boolean
@@ -50,13 +55,14 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Run bot
         run: |
-          args=(--mode test_questions)
+          args=(--mode test_questions --lineup "${LINEUP:-free}")
           if [ "$BREAK_ON_PURPOSE" = "true" ]; then args+=(--break-on-purpose); fi
           if [ "$ONE_BINARY" = "true" ]; then args+=(--one-binary); fi
           if [ "$FAIL_PLANNED" = "true" ]; then args+=(--fail-planned-forecasts); fi
           if [ -n "$ONLY_MODEL" ]; then args+=(--only-model "$ONLY_MODEL"); fi
           poetry run python main.py "${args[@]}"
         env:
+          LINEUP: ${{ inputs.lineup }}
           BREAK_ON_PURPOSE: ${{ inputs.break_on_purpose }}
           ONE_BINARY: ${{ inputs.one_binary }}
           FAIL_PLANNED: ${{ inputs.fail_planned_forecasts }}

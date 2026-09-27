@@ -7,9 +7,9 @@ GitHub Actions jobs, so the day's counts are kept in a small JSON file in the
 private fall26-data repo. The forecasting workflows share one concurrency
 group, so only one run updates it at a time.
 
-Every request attempt is counted, successful or not (failed ones can count
-against Google's quota too). A model that answers "daily quota exceeded" is
-marked as used up for the rest of the day.
+Only successful requests are counted (architect, 27 Sep 2026): "overloaded"
+(503) and other failed calls don't count. A model is used up for the day only
+when Google itself answers "quota exceeded" (429 RESOURCE_EXHAUSTED).
 """
 from __future__ import annotations
 
@@ -92,7 +92,8 @@ class QuotaLedger:
     - reserve: the rest, used only when a question would otherwise get no
       forecast at all
     Models "booked" for a planned forecast are held in `pending` until the
-    call is made, so questions planned at the same time don't double-book.
+    call starts, and calls in progress are held in `in_flight` until they end,
+    so questions forecast at the same time don't double-book.
     """
 
     def __init__(
@@ -107,6 +108,7 @@ class QuotaLedger:
         self.day = quota_day()
         self.used: dict[str, int] = {}
         self.pending: dict[str, int] = {}
+        self.in_flight: dict[str, int] = {}
         try:
             data = store.load()
         except Exception as e:
@@ -120,24 +122,27 @@ class QuotaLedger:
         if today != self.day:
             self.day, self.used, self.pending = today, {}, {}
 
+    def _taken(self, model: str) -> int:
+        return (
+            self.used.get(model, 0)
+            + self.pending.get(model, 0)
+            + self.in_flight.get(model, 0)
+        )
+
     def usable_left(self, model: str) -> int:
         self._roll_over_if_new_day()
         usable = math.floor(self.daily_limits[model] * (1 - self.reserve_fraction))
-        return usable - self.used.get(model, 0) - self.pending.get(model, 0)
+        return usable - self._taken(model)
 
     def total_left(self, model: str) -> int:
         self._roll_over_if_new_day()
-        return (
-            self.daily_limits[model]
-            - self.used.get(model, 0)
-            - self.pending.get(model, 0)
-        )
+        return self.daily_limits[model] - self._taken(model)
 
     def book(self, model: str) -> None:
         self.pending[model] = self.pending.get(model, 0) + 1
 
-    def claim(self, model: str, booked: bool, allow_reserve: bool) -> bool:
-        """Count one request to `model`, if the budget allows it."""
+    def start(self, model: str, booked: bool, allow_reserve: bool) -> bool:
+        """Hold one request to `model` while it runs, if the budget allows it."""
         self._roll_over_if_new_day()
         if booked and self.pending.get(model, 0) > 0:
             self.pending[model] -= 1
@@ -145,8 +150,14 @@ class QuotaLedger:
             left = self.total_left(model) if allow_reserve else self.usable_left(model)
             if left <= 0:
                 return False
-        self.used[model] = self.used.get(model, 0) + 1
+        self.in_flight[model] = self.in_flight.get(model, 0) + 1
         return True
+
+    def finish(self, model: str, succeeded: bool) -> None:
+        """A held request ended: only a success counts against the quota."""
+        self.in_flight[model] = max(0, self.in_flight.get(model, 0) - 1)
+        if succeeded:
+            self.used[model] = self.used.get(model, 0) + 1
 
     def mark_used_up(self, model: str) -> None:
         self.used[model] = self.daily_limits[model]

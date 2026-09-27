@@ -2,10 +2,11 @@
 Calling free Gemini models without going over their limits.
 
 - RequestPacer: spaces out request starts per model (requests per minute).
-- ThrottledLlm: a GeneralLlm that, before each call, waits on its model's
-  pacer and claims one request from the daily QuotaLedger. If the model has no
-  budget left, is overloaded, or is out of quota, the call goes to its backup
-  (the next model in the chain) instead of retrying the same model.
+- ThrottledLlm: a GeneralLlm that, before each call, checks the daily
+  QuotaLedger has room and waits on its model's pacer; only a successful call
+  is counted. If the model has no budget left, is overloaded, or is out of
+  quota, the call goes to its backup (the next model in the chain) instead of
+  retrying the same model.
 """
 from __future__ import annotations
 
@@ -102,20 +103,29 @@ class ThrottledLlm(GeneralLlm):
 
     async def _mockable_direct_call_to_model(self, prompt):  # type: ignore[no-untyped-def]
         if self._ledger is not None:
-            claimed = self._ledger.claim(
+            started = self._ledger.start(
                 self.model, booked=self._booked, allow_reserve=self._allow_reserve
             )
             # A booking is only good for the first call.
             self._booked = False
-            if not claimed:
+            if not started:
                 return await self._hand_over(prompt, "no budget left today")
-        await self._pacer.wait_turn()
+        succeeded = False
         try:
+            await self._pacer.wait_turn()
             response = await super()._mockable_direct_call_to_model(prompt)
+            succeeded = True
         except _TRY_BACKUP_ERRORS as e:
             if self._ledger is not None and _is_daily_quota_error(e):
+                # Google itself says the day's quota is gone.
                 self._ledger.mark_used_up(self.model)
-            return await self._hand_over(prompt, type(e).__name__)
+            error_name = type(e).__name__
+        finally:
+            # Only successful calls count against the quota.
+            if self._ledger is not None:
+                self._ledger.finish(self.model, succeeded)
+        if not succeeded:
+            return await self._hand_over(prompt, error_name)
         logger.info(f"{self.model}: answered")
         answered = answered_models.get()
         if answered is not None:

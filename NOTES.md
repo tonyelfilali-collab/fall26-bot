@@ -144,9 +144,10 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
   architect chose 2.5 Flash / Flash-Lite, but Google answers 404 "no longer available to new
   users" for both on this new project: Credit check run
   https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36336713455.)
-- **Daily budget per model:** 20 requests/day each, and every attempt counts (Google counted
-  failed ones too: 3 Test Bot runs used up 3.6 Flash's day on 27 Sep). 20% is held in reserve,
-  so 16 are usable. Counts are kept per model for the Google day (midnight Pacific = 07:00 UTC
+- **Daily budget per model:** 20 requests/day each; 20% is held in reserve, so 16 are usable.
+  **Only successful calls are counted** (architect, 27 Sep): overloaded (503) and other failed
+  calls don't count. A model is used up for the day only when Google answers 429
+  RESOURCE_EXHAUSTED. Calls in progress hold a slot so parallel forecasts can't overbook. Counts are kept per model for the Google day (midnight Pacific = 07:00 UTC
   until 1 Nov, then 08:00 UTC) in `quota/gemini_free.json` in the private `fall26-data` repo
   (`DATA_REPO_TOKEN`), so they carry over between runs (`gemini_budget.py`). Runs never overlap
   (shared concurrency group), so the counts stay correct. A "daily quota exceeded" answer marks
@@ -219,6 +220,9 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - Caveat: 07:00 UK is 23:00 Pacific, the end of Google's quota day, so the quota check will
   often be red on busy days.
 - Test Bot has a "fail planned forecasts" option to prove the quick forecast.
+- **Test Bot never uses the live Gemini quota:** by default it runs the `free` lineup (OpenRouter
+  `:free` models, testing area only). Its `lineup` option can pick `gemini-free` on purpose.
+  Credit check makes no Gemini test call unless models are named.
 
 ## Free news fallback (27 Sep 2026)
 
@@ -237,13 +241,34 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - **Public log:** only `Question N: articles found: X (AskNews a, free news f)`, never article text.
 - Tests: `tests/test_free_news.py` (no network).
 
-## Interim safety limits (until PLAN.md Step 4)
+## Safety checks (PLAN.md Step 4)
 
-`forecast_safety.py`, applied to the final (combined) forecast in `FallBot2026._aggregate_predictions`:
-- binary: clipped to 3%–97%
-- multiple choice: if any option is under 1%, every option gets 1% plus its share of the rest
-  (sums to 1, order kept); otherwise unchanged.
-Tests: `tests/test_forecast_safety.py`.
+`forecast_safety.py` (pure functions, `tests/test_forecast_safety.py`), used in `main.py`:
+- **Binary, fixed order:** median → stretch in log-odds by `STRETCH_K` (**1.0 = off**, architect
+  27 Sep: not safe with 1-3 Gemini forecasts until measured; a setting we can turn on) → market
+  blend (placeholder, Step 9) → extreme check (below 5% / above 95% only if at least 80% of the
+  forecasts that ran are below 10% / above 90%; otherwise pulled back to 10% / 90%) → clip
+  **2%–98%**. This replaces the interim 3%–97% clip.
+- **Multiple choice:** every option at least 1%, summing to 1 (the library's mean per option; the
+  median per option is Step 8).
+- **Numeric/discrete:** the combined CDF must follow the platform rules (201 points, or the
+  discrete count; increasing by at least 5e-05; steps at most 0.2, bigger for discrete; closed
+  bound = 0/1, open bound = at least 0.001 in / at most 0.999). Reversed percentiles are put right.
+  If every parsed value is outside the question's range (e.g. a x1000 unit error), the answer is
+  re-parsed once with a units warning; if still wrong, that forecast is dropped. Not done yet: the
+  "median more than 10x or under 0.1x the current value from research" check, because the
+  research has no structured current value yet (planner facts, Step 7).
+- **Every prompt** includes today's date and the question's close and resolve dates.
+- **Before submitting,** the bot re-fetches the question and submits only if it's still open and
+  unresolved. The library's own publishing is off; the bot submits itself. If the re-check itself
+  fails, it submits anyway rather than risk skipping.
+- **Never a pure guess** (architect, 27 Sep; PLAN.md rule 6): no 50% / equal-odds / flat
+  fallback forecasts on real questions. An invalid forecast is dropped; if at least one real
+  forecast is left, the median is submitted. If none, nothing is submitted and the question is
+  retried by the next run (it isn't marked as forecast) until it closes. A tournament run with
+  such a question is only red if the question closes within 25 minutes (a later run might not
+  get to it); otherwise it leaves a `question-retry` warning. The daily health check goes red
+  for any question that closed in the last 24 h without our forecast.
 
 ## Three checks (PLAN.md Step 1)
 
