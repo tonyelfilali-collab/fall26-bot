@@ -1,0 +1,24 @@
+# CLAUDE.md
+
+Metaculus Fall 2026 forecasting bot (fork of Metaculus/metac-bot-template).
+The owner is a novice: an architect plans, the owner relays. Explain everything in plain, short language.
+
+## Rules
+
+- One small pull request per task. Never push to `main`.
+- Never show, log or commit secrets.
+- The bot runs only on GitHub Actions, never on the owner's computer.
+- ZERO SPEND: we never pay for anything. Only use the free credit key Metaculus will send
+  (OpenAI, Anthropic, Google models via OpenRouter), the AskNews free tier, and free public services.
+  No Perplexity, no paid APIs.
+- Until the credit key arrives, `OPENROUTER_API_KEY` is a $0 key: use only `:free` models,
+  and only on the bot-testing-area (id 32977).
+- When a task is done, report in 3-5 plain sentences what was done and paste the proof
+  (links to Actions runs).
+
+## Practical notes
+
+- This clone has two remotes (`origin` = our fork, `upstream` = Metaculus). Always pass
+  `-R tonyelfilali-collab/fall26-bot` to `gh`, or it may target the Metaculus repo.
+- The repo is public: logs must not contain reasoning or forecast values.
+- See NOTES.md for library version, secret names, aggregation and model IDs.

@@ -127,8 +127,7 @@ Once your questions start resolving, the community-member-maintained optional
 helps to diagnose any reasoning errors.
 
 ```bash
-poetry install --with integrations
-poetry run bot-review review --resolved-since 30
+pipx run --spec "metaculus-bot-review>=0.1.1,<0.2" bot-review review --resolved-since 30
 ```
 
 A weekly workflow and a Claude Code skill come with it. See the

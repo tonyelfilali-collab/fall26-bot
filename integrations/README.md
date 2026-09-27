@@ -39,9 +39,9 @@ poetry run python integrations/main_lightningrod_eval.py
 It reads the reports your bot published as Metaculus comments, so there is nothing to set up beyond the `METACULUS_TOKEN` you already have. No LLM spend is incurred.
 
 ```bash
-poetry install --with integrations
-poetry run bot-review review --tournament <slug-or-id> --output review.json --summary review.md
-poetry run bot-review review --resolved-since 30    # anything that resolved recently
+# bot-review pins forecasting-tools <0.3, so run it in its own pipx environment
+pipx run --spec metaculus-bot-review bot-review review --tournament <slug-or-id> --output review.json --summary review.md
+pipx run --spec metaculus-bot-review bot-review review --resolved-since 30    # anything that resolved recently
 ```
 
 `review.md` gives your rank, how many questions were scored, and the best and worst questions on whichever score the leaderboard uses. `review.json` adds per-question detail, including every forecaster's prediction on every run.
@@ -49,8 +49,8 @@ poetry run bot-review review --resolved-since 30    # anything that resolved rec
 Reasoning text is not in the table. Pull it a piece at a time:
 
 ```bash
-poetry run bot-review show <POST_ID> --section research
-poetry run bot-review show <POST_ID> --forecaster R1:F3
+pipx run --spec metaculus-bot-review bot-review show <POST_ID> --section research
+pipx run --spec metaculus-bot-review bot-review show <POST_ID> --forecaster R1:F3
 ```
 
 Two extras ship with this template:
