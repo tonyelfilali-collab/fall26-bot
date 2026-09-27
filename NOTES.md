@@ -167,7 +167,13 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
   AI Studio key can't be charged) and rejects everything else, including every paid OpenRouter
   model, backups included.
 - **Cost table:** says "Billed: $0 (free tier)", with the list-price equivalent shown separately.
-- **Tests:** `tests/test_gemini_budget.py` (17 tests, local dummy Gemini server, no real calls),
+- **Research failure:** if the news search fails, the question is forecast without news rather
+  than skipped. On 27 Sep 2026 AskNews started answering **HTTP 402 (Payment Required)** after the
+  day's test runs: the free AskNews allowance looks used up.
+- **At least 1:** the library normally fails a question with fewer than half the expected
+  forecasts; for the Gemini pool this is set to 0 (`required_successful_predictions`), so 1
+  successful forecast is enough.
+- **Tests:** `tests/test_gemini_budget.py` (19 tests, local dummy Gemini server, no real calls),
   run by the **Unit tests** workflow on every pull request.
 - **Test Bot options:** "one binary" (a single binary question) and "only model" (forecast with
   one named Gemini model), to test without using up the free quota.

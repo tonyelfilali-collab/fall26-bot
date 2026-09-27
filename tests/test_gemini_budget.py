@@ -295,3 +295,30 @@ def test_failed_research_still_gives_a_forecast_input(monkeypatch):
     question = BinaryQuestion(question_text="Will X happen?", id_of_post=1)
     research = asyncio.run(bot.run_research(question))
     assert research == "No research is available: the news search failed."
+
+
+def test_question_with_a_single_forecast_is_submitted(dummy, monkeypatch):
+    from forecasting_tools import BinaryQuestion
+
+    import main
+
+    pool = make_pool()
+    llms = {"default": pool.unplanned_forecaster(), "parser": pool.parser(), "summarizer": pool.parser(), "researcher": "no_research"}
+    bot = main.FallBot2026(
+        llms=llms,
+        publish_reports_to_metaculus=False,
+        enable_summarize_research=False,
+        predictions_per_research_report=3,
+        required_successful_predictions=0,
+    )
+    bot.gemini_pool = pool
+    bot.only_model = "gemini/gemini-3.8-flash"
+    monkeypatch.setattr(
+        main.FallBot2026,
+        "_binary_prompt_to_forecast",
+        lambda self, q, prompt: _forecast_with_answer(self, "Probability: 30%"),
+    )
+    question = BinaryQuestion(question_text="Will X happen?", id_of_post=1, page_url="https://www.metaculus.com/questions/1")
+    [report] = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
+    assert not isinstance(report, BaseException), report
+    assert report.prediction == pytest.approx(0.3)

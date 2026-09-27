@@ -864,6 +864,9 @@ if __name__ == "__main__":
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
         llms=lineup.llms,
+        # The Gemini pool may plan fewer than the maximum forecasts; any
+        # successful forecast is enough (0 forecasts still fails the question).
+        required_successful_predictions=0 if lineup.gemini_pool else 0.5,
     )
     template_bot._structure_output_validation_samples = (
         lineup.parser_validation_samples
