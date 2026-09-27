@@ -1,15 +1,15 @@
 # Fall 2026 Metaculus Bot: Master Plan
 
-Version 1.0, 27 Sep 2026. Repo: https://github.com/tonyelfilali-collab/fall26-bot
+Version 1.1, 27 Sep 2026. Repo: https://github.com/tonyelfilali-collab/fall26-bot
 
 ---
 
 ## 0. How to use this document
 
 **Who does what**
-- **Tony (owner):** clicks buttons, adds keys, relays messages. Never edits code or forecasts.
+- **Tony (owner):** adds keys, relays messages. Never edits code or forecasts, and doesn't merge.
 - **Architect:** a Claude chat in the Claude project. Plans, reviews each pull request, decides.
-- **Builder:** Claude Code, working in the repo above.
+- **Builder:** Claude Code, working in the repo above. Opens pull requests, and merges them **only after the architect says "merge"** (Tony relays it).
 
 **Starting a new chat with the architect:** open a new chat inside the Claude project and send:
 > Read PLAN.md in the project files. We are at Step __. Here is what happened since: ...
@@ -23,8 +23,8 @@ Version 1.0, 27 Sep 2026. Repo: https://github.com/tonyelfilali-collab/fall26-bo
 ## 1. Goal and hard rules
 
 **Goal:** win as much prize money as possible in the Metaculus Fall 2026 FutureEval bot tournament and the MiniBench rounds.
-- Seasonal tournament: slug `fall-futureeval-2026`, id 33121, 28 Sep 2026 to 6 Jan 2027, $50k prize pool.
-- MiniBench: $1k per 2-week round.
+- Seasonal tournament: slug `fall-futureeval-2026`, id 33121, $50k prize pool. Questions open from 28 Sep 2026 to about 6 Jan 2027; the tournament page's close date (5 Mar 2027) is when the last questions resolve.
+- MiniBench: $1k per 2-week round. The slug `minibench` pointed to tournament 33125 (21 Sep–9 Oct 2026). Still to check: whether `minibench` moves to the next round automatically.
 
 **Hard rules**
 1. **Zero spend.** Allowed:
@@ -36,7 +36,7 @@ Version 1.0, 27 Sep 2026. Repo: https://github.com/tonyelfilali-collab/fall26-bo
    Not allowed: no card on OpenRouter, no Perplexity, no paid APIs.
 2. **No human in the loop.** Nobody edits, previews or submits a forecast by hand.
 3. **The bot runs only on GitHub Actions.** The code repo is public; the data repo is private.
-4. **One small pull request per task.** Merge only when checks are green and the architect has said OK.
+4. **One small pull request per task.** Claude Code merges it only when checks are green and the architect has said "merge". Notes-only changes (NOTES.md, the progress log) may be merged without waiting.
 5. **Every change that affects forecasts is tested before it goes live** (see section 6).
 6. **A missed question scores 0.** Reliability always comes before cleverness.
 
@@ -54,7 +54,9 @@ Version 1.0, 27 Sep 2026. Repo: https://github.com/tonyelfilali-collab/fall26-bo
 - The bot is built on the official metac-bot-template with forecasting-tools 0.3.1, the first version with Fall 2026 constants (id 33121).
 - By default the library combines forecasts like this: binary = median; multiple choice = mean; numeric/discrete = median of the CDFs.
 
-**Secret names the code reads:** `METACULUS_TOKEN`, `OPENROUTER_API_KEY`, `ASKNEWS_CLIENT_ID`, `ASKNEWS_SECRET`.
+**Secret names the code reads:** `METACULUS_TOKEN`, `OPENROUTER_API_KEY`, `ASKNEWS_API_KEY` (a single AskNews key; the older two-part ID/secret isn't used).
+
+**Confirmed by Claude Code:** each question's forecast is submitted as soon as that question is done; AskNews uses 2 calls per question; the personal OpenRouter key has no limit but $0 balance, and the bot refuses paid models while the free setup is on.
 
 **Model leaderboard** (FutureEval, single model + AskNews, 27 Sep 2026):
 
@@ -79,9 +81,8 @@ Opus 5.5 and Fable 5.1 are too new to appear yet.
 - [ ] Prize formula; whether Ramp pays to a UK bank account
 - [ ] Whether the bot may use the community prediction of a main-site "twin" question
 - [ ] Whether manually re-running a failed workflow is allowed
-- [ ] Fall MiniBench slug (the library uses `minibench`) and how long MiniBench questions stay open
-- [ ] How many AskNews calls the template makes per question
-- [ ] Whether forecasting-tools submits each question as soon as it's done, or all at the end
+- [ ] How long MiniBench questions stay open (rerun Tournament info when some are open)
+- [ ] Whether the free Google AI Studio key works with Gemini 3.6 Flash (Plan B, below)
 - [ ] Whether OpenRouter web search works on the donated key
 
 ---
@@ -152,7 +153,7 @@ The bot works out a target spend per question: (remaining credit − 15% reserve
 2. Claude Code builds it and opens a pull request.
 3. Tony sends the architect Claude Code's reply and the pull request link.
 4. The architect checks it and says "merge" or explains what to fix.
-5. Tony merges it and updates the progress log.
+5. Tony tells Claude Code "The architect says merge". Claude Code merges it and adds a row to the progress log.
 
 Do steps back to back, as fast as each one passes its check. Only Step 2 (credit key) and Step 11 (needs resolved questions) have to wait for something outside our control.
 
@@ -160,7 +161,7 @@ Do steps back to back, as fast as each one passes its check. Only Step 2 (credit
 
 ### Step 1: Foundation (Tasks 1–4) plus three checks
 
-**Status:** Task 1 done (PR #1). Tasks 2–4 are in the first Claude Code prompt:
+**Status: DONE (27 Sep).** PRs #1–#6 merged; Test Bot green on all 4 types at $0; tournament workflow on but exits while `BOT_ENABLED` is off; workflows pinned to ubuntu-24.04. What was built:
 - Task 2: target Fall 2026 explicitly.
 - Task 3: all model choices in one config file, free test models for now, cost per question in the run summary.
 - Task 4: safety — failed runs show red, a shared concurrency group, 60-minute timeout, a second schedule at minutes 17/37/57, a weekly keepalive, no forecasts or reasoning in public logs, a `BOT_ENABLED` switch, and a Credit check workflow.
@@ -179,6 +180,25 @@ Reply in plain, short language.
 - The tournament run logs "BOT_ENABLED is not true, exiting".
 - Credit check works.
 - The three answers are in NOTES.md.
+
+---
+
+### Plan B: free Gemini key (in case credits are slow or never come)
+
+The credits form warns that many bots will be left unfunded this season. Google AI Studio gives a free API key (no card) for Gemini models, and Gemini 3.6 Flash scores 13.2 on the leaderboard, not far behind the top models. Plan B runs the bot on that key until (or instead of) Metaculus credits.
+
+**Tony:** go to aistudio.google.com → sign in with a Google account → **Get API key** → **Create API key** → copy it → add it as repository secret `GEMINI_API_KEY`. Never add billing.
+
+**Message for Claude Code:**
+```
+Plan B (free Gemini key). GEMINI_API_KEY is now a repository secret (Google AI Studio free tier, no billing). Follow CLAUDE.md and PLAN.md.
+1. Check which Gemini models this key can use for free and their rate limits. We want Gemini 3.6 Flash; report what's available.
+2. Add a 'gemini-free' setup to bot_config.py: 5 forecasts per question from Gemini 3.6 Flash (high reasoning if supported), parser Gemini 3.6 Flash, AskNews research. Throttle and retry so the free rate limits are never exceeded; if a limit is hit near a question's close, submit what's ready.
+3. The free-only guard must allow this key (it can't be charged) and still block every paid OpenRouter model.
+Done when: Test Bot is green on all 4 question types using the Gemini key at $0, and the run page shows no rate-limit failures.
+```
+
+**Then:** when the architect says so, Tony sets `BOT_ENABLED` = `true` and the bot starts forecasting real questions on Gemini. When the Metaculus key arrives, Step 2 switches it to the full lineup.
 
 ---
 
@@ -369,8 +389,8 @@ Step 11 (Tuning). Using resolved questions in fall26-data, fit the stretch facto
 
 ## 5. Tony's how-to
 
-- **Merge a pull request** (only after the architect says OK): repo → **Pull requests** tab → click the PR → scroll down → **Merge pull request** → **Confirm merge**.
-- **Undo a merged pull request:** open the merged PR → **Revert** button → this opens a new PR → merge that one.
+- **Merging:** Tony doesn't merge. When the architect says "merge", tell Claude Code: "The architect says merge PR #__."
+- **Undo a merged pull request:** tell Claude Code: "Revert PR #__ and merge the revert."
 - **Run a workflow:** **Actions** tab → click the workflow name on the left → **Run workflow** (right side) → green **Run workflow** button. Wait a few minutes and refresh.
   - Green tick = it worked.
   - Red X = it failed: screenshot it and send it to the architect.
@@ -410,5 +430,4 @@ Step 11 (Tuning). Using resolved questions in fall26-data, fit the stretch facto
 
 | Date | What happened | Next |
 |---|---|---|
-| 27 Sep 2026 | Accounts created; form sent; email to Ben sent. Task 1 done (PR #1, forecasting-tools 0.3.1, NOTES.md, CLAUDE.md). Architect reviewed PR #1: OK to merge. | Merge PR #1; enable Actions; check secrets; Claude Code does Tasks 2–4 |
-| 27 Sep 2026 | Secrets added (`METACULUS_TOKEN`, `OPENROUTER_API_KEY`, `ASKNEWS_API_KEY`: AskNews is one API key, not client ID + secret). PLAN.md added (PR #2). Task 2 Fall 2026 targets (PR #3). Task 3 `bot_config.py`, free lineup, cost table (PR #4). Task 4 safety (PR #5): red on failure, shared concurrency + 60 min timeout, second schedule, keepalive, public-safe logs, `BOT_ENABLED`, Credit check, Tournament info, ubuntu-24.04, actions v7. Test Bot green on all 4 types at $0; broken run red; tournament run logs "BOT_ENABLED is not true, exiting"; Credit check works. Checks 1 and 3 answered; check 2 partly (MiniBench = id 33125, 21 Sep–9 Oct; no open questions yet). | Re-run Tournament info when MiniBench questions are open; wait for the credit key (Step 2) |
+| 27 Sep 2026 | Accounts created; credits form submitted; email to Ben sent. Step 1 done: PRs #1–#6 merged, Test Bot green at $0, tournament workflow exits while BOT_ENABLED is off. First Fall question (45516) opened; bot is off, so it's skipped. | Plan B (free Gemini key); wait for credit key (Step 2); then Step 3 |
