@@ -45,18 +45,27 @@ dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-class SummerTemplateBot2026(ForecastBot):
+# Fall 2026 targets. Set explicitly rather than via the forecasting-tools
+# MetaculusClient.CURRENT_* constants, so a library update can't silently
+# move the bot to another tournament.
+FALL_2026_TOURNAMENT_ID = "fall-futureeval-2026"  # id 33121
+# The Fall 2026 MiniBench. "minibench" is the rolling slug the library also
+# uses for the current MiniBench round; confirm it in an Actions run.
+FALL_2026_MINIBENCH_ID = "minibench"
+BOT_TESTING_AREA_ID = 32977  # https://www.metaculus.com/tournament/bot-testing-area/
+
+
+class FallBot2026(ForecastBot):
     """
-    This is the template bot for Summer 2026 Metaculus AI Tournament.
+    Our bot for the Fall 2026 FutureEval bot tournament and MiniBench, built on
+    the Metaculus template bot (identical to Metaculus's FallTemplateBot2026).
     This is a copy of what is used by Metaculus to run the Metac Bots in our benchmark, provided as a template for new bot makers.
     This template is given as-is, and is use-at-your-own-risk.
     We have covered most test cases in forecasting-tools it may be worth double checking key components locally.
     So far our track record has been 1 mentionable bug per season (affecting forecasts for 1-2% of total questions)
 
-    Main changes since Fall:
-    - Additional prompting has been added to numeric questions to emphasize putting pecentile values in the correct order.
-    - Support for conditional and date questions has been added
-    - Note: Summer AIB will not use date/conditional questions, so these are only for forecasting on the main site as you wish.
+    Note: the Fall tournament uses binary, numeric, discrete and multiple choice questions.
+    Date and conditional question support is kept only for forecasting on the main site.
 
     The main entry point of this bot is `bot.forecast_on_tournament(tournament_id)` in the parent class.
     See the script at the bottom of the file for more details on how to run the bot.
@@ -670,7 +679,7 @@ if __name__ == "__main__":
     # Configure the bot. The `llms=` block below is commented out to use
     # whichever default models forecasting-tools picks based on your env vars;
     # uncomment and edit to pin specific models.
-    template_bot = SummerTemplateBot2026(
+    template_bot = FallBot2026(
         research_reports_per_question=1,
         predictions_per_research_report=5,
         use_research_summary_to_forecast=False,
@@ -691,12 +700,10 @@ if __name__ == "__main__":
         # },
     )
 
-    # Per-mode tournament URL shown in the summary banner footer. These
-    # piggyback on the forecasting_tools SDK constants and need updating
-    # whenever those rotate seasons.
+    # Per-mode tournament URL shown in the summary banner footer.
     TOURNAMENT_URLS = {
-        "tournament": "https://www.metaculus.com/tournament/summer-futureeval-2026/",
-        "metaculus_cup": "https://www.metaculus.com/tournament/metaculus-cup-summer-2025/",
+        "tournament": "https://www.metaculus.com/tournament/fall-futureeval-2026/",
+        "metaculus_cup": "https://www.metaculus.com/tournament/metaculus-cup-fall-2026/",
         "test_questions": "https://www.metaculus.com/tournament/bot-testing-area/",
     }
 
@@ -707,19 +714,20 @@ if __name__ == "__main__":
     if run_mode == "tournament":
         seasonal_tournament_reports = asyncio.run(
             template_bot.forecast_on_tournament(
-                client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
+                FALL_2026_TOURNAMENT_ID, return_exceptions=True
             )
         )
         minibench_reports = asyncio.run(
             template_bot.forecast_on_tournament(
-                client.CURRENT_MINIBENCH_ID, return_exceptions=True
+                FALL_2026_MINIBENCH_ID, return_exceptions=True
             )
         )
         forecast_reports = seasonal_tournament_reports + minibench_reports
     elif run_mode == "metaculus_cup":
         # The Metaculus Cup may be uninitialized near the start of a season
-        # (Jan/May/Sep). AXC_2025_TOURNAMENT_ID = 32564 and
-        # AI_2027_TOURNAMENT_ID = "ai-2027" are also valid targets here.
+        # (Jan/May/Sep). MetaculusClient.ACX_2025_TOURNAMENT = 32564 and
+        # MetaculusClient.AI_2027_TOURNAMENT_ID = "ai-2027" are also valid
+        # targets here.
         template_bot.skip_previously_forecasted_questions = False
         forecast_reports = asyncio.run(
             template_bot.forecast_on_tournament(
@@ -733,7 +741,7 @@ if __name__ == "__main__":
         template_bot.skip_previously_forecasted_questions = False
         forecast_reports = asyncio.run(
             template_bot.forecast_on_tournament(
-                "bot-testing-area", return_exceptions=True
+                BOT_TESTING_AREA_ID, return_exceptions=True
             )
         )
 
