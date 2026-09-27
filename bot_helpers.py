@@ -275,6 +275,7 @@ def configure_public_logging() -> None:
         litellm_logger = logging.getLogger(name)
         litellm_logger.handlers = []
         litellm_logger.propagate = True
+        litellm_logger.setLevel(logging.WARNING)
     # e.g. pydantic serializer warnings, which can quote model output.
     logging.captureWarnings(True)
 

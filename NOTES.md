@@ -124,30 +124,59 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
   `gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.1-pro-preview` and `gemini-2.5-pro`.
 - One test call to `gemini-3.6-flash` with thinking level "high" worked: HTTP 200, 146 thinking
   tokens for a one-word answer, so high reasoning is supported and on.
-- **Rate limits are not published.** Google's docs say they are per project (not per key), daily
-  limits reset at midnight Pacific time, and the numbers are only shown in AI Studio
-  (https://aistudio.google.com/rate-limit). One third-party page claims about **20 requests/day**
-  for Gemini 3.6 Flash; others say about 1,500/day for Flash models. **Unconfirmed**: check the
-  AI Studio page. With 5 forecasts + 5 parses per question (10 calls), 20/day would cover
-  only 2 questions a day.
+- **Rate limits (AI Studio rate-limit page, 27 Sep 2026):** Gemini 3.6 Flash free tier = **5
+  requests/minute, 250K tokens/minute, 20 requests/day**. Limits are per project (not per key),
+  and the day resets at midnight Pacific (07:00 UTC in summer time). Limits are listed per
+  model, so other Gemini models have their own separate quotas.
+- The **first** `GEMINI_API_KEY` belonged to a project on a **paid tier** (1K/minute, 10K/day,
+  847 requests already used that day by something else, so billing was on). It was replaced
+  with a key from a new project on the free tier before the bot went live. About 42 of our test
+  calls went to the old project (list-price equivalent about $0.67).
+- **Daily budget:** 20/day, keep 20% in reserve = 16 calls; about 8 questions/day means 2 calls
+  per question = **1 forecast + 1 parse**. `bot_config` computes this
+  (`GEMINI_FREE_FORECASTS_PER_QUESTION` = 1). The pace is 4/minute and each call gets 2 tries.
 
-**The `gemini-free` lineup** (`bot_config.py`, now the active lineup):
-- `gemini/gemini-3.6-flash` (LiteLLM calls Google directly with `GEMINI_API_KEY`), 5 forecasts
-  per question with `reasoning_effort="high"`, which LiteLLM sends as `thinkingLevel: "high"`
-  (checked against a dummy server). Setting `thinkingConfig` through `extra_body` does **not**
-  work: LiteLLM overwrites it with `"low"`.
-- Parser: the same model, 1 parse per forecast. No research summary. AskNews research as before.
-- Pacing: every call (forecasts, parses, retries) waits its turn on one shared pacer,
-  `GEMINI_FREE_REQUESTS_PER_MINUTE` = 8 (`llm_throttle.py`). Retries: 3 tries with backoff (5–60 s).
-- Deadline: a forecast still running 5 minutes before the question closes is cut off (at least
-  30 s is always allowed). The forecasts already made are combined and submitted. The question
-  only fails if none finished.
-- Free-only guard: `is_free_model` allows OpenRouter `:free` models and `gemini/` models (Google
-  AI Studio key, can't be charged), and rejects everything else, including every paid OpenRouter
-  model. `gemini-free` may run on real questions (still behind `BOT_ENABLED`); the OpenRouter
-  `free` lineup stays testing-area only.
-- Cost table: LiteLLM prices Gemini 3.6 Flash at list price ($0.75/M input), so the run summary
-  says "Billed: $0 (free tier)" and shows the list-price equivalent separately.
+**The `gemini-free` lineup** (`bot_config.py` `GeminiPool`, active; architect's option A):
+- **Forecasting pool:** Gemini 3.6, 3.7, 3.8 and 3.5 Flash (`gemini/...`, called directly with
+  `GEMINI_API_KEY`), all with `reasoning_effort="high"` (LiteLLM sends `thinkingLevel: "high"`;
+  setting it via `extra_body` gets overwritten with "low").
+- **Parser only:** Gemini 3.5 Flash-Lite, then 3.1 Flash-Lite. These never forecast. (The
+  architect chose 2.5 Flash / Flash-Lite, but Google answers 404 "no longer available to new
+  users" for both on this new project: Credit check run
+  https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36336713455.)
+- **Daily budget per model:** 20 requests/day each, and every attempt counts (Google counted
+  failed ones too: 3 Test Bot runs used up 3.6 Flash's day on 27 Sep). 20% is held in reserve,
+  so 16 are usable. Counts are kept per model for the Google day (midnight Pacific = 07:00 UTC
+  until 1 Nov, then 08:00 UTC) in `quota/gemini_free.json` in the private `fall26-data` repo
+  (`DATA_REPO_TOKEN`), so they carry over between runs (`gemini_budget.py`). Runs never overlap
+  (shared concurrency group), so the counts stay correct. A "daily quota exceeded" answer marks
+  the model as used up for the day.
+- **Per question:** up to 3 forecasts from 3 different models that still have usable budget
+  (the models with most budget left go first). When the pool's usable budget is below 25%,
+  MiniBench questions get 1 forecast; seasonal questions still get up to 3. If no model has usable
+  budget, the question gets 1 forecast from the reserve. Final answer: the library's median
+  (binary), mean (multiple choice) or median CDF (numeric). Seasonal questions are forecast
+  before MiniBench in each run.
+- **No retries on the same model:** a call that finds no budget, an overloaded model (503), a
+  quota error or a timeout moves on to another model in the pool not already used for that
+  question. The parser gets 2 tries through its chain. Calls are paced at 4/minute per model.
+- **Deadline:** a forecast still running 5 minutes before the question closes is cut off (at
+  least 30 s is always allowed); finished forecasts are submitted. The question fails only if
+  none finished, or if no quota is left.
+- **Free-only guard:** `is_free_model` allows OpenRouter `:free` models and `gemini/` models (the
+  AI Studio key can't be charged) and rejects everything else, including every paid OpenRouter
+  model, backups included.
+- **Cost table:** says "Billed: $0 (free tier)", with the list-price equivalent shown separately.
+- **Research failure:** if the news search fails, the question is forecast without news rather
+  than skipped. On 27 Sep 2026 AskNews started answering **HTTP 402 (Payment Required)** after the
+  day's test runs: the free AskNews allowance looks used up.
+- **At least 1:** the library normally fails a question with fewer than half the expected
+  forecasts; for the Gemini pool this is set to 0 (`required_successful_predictions`), so 1
+  successful forecast is enough.
+- **Tests:** `tests/test_gemini_budget.py` (19 tests, local dummy Gemini server, no real calls),
+  run by the **Unit tests** workflow on every pull request.
+- **Test Bot options:** "one binary" (a single binary question) and "only model" (forecast with
+  one named Gemini model), to test without using up the free quota.
 
 ## Three checks (PLAN.md Step 1)
 
