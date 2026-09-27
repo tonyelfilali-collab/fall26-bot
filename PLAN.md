@@ -239,7 +239,7 @@ Done when: Test Bot is green on all 4 question types; the job summary shows each
 Step 3 (Never miss). Follow CLAUDE.md and PLAN.md.
 a) Submit each question's forecast as soon as it is ready (not at the end of the run).
 b) Deadline rule: if a question closes within 15 minutes and the full forecast isn't finished, submit the median of the forecasts made so far; if there are none, run the fast path (Opus 5.5 + Gemini 3.6 Flash x2, AskNews research only).
-c) Any failure in the full path falls back to the fast path. Never skip a question.
+c) Any failure in the full path falls back to the fast path. Never submit a pure guess: submit a real model forecast (the median of what's finished), or leave the question for the next run and retry until it closes.
 d) Ping HEALTHCHECK_URL at the end of every tournament run (append /fail if the run failed).
 e) New daily workflow health.yml at 07:00 UK time. It fails red if: an open question closes within 60 min without our forecast; credits are below 25%; there has been no successful run for 3 hours; AskNews quota is below 20%.
 f) Save one JSON file per question to the private repo fall26-data (using DATA_REPO_TOKEN): question snapshot, research with timestamp, each model's raw and parsed output, final forecast, cost, timings. A logging failure must never block a forecast, but it must trigger an alert.
@@ -261,8 +261,8 @@ Build these as small pure functions with unit tests, plus a CI workflow that run
 - Binary: the fixed 5-step adjustment order in PLAN.md section 3 (median, stretch k=1.2, [market blend placeholder], extreme check using "80% of forecasts that ran", clip 2%-98%).
 - Multiple choice: every option at least 1%, sums to 1.
 - Numeric/discrete: CDF passes the platform rules (201 points for continuous, increasing, each step no bigger than 0.2, bounds respected).
-- Unit sanity: if every percentile is outside the question range, or the median is more than 10x or less than 0.1x the current value found in research, re-parse once; if still wrong, use a wide fallback distribution around the current value.
-- Anything invalid becomes a safe fallback forecast, never a skipped question.
+- Unit sanity: if every percentile is outside the question range, or the median is more than 10x or less than 0.1x the current value found in research, re-parse once; if still wrong, drop that forecast.
+- Anything invalid is dropped, never replaced by a pure guess: submit the median of the real forecasts left, or retry the question on the next run until it closes.
 Done when: CI runs at least 40 tests, including known disasters (99% on an unresolved question, a x1000 unit error, reversed percentiles), and all pass; Test Bot is green.
 ```
 
@@ -436,3 +436,4 @@ Step 11 (Tuning). Using resolved questions in fall26-data, fit the stretch facto
 | 27 Sep 2026 (night, later) | Found that GitHub never runs scheduled workflows in a fork: the tournament schedule had never fired. Tony detached fall26-bot from the Metaculus fork network (architect approved); secrets and `BOT_ENABLED` survived. Until the schedule is proven, Claude Code starts the tournament workflow by hand once an hour (first 18:30 UTC). | Confirm the first scheduled run; then stop the hourly manual runs |
 | 27 Sep 2026 (night) | Step 3 (Never miss) merged, PR #15: 15-minute cut-off with median of finished forecasts; quick forecast (up to 3 passes) if none finished; one JSON file per question in fall26-data; healthchecks.io ping each tournament run; daily health.yml at 07:00 UK. Proofs: health red on a simulated miss; forced failure still submitted; JSON files present; 67 unit tests green. AskNews answered again (16 articles) in the last test. Scheduled runs still not seen; hourly manual runs continue. | Confirm first scheduled run; then stop hourly runs |
 | 27 Sep 2026 (late night) | cron-job.org starts the tournament workflow every 10 min (runs 19:52, 20:02, 20:12 UTC confirmed); hourly manual runs stopped. GitHub's own schedule never fired after detaching, but is kept. Step 4 (Safety checks) merged, PR #18: binary 5-step order (stretch k=1.0 off, clip 2%–98%), MC 1% floor, platform CDF rules, reversed percentiles fixed, unit-error re-parse, dates in every prompt, re-check still open before submitting. Architect decisions in the same PR: success-only Gemini quota counting (today's ledger reset to 3.6 Flash only); never a pure guess (rule 6 rewritten); Test Bot on free OpenRouter models only. Test Bot green on all 4 types; 101 unit tests. PR #17 (quota check = warning) waiting for approval. | Architect: PR #17; watch tonight's first seasonal questions (00:00 UTC) |
+| 27 Sep 2026 (late night, 2) | PR #17 merged: low Gemini quota is a health-check warning; "no successful run for 3 hours" stays red. Long autonomous build started (items 0–6). Item 0: Steps 3 and 4 wording updated to "real forecast or retry, never a pure guess". | Item 1: Step 8 |
