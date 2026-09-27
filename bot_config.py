@@ -35,6 +35,9 @@ FREE_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 
 # Google AI Studio directly (LiteLLM "gemini/" prefix, reads GEMINI_API_KEY).
 GEMINI_FREE_MODEL = "gemini/gemini-3.6-flash"
+# Tried in order when the model before is overloaded or out of quota. Each
+# has its own free quota on the same key (limits are per model).
+GEMINI_FREE_BACKUP_MODELS = ("gemini/gemini-3.7-flash", "gemini/gemini-3.5-flash")
 # Free-tier limits for Gemini 3.6 Flash, from the AI Studio rate-limit page
 # (27 Sep 2026): 5 requests/minute, 250K tokens/minute, 20 requests/day
 # (per project; the day resets at midnight Pacific).
@@ -88,10 +91,13 @@ class Lineup:
     test_only: bool
 
     def llm_model_names(self) -> list[str]:
-        """Model names of the LLMs (the AskNews researcher is not an LLM)."""
-        return [
-            llm.model for llm in self.llms.values() if isinstance(llm, GeneralLlm)
-        ]
+        """Model names of the LLMs and their backups (AskNews is not an LLM)."""
+        names = []
+        for llm in self.llms.values():
+            while isinstance(llm, GeneralLlm):
+                names.append(llm.model)
+                llm = getattr(llm, "_backup", None)
+        return names
 
 
 def _free_lineup() -> Lineup:
@@ -120,29 +126,34 @@ def _free_lineup() -> Lineup:
     )
 
 
+def _gemini_chain(pacers: dict[str, RequestPacer], **kwargs) -> ThrottledLlm:
+    """GEMINI_FREE_MODEL with its backups behind it, each on its model's pacer."""
+    llm: ThrottledLlm | None = None
+    for model in reversed((GEMINI_FREE_MODEL, *GEMINI_FREE_BACKUP_MODELS)):
+        llm = ThrottledLlm(model=model, pacer=pacers[model], backup=llm, **kwargs)
+    assert llm is not None
+    return llm
+
+
 def _gemini_free_lineup() -> Lineup:
-    # Forecaster and parser are the same model, so they share one pacer (the
-    # free quota is per model). Per question: GEMINI_FREE_FORECASTS_PER_QUESTION
-    # forecasts, each parsed once. Only 2 tries per call: a failed call can
-    # still use up the day's quota.
-    pacer = RequestPacer(GEMINI_FREE_REQUESTS_PER_MINUTE)
-    forecaster = ThrottledLlm(
-        model=GEMINI_FREE_MODEL,
+    # One pacer per model (the free quota is per model), shared by forecaster
+    # and parser. Per question: GEMINI_FREE_FORECASTS_PER_QUESTION forecasts,
+    # each parsed once. Only 2 tries per call: a failed call can still use up
+    # the day's quota.
+    pacers = {
+        model: RequestPacer(GEMINI_FREE_REQUESTS_PER_MINUTE)
+        for model in (GEMINI_FREE_MODEL, *GEMINI_FREE_BACKUP_MODELS)
+    }
+    forecaster = _gemini_chain(
+        pacers,
         temperature=None,
         timeout=300,
         allowed_tries=2,
         # LiteLLM turns this into Gemini's thinkingLevel "high". (Setting
         # thinkingConfig through extra_body is overwritten with "low".)
         reasoning_effort="high",
-        pacer=pacer,
     )
-    parser = ThrottledLlm(
-        model=GEMINI_FREE_MODEL,
-        temperature=None,
-        timeout=180,
-        allowed_tries=2,
-        pacer=pacer,
-    )
+    parser = _gemini_chain(pacers, temperature=None, timeout=180, allowed_tries=2)
     return Lineup(
         name="gemini-free",
         llms={

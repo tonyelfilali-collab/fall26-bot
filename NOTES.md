@@ -142,8 +142,13 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
   (checked against a dummy server). Setting `thinkingConfig` through `extra_body` does **not**
   work: LiteLLM overwrites it with `"low"`.
 - Parser: the same model, 1 parse per forecast. No research summary. AskNews research as before.
-- Pacing: every call (forecasts, parses, retries) waits its turn on one shared pacer,
+- Pacing: every call (forecasts, parses, retries) waits its turn on its model's pacer,
   `GEMINI_FREE_REQUESTS_PER_MINUTE` = 4 (`llm_throttle.py`). 2 tries per call with backoff.
+- Backups: the free tier gets "503 model overloaded" at busy times (the first budget Test Bot run
+  failed 3 of 4 questions that way). If a model is overloaded, out of quota, times out or has a
+  server error, the call goes to `gemini-3.7-flash`, then `gemini-3.5-flash`. Each has its own
+  free quota on the same key, and all use high reasoning. Checked against a dummy server:
+  thinkingLevel "high" is sent for all three, and a 503 on 3.6 falls over to 3.7.
 - Deadline: a forecast still running 5 minutes before the question closes is cut off (at least
   30 s is always allowed). The forecasts already made are combined and submitted. The question
   only fails if none finished.

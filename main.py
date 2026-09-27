@@ -742,7 +742,10 @@ if __name__ == "__main__":
             f"The {lineup.name} lineup may only run in test_questions mode, not {run_mode}. "
             "Change ACTIVE_LINEUP in bot_config.py."
         )
-    print(f"Model lineup: {lineup.name} ({', '.join(lineup.llm_model_names())})")
+    print(
+        f"Model lineup: {lineup.name} "
+        f"({', '.join(dict.fromkeys(lineup.llm_model_names()))})"
+    )
 
     template_bot = FallBot2026(
         research_reports_per_question=lineup.research_reports_per_question,
