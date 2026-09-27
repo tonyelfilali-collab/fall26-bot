@@ -212,13 +212,13 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - **Daily health check** (`health.yml` + `health_check.py`) at 07:00 UK time. Two UTC triggers
   (06:00 for BST, 07:00 for GMT); the script runs only for the right one. **Red** if an open
   seasonal/MiniBench question closes within 60 min without our forecast, if there has been no
-  successful tournament run for 3 hours, if any Gemini model (forecasters and parsers) has under
-  20% of its daily quota left, or if a check can't run. **Warning** if AskNews returns 402, or if
-  any tournament run in the last 24 h had a JSON log or ledger save failure. Manual option
+  successful tournament run for 3 hours, or if a check can't run. **Warning** if any Gemini model
+  (forecasters and parsers) has under 20% of its daily quota left (architect, 27 Sep: warning
+  only), if AskNews returns 402, or if any tournament run in the last 24 h had a JSON log or
+  ledger save failure. Manual option
   "simulate miss". On pull requests that change the health check it runs with a simulated miss,
   so that run is **expected to be red**.
-- Caveat: 07:00 UK is 23:00 Pacific, the end of Google's quota day, so the quota check will
-  often be red on busy days.
+- 07:00 UK is 23:00 Pacific, the end of Google's quota day, so the quota warning will be common.
 - Test Bot has a "fail planned forecasts" option to prove the quick forecast.
 - **Test Bot never uses the live Gemini quota:** by default it runs the `free` lineup (OpenRouter
   `:free` models, testing area only). Its `lineup` option can pick `gemini-free` on purpose.

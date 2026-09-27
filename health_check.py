@@ -6,10 +6,11 @@ emails Tony) if:
   forecast by its close is skipped);
 - an open seasonal or MiniBench question closes within 60 minutes without our
   forecast;
-- there has been no successful tournament run for 3 hours;
-- any Gemini model has less than 20% of its daily quota left.
-Warns (yellow, not red) if AskNews still returns 402, or if any tournament run
-in the last 24 hours could not save a question's JSON log or the quota ledger.
+- there has been no successful tournament run for 3 hours.
+Warns (yellow, not red) if any Gemini model has less than 20% of its daily
+quota left (07:00 UK is the end of Google's quota day, so this is normal on
+busy days), if AskNews still returns 402, or if any tournament run in the last
+24 hours could not save a question's JSON log or the quota ledger.
 
     poetry run python health_check.py [--simulate-miss] [--cron "0 6 * * *"]
 """
@@ -111,7 +112,7 @@ def check_gemini_quota(ledger: dict | None, today: str, report: Report) -> None:
         if left < MIN_QUOTA_LEFT * GEMINI_FREE_REQUESTS_PER_DAY:
             low.append(f"{model.removeprefix('gemini/')} {max(left, 0)}/{GEMINI_FREE_REQUESTS_PER_DAY}")
     if low:
-        report.red.append("Gemini quota below 20%: " + ", ".join(low))
+        report.warnings.append("Gemini quota below 20%: " + ", ".join(low))
     else:
         report.ok.append("Every Gemini model has at least 20% of its daily quota left")
 
