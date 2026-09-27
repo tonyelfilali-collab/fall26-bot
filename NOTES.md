@@ -122,8 +122,19 @@ All model choices are in `bot_config.py`:
    Questions run in parallel (`asyncio.gather`). One catch: in tournament mode `main.py` runs the
    seasonal tournament first and MiniBench after it, so MiniBench questions wait for all seasonal
    questions to finish.
-2. **Fall MiniBench slug/id and how long questions stay open:** not yet answered. It needs an
-   Actions run with the Metaculus token.
+2. **Fall MiniBench slug/id and how long questions stay open** (Tournament info run, 27 Sep 2026,
+   https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36330636832):
+   - `minibench` resolves to **id 33125**, name "MiniBench", start 21 Sep 2026, close 9 Oct 2026:
+     the current round (a bit under 3 weeks). Our code uses the slug `minibench`. If Metaculus
+     moves that slug to each new round, we follow automatically; if it doesn't, we would keep
+     pointing at 33125. Re-run **Tournament info** after 9 Oct to see which.
+   - It had **0 open questions**, so how long MiniBench questions stay open is **not known yet**.
+     Re-run Tournament info while MiniBench questions are open.
+   - Seasonal: `fall-futureeval-2026` = id 33121, "Fall 2026 FutureEval Bot Tournament", start
+     28 Sep 2026, project close 5 Mar 2027 (PLAN.md says the season ends 6 Jan 2027; the project
+     close date is later). It already had 1 open question: 45516 (discrete), open 6 Sep 06:00 UTC,
+     closing 28 Sep 05:59 UTC. The bot is off (`BOT_ENABLED` unset, free lineup), so it won't
+     forecast it.
 3. **AskNews calls per question:** `asknews/news-summaries` makes **2** calls per research report
    (`search_news` with strategy "latest news", then "news knowledge"), and there is 1 research
    report per question, so **2 calls per question**. Source: `AskNewsSearcher.get_formatted_news_async`
@@ -162,6 +173,14 @@ behind it, the older waiting run is cancelled (the running one never is).
 - Trade-off: when something breaks, the public log says where but not why. Full details will go
   to the private `fall26-data` repo (PLAN.md Step 3).
 - A run fails (red) if any question failed (`sys.exit(1)`), after writing the cost table.
+
+## Credit check result (27 Sep 2026)
+
+https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36330634993
+The current `OPENROUTER_API_KEY`: limit **no limit**, used **$0**, remaining **no limit**, free-tier
+key **true**. "No limit" means the key itself has no spending cap. Zero spend currently relies
+on the account having no credit, plus the free-only lineup guard. When the Metaculus credit key
+is in, run Credit check again: its limit should show the donated amount.
 
 ## Other things found
 
