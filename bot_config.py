@@ -35,9 +35,26 @@ FREE_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 
 # Google AI Studio directly (LiteLLM "gemini/" prefix, reads GEMINI_API_KEY).
 GEMINI_FREE_MODEL = "gemini/gemini-3.6-flash"
-# Free-tier requests per minute we allow ourselves for that model. Kept below
-# the free limit; every call (forecasts, parsing, retries) shares it.
-GEMINI_FREE_REQUESTS_PER_MINUTE = 8
+# Free-tier limits for Gemini 3.6 Flash, from the AI Studio rate-limit page
+# (27 Sep 2026): 5 requests/minute, 250K tokens/minute, 20 requests/day
+# (per project; the day resets at midnight Pacific).
+GEMINI_FREE_REQUESTS_PER_DAY = 20
+# Every call (forecasts, parsing, retries) shares this pace, kept under 5/min.
+GEMINI_FREE_REQUESTS_PER_MINUTE = 4
+# Daily budget: keep 20% in reserve and plan for about 8 questions a day, so
+# 16 calls a day = 2 per question = 1 forecast + 1 parse.
+GEMINI_FREE_RESERVE = 0.2
+GEMINI_FREE_QUESTIONS_PER_DAY = 8
+GEMINI_FREE_CALLS_PER_FORECAST = 2  # the forecast itself + parsing it
+GEMINI_FREE_FORECASTS_PER_QUESTION = max(
+    1,
+    int(
+        GEMINI_FREE_REQUESTS_PER_DAY
+        * (1 - GEMINI_FREE_RESERVE)
+        / GEMINI_FREE_QUESTIONS_PER_DAY
+        / GEMINI_FREE_CALLS_PER_FORECAST
+    ),
+)
 
 CREDIT_FORECASTER_MODEL = "openrouter/anthropic/claude-opus-5.5"
 CREDIT_HELPER_MODEL = "openrouter/google/gemini-3.6-flash"
@@ -105,13 +122,15 @@ def _free_lineup() -> Lineup:
 
 def _gemini_free_lineup() -> Lineup:
     # Forecaster and parser are the same model, so they share one pacer (the
-    # free quota is per model). Per question: 5 forecasts + 5 parses.
+    # free quota is per model). Per question: GEMINI_FREE_FORECASTS_PER_QUESTION
+    # forecasts, each parsed once. Only 2 tries per call: a failed call can
+    # still use up the day's quota.
     pacer = RequestPacer(GEMINI_FREE_REQUESTS_PER_MINUTE)
     forecaster = ThrottledLlm(
         model=GEMINI_FREE_MODEL,
         temperature=None,
         timeout=300,
-        allowed_tries=3,
+        allowed_tries=2,
         # LiteLLM turns this into Gemini's thinkingLevel "high". (Setting
         # thinkingConfig through extra_body is overwritten with "low".)
         reasoning_effort="high",
@@ -121,7 +140,7 @@ def _gemini_free_lineup() -> Lineup:
         model=GEMINI_FREE_MODEL,
         temperature=None,
         timeout=180,
-        allowed_tries=3,
+        allowed_tries=2,
         pacer=pacer,
     )
     return Lineup(
@@ -133,7 +152,7 @@ def _gemini_free_lineup() -> Lineup:
             "researcher": RESEARCHER,
         },
         research_reports_per_question=1,
-        predictions_per_research_report=5,
+        predictions_per_research_report=GEMINI_FREE_FORECASTS_PER_QUESTION,
         parser_validation_samples=1,
         summarize_research=False,
         free_only=True,

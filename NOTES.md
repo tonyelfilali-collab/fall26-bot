@@ -124,21 +124,26 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
   `gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.1-pro-preview` and `gemini-2.5-pro`.
 - One test call to `gemini-3.6-flash` with thinking level "high" worked: HTTP 200, 146 thinking
   tokens for a one-word answer, so high reasoning is supported and on.
-- **Rate limits are not published.** Google's docs say they are per project (not per key), daily
-  limits reset at midnight Pacific time, and the numbers are only shown in AI Studio
-  (https://aistudio.google.com/rate-limit). One third-party page claims about **20 requests/day**
-  for Gemini 3.6 Flash; others say about 1,500/day for Flash models. **Unconfirmed**: check the
-  AI Studio page. With 5 forecasts + 5 parses per question (10 calls), 20/day would cover
-  only 2 questions a day.
+- **Rate limits (AI Studio rate-limit page, 27 Sep 2026):** Gemini 3.6 Flash free tier = **5
+  requests/minute, 250K tokens/minute, 20 requests/day**. Limits are per project (not per key),
+  and the day resets at midnight Pacific (07:00 UTC in summer time). Limits are listed per
+  model, so other Gemini models have their own separate quotas.
+- The **first** `GEMINI_API_KEY` belonged to a project on a **paid tier** (1K/minute, 10K/day,
+  847 requests already used that day by something else, so billing was on). It was replaced
+  with a key from a new project on the free tier before the bot went live. About 42 of our test
+  calls went to the old project (list-price equivalent about $0.67).
+- **Daily budget:** 20/day, keep 20% in reserve = 16 calls; about 8 questions/day means 2 calls
+  per question = **1 forecast + 1 parse**. `bot_config` computes this
+  (`GEMINI_FREE_FORECASTS_PER_QUESTION` = 1). The pace is 4/minute and each call gets 2 tries.
 
 **The `gemini-free` lineup** (`bot_config.py`, now the active lineup):
-- `gemini/gemini-3.6-flash` (LiteLLM calls Google directly with `GEMINI_API_KEY`), 5 forecasts
-  per question with `reasoning_effort="high"`, which LiteLLM sends as `thinkingLevel: "high"`
+- `gemini/gemini-3.6-flash` (LiteLLM calls Google directly with `GEMINI_API_KEY`), forecasts
+  per question set by the daily budget (now 1) with `reasoning_effort="high"`, which LiteLLM sends as `thinkingLevel: "high"`
   (checked against a dummy server). Setting `thinkingConfig` through `extra_body` does **not**
   work: LiteLLM overwrites it with `"low"`.
 - Parser: the same model, 1 parse per forecast. No research summary. AskNews research as before.
 - Pacing: every call (forecasts, parses, retries) waits its turn on one shared pacer,
-  `GEMINI_FREE_REQUESTS_PER_MINUTE` = 8 (`llm_throttle.py`). Retries: 3 tries with backoff (5–60 s).
+  `GEMINI_FREE_REQUESTS_PER_MINUTE` = 4 (`llm_throttle.py`). 2 tries per call with backoff.
 - Deadline: a forecast still running 5 minutes before the question closes is cut off (at least
   30 s is always allowed). The forecasts already made are combined and submitted. The question
   only fails if none finished.
