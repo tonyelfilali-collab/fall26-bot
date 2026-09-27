@@ -51,6 +51,7 @@ from forecasting_tools import (
 from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
 
 from bot_config import GeminiPool, get_lineup
+from forecast_safety import clip_binary, floor_multiple_choice
 
 dotenv.load_dotenv()
 # Only this logger's messages reach the public Actions log in full; see
@@ -196,6 +197,17 @@ class FallBot2026(ForecastBot):
     forecasting_seasonal = True
     # Test switch: forecast with only this Gemini model.
     only_model: str | None = None
+
+    async def _aggregate_predictions(
+        self, predictions: list[PredictionTypes], question: MetaculusQuestion
+    ) -> PredictionTypes:
+        # Interim safety limits on the final forecast (see forecast_safety.py).
+        aggregated = await super()._aggregate_predictions(predictions, question)
+        if isinstance(question, BinaryQuestion) and isinstance(aggregated, float):
+            return clip_binary(aggregated)
+        if isinstance(aggregated, PredictedOptionList):
+            return floor_multiple_choice(aggregated)
+        return aggregated
 
     def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
         # A planned forecast uses the model chain chosen for it.
