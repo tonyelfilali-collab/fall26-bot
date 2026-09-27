@@ -1,0 +1,413 @@
+# Fall 2026 Metaculus Bot: Master Plan
+
+Version 1.0, 27 Sep 2026. Repo: https://github.com/tonyelfilali-collab/fall26-bot
+
+---
+
+## 0. How to use this document
+
+**Who does what**
+- **Tony (owner):** clicks buttons, adds keys, relays messages. Never edits code or forecasts.
+- **Architect:** a Claude chat in the Claude project. Plans, reviews each pull request, decides.
+- **Builder:** Claude Code, working in the repo above.
+
+**Starting a new chat with the architect:** open a new chat inside the Claude project and send:
+> Read PLAN.md in the project files. We are at Step __. Here is what happened since: ...
+
+**Keeping it up to date:** when the plan changes, the architect gives Tony a new PLAN.md. Tony replaces it in two places: the Claude project files, and the repo (Claude Code does the repo part).
+
+**Progress log:** at the very bottom. Update it after every step.
+
+---
+
+## 1. Goal and hard rules
+
+**Goal:** win as much prize money as possible in the Metaculus Fall 2026 FutureEval bot tournament and the MiniBench rounds.
+- Seasonal tournament: slug `fall-futureeval-2026`, id 33121, 28 Sep 2026 to 6 Jan 2027, $50k prize pool.
+- MiniBench: $1k per 2-week round.
+
+**Hard rules**
+1. **Zero spend.** Allowed:
+   - Metaculus's donated OpenRouter credits (OpenAI, Anthropic and Google models only)
+   - AskNews free tier
+   - free public APIs (Polymarket, Kalshi, Manifold, FRED, Wikipedia)
+   - free GitHub, healthchecks.io free plan
+
+   Not allowed: no card on OpenRouter, no Perplexity, no paid APIs.
+2. **No human in the loop.** Nobody edits, previews or submits a forecast by hand.
+3. **The bot runs only on GitHub Actions.** The code repo is public; the data repo is private.
+4. **One small pull request per task.** Merge only when checks are green and the architect has said OK.
+5. **Every change that affects forecasts is tested before it goes live** (see section 6).
+6. **A missed question scores 0.** Reliability always comes before cleverness.
+
+---
+
+## 2. Key facts (checked 27 Sep 2026)
+
+**Tournament**
+- Question types: binary, numeric, discrete, multiple choice.
+- Up to 5 questions are released at once, at random times. Each seasonal question is open about 1.5 hours.
+- Only the last forecast before close counts (spot peer score, log-based).
+- The first 1–2 weeks have fewer questions.
+
+**Template and library**
+- The bot is built on the official metac-bot-template with forecasting-tools 0.3.1, the first version with Fall 2026 constants (id 33121).
+- By default the library combines forecasts like this: binary = median; multiple choice = mean; numeric/discrete = median of the CDFs.
+
+**Secret names the code reads:** `METACULUS_TOKEN`, `OPENROUTER_API_KEY`, `ASKNEWS_CLIENT_ID`, `ASKNEWS_SECRET`.
+
+**Model leaderboard** (FutureEval, single model + AskNews, 27 Sep 2026):
+
+| Forecaster | Score |
+|---|---|
+| Metaculus Community | 25.21 |
+| Claude Fable 5 High | 16.10 |
+| Claude Opus 5 High | 15.78 |
+| Claude Opus 4.8 High | 14.13 |
+| Gemini 3.6 Flash | 13.23 |
+| GPT-5.6 Sol High | 12.93 |
+
+Opus 5.5 and Fable 5.1 are too new to appear yet.
+
+**AskNews free tier:** 1,000 calls a month, 4,000 for the whole tournament. With about 800 questions, the bot must use **3 calls or fewer per question**.
+
+**GitHub:** in a public repo, scheduled workflows pause after 60 days with no commits, so the bot needs a weekly keepalive commit.
+
+**Still unknown (waiting on answers)**
+- [ ] How much credit we get, and which models it covers (asked Ben at Metaculus)
+- [ ] Whether donated credits may be used for MiniBench, the testing area and the test bench
+- [ ] Prize formula; whether Ramp pays to a UK bank account
+- [ ] Whether the bot may use the community prediction of a main-site "twin" question
+- [ ] Whether manually re-running a failed workflow is allowed
+- [ ] Fall MiniBench slug (the library uses `minibench`) and how long MiniBench questions stay open
+- [ ] How many AskNews calls the template makes per question
+- [ ] Whether forecasting-tools submits each question as soon as it's done, or all at the end
+- [ ] Whether OpenRouter web search works on the donated key
+
+---
+
+## 3. How the finished bot works
+
+1. **Find questions.** Every 10 minutes, fetch open Fall and MiniBench questions we haven't forecast yet.
+2. **Plan.** Check the remaining credit and pick a spending tier. If the question closes within 25 minutes, use the fast path.
+3. **Research.**
+   - A planner model writes search queries and lists the facts that decide the question.
+   - The bot searches AskNews and uses model web search.
+   - It does an extra search only if key facts are missing or the models disagree.
+   - The result is a short dossier (6k tokens or less) with dated facts, the current value, base rates and key uncertainties.
+   - Market prices are kept **out** of the dossier.
+4. **Forecast.** Several models from different AI families each forecast independently, at high reasoning effort.
+5. **Combine and adjust** in a fixed order (below).
+6. **Check.** The forecast must pass the platform rules and sanity checks. If it fails, submit a safe fallback forecast. Never skip a question.
+7. **Submit** the forecast with a private comment, as soon as that question is ready.
+8. **Record.** Save everything to the private data repo and ping the "bot is alive" monitor.
+
+### Model lineup
+
+- **Yes/no questions**
+  - Round 1: Claude Opus 5.5, GPT-5.6 Sol and Gemini 3.6 Flash.
+  - Round 2 runs only if the round-1 spread is more than 15 points, or the median is below 10% or above 90%. It adds Claude Fable 5.1, Claude Opus 5.5 and Gemini 3.6 Flash.
+- **Numeric and multiple-choice questions:** always all 6 forecasts, because that's where bots lose the most points.
+- **Planner, parser and summarizer:** Gemini 3.6 Flash.
+- **All forecasters:** high reasoning effort, 600-second timeout, 3 tries.
+- **Backups** when a model fails, times out or refuses:
+  - Fable 5.1 → Opus 5.5 → Opus 5
+  - Opus 5.5 → Opus 5
+  - GPT-5.6 Sol → GPT-5.5 High
+  - Gemini 3.6 Flash → Gemini 3.1 Pro
+
+### Adjusting the final number (always in this order)
+
+1. **Middle value:** take the median of all the forecasts.
+2. **Stretch** (yes/no only): push the median slightly away from 50%. In log-odds, multiply by k = 1.2 (retuned in Step 11). Never stretch a market blend or a referee answer.
+3. **Market blend** (Step 9 onwards): if there's a good market match, the final number is 50% ours and 50% the market's, blended in log-odds.
+4. **Extreme check:** a forecast below 5% or above 95% is only allowed if at least 80% of the forecasts that ran are beyond 10%/90% on the same side. If only 3 models ran and the median is extreme, run all 6 first. Otherwise, pull the forecast back to 10%/90%.
+5. **Clip:** yes/no forecasts are always kept between 2% and 98%.
+
+For multiple choice: take the median per option, rescale so they sum to 1, give every option at least 1%, then rescale again.
+
+For numeric: take the pointwise median of the models' CDFs, mix 95% of it with 5% uniform spread across the question's range, then check the platform's CDF rules.
+
+### Spending tiers (chosen automatically)
+
+The bot works out a target spend per question: (remaining credit − 15% reserve) ÷ expected remaining questions. It then picks a tier:
+
+| Tier | Models | Rough cost per question |
+|---|---|---|
+| Full | The lineup above | ~$1.50–2.00 |
+| Standard | Opus 5.5, GPT-5.6 Sol, Gemini 3.6 Flash ×3 | ~$0.80 |
+| Lean | Opus 5.5 + Gemini 3.6 Flash ×2 | ~$0.40 |
+| Fast path (less than 15–25 min to close, or the full path failed) | Opus 5.5 + Gemini 3.6 Flash ×2, AskNews research only | ~5 minutes to run |
+
+- MiniBench always runs one tier below the seasonal tournament.
+- Tony gets an email whenever the tier changes.
+- All costs are estimates; the job summary logs the real cost.
+
+---
+
+## 4. Build steps
+
+**How every step works**
+1. Tony pastes the "Message for Claude Code" into Claude Code.
+2. Claude Code builds it and opens a pull request.
+3. Tony sends the architect Claude Code's reply and the pull request link.
+4. The architect checks it and says "merge" or explains what to fix.
+5. Tony merges it and updates the progress log.
+
+Do steps back to back, as fast as each one passes its check. Only Step 2 (credit key) and Step 11 (needs resolved questions) have to wait for something outside our control.
+
+---
+
+### Step 1: Foundation (Tasks 1–4) plus three checks
+
+**Status:** Task 1 done (PR #1). Tasks 2–4 are in the first Claude Code prompt:
+- Task 2: target Fall 2026 explicitly.
+- Task 3: all model choices in one config file, free test models for now, cost per question in the run summary.
+- Task 4: safety — failed runs show red, a shared concurrency group, 60-minute timeout, a second schedule at minutes 17/37/57, a weekly keepalive, no forecasts or reasoning in public logs, a `BOT_ENABLED` switch, and a Credit check workflow.
+
+**Message for Claude Code (after Task 4):**
+```
+Three checks before we go further. Don't change behaviour; just find out and add the answers to NOTES.md with sources:
+1. Does forecasting-tools submit each question's forecast as soon as that question finishes, or all at the end of the run? If at the end, tell me what it would take to submit per question.
+2. How long do current Fall MiniBench questions stay open? Confirm the Fall MiniBench slug/id via the Metaculus API in an Actions run, and report open and close times for a few questions.
+3. How many AskNews API calls does 'asknews/news-summaries' make per question? We must stay at or below 3 per question.
+Reply in plain, short language.
+```
+
+**Done when:**
+- Test Bot is green on the testing area with a free model, for all 4 question types.
+- The tournament run logs "BOT_ENABLED is not true, exiting".
+- Credit check works.
+- The three answers are in NOTES.md.
+
+---
+
+### Step 2: Switch on (when the Metaculus credit key arrives)
+
+**Tony:**
+1. Update the `OPENROUTER_API_KEY` secret with the key Metaculus sends.
+2. Run **Credit check** and tell the architect the limit it shows.
+
+**Message for Claude Code:**
+```
+Step 2 (Switch on). The donated Metaculus key is now in OPENROUTER_API_KEY. Follow CLAUDE.md and PLAN.md.
+1. Production lineup in the config file: 5 forecasts per question from different models: Claude Opus 5.5, GPT-5.6 Sol, Gemini 3.6 Flash, Claude Fable 5.1, Claude Opus 5.5. All high reasoning, timeout 600 s, 3 tries. Parser and summarizer: Gemini 3.6 Flash.
+2. Backups when a model errors, refuses or times out: Fable 5.1 -> Opus 5.5 -> Opus 5; Opus 5.5 -> Opus 5; GPT-5.6 Sol -> GPT-5.5 High; Gemini 3.6 Flash -> Gemini 3.1 Pro.
+3. AskNews: at most 3 calls per question.
+4. Test OpenRouter web search once with this key. Report whether it works and whether it's charged to the donated credits.
+Done when: Test Bot is green on all 4 question types; the job summary shows each model id, reasoning tokens > 0, and cost per question.
+```
+
+**Then Tony:** Settings → Secrets and variables → Actions → **Variables** tab → New repository variable, name `BOT_ENABLED`, value `true`. The bot is now live.
+
+---
+
+### Step 3: Never miss a question
+
+**Tony first:**
+1. **Dead-man's switch.** Sign up at healthchecks.io (free) → Add Check → Period 1 hour, Grace 1 hour → copy the ping URL → add it as repository secret `HEALTHCHECK_URL`.
+2. **Private data repo.** Create a new private repository named `fall26-data`.
+3. **Data token.** GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token:
+   - Repository access: only `fall26-data`
+   - Permissions: Contents = Read and write
+   - Expiration: 31 Jan 2027
+
+   Copy it and add it as repository secret `DATA_REPO_TOKEN` in fall26-bot.
+
+**Message for Claude Code:**
+```
+Step 3 (Never miss). Follow CLAUDE.md and PLAN.md.
+a) Submit each question's forecast as soon as it is ready (not at the end of the run).
+b) Deadline rule: if a question closes within 15 minutes and the full forecast isn't finished, submit the median of the forecasts made so far; if there are none, run the fast path (Opus 5.5 + Gemini 3.6 Flash x2, AskNews research only).
+c) Any failure in the full path falls back to the fast path. Never skip a question.
+d) Ping HEALTHCHECK_URL at the end of every tournament run (append /fail if the run failed).
+e) New daily workflow health.yml at 07:00 UK time. It fails red if: an open question closes within 60 min without our forecast; credits are below 25%; there has been no successful run for 3 hours; AskNews quota is below 20%.
+f) Save one JSON file per question to the private repo fall26-data (using DATA_REPO_TOKEN): question snapshot, research with timestamp, each model's raw and parsed output, final forecast, cost, timings. A logging failure must never block a forecast, but it must trigger an alert.
+Done when: a forced model failure still submits a fast-path forecast in the testing area; JSON files appear in fall26-data; health.yml goes red on a simulated miss.
+```
+
+**Tony's check:** pause the tournament workflow for 2 hours (Actions → the workflow → "..." → Disable). An email from healthchecks.io should arrive. Then re-enable it.
+
+---
+
+### Step 4: Safety checks
+
+**Message for Claude Code:**
+```
+Step 4 (Safety checks). Follow CLAUDE.md and PLAN.md section 3.
+Build these as small pure functions with unit tests, plus a CI workflow that runs the tests on every pull request:
+- Before submitting: the question is still open and unresolved.
+- Every prompt includes today's date and the question's close and resolve dates.
+- Binary: the fixed 5-step adjustment order in PLAN.md section 3 (median, stretch k=1.2, [market blend placeholder], extreme check using "80% of forecasts that ran", clip 2%-98%).
+- Multiple choice: every option at least 1%, sums to 1.
+- Numeric/discrete: CDF passes the platform rules (201 points for continuous, increasing, each step no bigger than 0.2, bounds respected).
+- Unit sanity: if every percentile is outside the question range, or the median is more than 10x or less than 0.1x the current value found in research, re-parse once; if still wrong, use a wide fallback distribution around the current value.
+- Anything invalid becomes a safe fallback forecast, never a skipped question.
+Done when: CI runs at least 40 tests, including known disasters (99% on an unresolved question, a x1000 unit error, reversed percentiles), and all pass; Test Bot is green.
+```
+
+---
+
+### Step 5: Test bench
+
+**Message for Claude Code:**
+```
+Step 5 (Test bench). Follow CLAUDE.md and PLAN.md section 6.
+New manual workflow evaluate.yml that never publishes:
+- Picks 60 open main-site Metaculus questions with a visible community prediction and at least 30 forecasters (about 60% binary, 20% numeric/discrete, 20% multiple choice). Saves the list so we reuse it.
+- Gathers research once per batch and freezes it in fall26-data, so config A and config B see identical research.
+- Runs config A and config B; scores each forecast's distance from the community prediction (KL divergence); reports the paired mean difference with a bootstrap 90% confidence interval, overall and per question type, plus cost.
+- A "quick" option that uses 30 questions.
+Done when: a report exists for the current config, and running it twice shows the noise level.
+```
+
+---
+
+### Step 6: Smart ensemble
+
+**Message for Claude Code:**
+```
+Step 6 (Smart ensemble). Follow CLAUDE.md and PLAN.md section 3 ("Model lineup" and "Spending tiers").
+- Binary: round 1 = Opus 5.5, GPT-5.6 Sol, Gemini 3.6 Flash. Round 2 (Fable 5.1, Opus 5.5, Gemini 3.6 Flash) only if the round-1 spread > 15 points or the median is below 10% or above 90%. Final = median of all.
+- Numeric and multiple choice: always all 6.
+- Spending tiers Full/Standard/Lean chosen automatically from (remaining credit - 15% reserve) / expected remaining questions. MiniBench always one tier below the seasonal tournament. Email alert when the tier changes.
+Done when: the test bench shows it's not worse (PLAN.md section 6); cost per question is within the expected band; a forced provider failure still produces a forecast.
+```
+
+---
+
+### Step 7: Better research
+
+**Message for Claude Code:**
+```
+Step 7 (Research). Follow CLAUDE.md and PLAN.md section 3.
+- A planner (Gemini 3.6 Flash) writes up to 3 search queries and lists the facts that decide the question.
+- Sources: AskNews (at most 3 calls per question) plus one model web search via OpenRouter, if Step 2 confirmed it works on the donated key.
+- Gap-fill: one extra search only if a key fact is missing or the round-1 models disagree by more than 15 points.
+- Dossier: 6k tokens max, containing current status/value with dates, what must happen to resolve, base rates, key uncertainties. No market prices in the dossier. Saved with a timestamp in fall26-data.
+Done when: the test bench shows it's not worse; every eval dossier is 6k tokens or less; logs confirm 3 or fewer AskNews calls per question.
+```
+
+---
+
+### Step 8: Numeric and multiple-choice handling
+
+**Message for Claude Code:**
+```
+Step 8 (Numeric and multiple choice). Follow CLAUDE.md and PLAN.md section 3.
+- Numeric/discrete: ask each model for percentiles 2.5, 5, 10, 25, 50, 75, 90, 95, 97.5. Build each model's CDF with PCHIP interpolation; take the pointwise median across models; mix 95% with 5% uniform over the question range (respecting open/closed bounds); must pass the Step 4 checks.
+- Multiple choice: median per option across models, renormalise, floor every option at 1%, renormalise again.
+Done when: all checks pass on the testing area; the test bench shows the numeric and multiple-choice subsets are not worse.
+```
+
+---
+
+### Step 9: Market blend
+
+**Message for Claude Code:**
+```
+Step 9 (Market blend). Follow CLAUDE.md and PLAN.md section 3.
+- Search Polymarket, Kalshi and Manifold by keywords from the question.
+- A judge model (Gemini 3.6 Flash) accepts a market only if it is the same event, with the same resolution source and exactly the same deadline.
+- Require a minimum liquidity/volume and a price updated within the last 24 hours.
+- Binary: final = 50% ours + 50% market, in log-odds, applied after the stretch and before the extreme check.
+- Multiple choice: only if every option maps to a market.
+- Log a table of every candidate match and the judge's verdict.
+Done when: a table of 20 candidate matches is sent to the architect for review; the test bench shows it's not worse.
+```
+
+---
+
+### Step 10: Silent tests (shadow mode)
+
+**Message for Claude Code:**
+```
+Step 10 (Silent tests). Follow CLAUDE.md and PLAN.md.
+- Build a "shadow variant" system: extra forecasts are computed and saved to fall26-data, but never submitted.
+- First shadow variant: the referee, binary only. It sees each model's number plus a two-line reason (not full transcripts). Its answer must lie between the lowest and highest model forecast. Candidate final = average of referee and median.
+- A script that scores shadow vs live forecasts on resolved questions (log score).
+Done when: shadow forecasts are being saved; the scoring script works on the first resolved questions.
+```
+
+**Architect decision:** after at least 80 resolved binary questions, the referee goes live only if it beats the plain median.
+
+---
+
+### Step 11: Tuning (from about mid-November)
+
+**Message for Claude Code** (send once at least 150 binary questions have resolved):
+```
+Step 11 (Tuning). Using resolved questions in fall26-data, fit the stretch factor k and the clip limits by cross-validation, separately per question type where there's enough data. Report the log score before and after. Change the live settings only if cross-validation shows an improvement.
+```
+
+---
+
+### Later (only after Steps 1–11 are solid)
+
+1. **Model upgrades.** Check the FutureEval leaderboard monthly; test any new top model on the test bench and swap it in if it wins.
+2. **Monthly review of the biggest misses**, using the forecasting-tools review tool, to catch bugs.
+3. **Consistency between related questions** released together.
+4. **Market re-check near close**, only if MiniBench windows turn out to be long.
+5. **Community prediction of the main-site twin question**, only if Metaculus confirms it's allowed.
+6. **Metaculus Cup** on the Lean tier.
+7. **Market Pulse** (needs continuous updating), last.
+
+### Don't build
+
+- persona prompts
+- forced Bayesian or step-by-step reasoning templates (research says they hurt)
+- best-of-k pickers
+- stacking models or meta-models
+- fine-tuning our own model
+- backtests using date-filtered web search (they leak the answer)
+- dashboards
+- more than about 8 forecasters per question
+- anything that runs on Tony's computer
+- Grok or other non-covered models (not covered by the credits)
+
+---
+
+## 5. Tony's how-to
+
+- **Merge a pull request** (only after the architect says OK): repo → **Pull requests** tab → click the PR → scroll down → **Merge pull request** → **Confirm merge**.
+- **Undo a merged pull request:** open the merged PR → **Revert** button → this opens a new PR → merge that one.
+- **Run a workflow:** **Actions** tab → click the workflow name on the left → **Run workflow** (right side) → green **Run workflow** button. Wait a few minutes and refresh.
+  - Green tick = it worked.
+  - Red X = it failed: screenshot it and send it to the architect.
+- **Update a secret:** Settings → Secrets and variables → Actions → click the secret → paste the new value → **Update secret**.
+- **Add or change a variable:** same page → **Variables** tab.
+- **See the bot's forecasts:** Metaculus → your bot's profile page.
+- **Emergency stop:** set the `BOT_ENABLED` variable to `false`.
+- **Calendar reminders:**
+  - 6 Jan 2027: post-season survey (required for prizes).
+  - Early Jan 2027: participation form for the next season.
+
+---
+
+## 6. Test bench and acceptance rule
+
+**Three ways we measure**
+1. **Test bench** (Step 5): distance from the Metaculus community prediction on open questions. It's fast and can't leak answers.
+2. **Real results:** live and shadow forecasts scored once questions resolve. MiniBench gives about 60 resolutions every 2 weeks.
+3. **Safety tests:** unit tests plus a Test Bot run on every pull request.
+
+**When a change ships**
+
+| Kind of change | Examples | Ships when |
+|---|---|---|
+| Fixes and reliability | bug fixes, alerts, checks | Tests and Test Bot are green |
+| Methods already backed by research | ensemble, research breadth, numeric/MC handling | Not measurably worse: the 90% CI of (new − old) is no worse than +2% of baseline, no question type is more than 10% worse, cost stays within tier |
+| New or risky ideas | referee, market weight, stretch factor, prompt changes | The 90% CI shows a real improvement, or real resolved results show it wins |
+
+**Always**
+- One change per pull request.
+- Differences smaller than the noise level count as zero.
+- Never merge on a day when nobody can check the next run.
+
+---
+
+## 7. Progress log
+
+| Date | What happened | Next |
+|---|---|---|
+| 27 Sep 2026 | Accounts created; form sent; email to Ben sent. Task 1 done (PR #1, forecasting-tools 0.3.1, NOTES.md, CLAUDE.md). Architect reviewed PR #1: OK to merge. | Merge PR #1; enable Actions; check secrets; Claude Code does Tasks 2–4 |
