@@ -104,7 +104,9 @@ jobs:
                 if .error then
                   "- Error: \(.error.status): \(.error.message | .[0:300])",
                   (.error.details[]? | .violations[]? |
-                    "- Quota: \(.quotaMetric // "") \(.quotaId // "") limit \(.quotaValue // "?")")
+                    "- Quota: \(.quotaMetric // "") \(.quotaId // "") limit \(.quotaValue // "?")"),
+                  (.error.details[]? | select(.violations == null) |
+                    "- Detail: \(tojson | .[0:300])")
                 else empty end' reply.json
             } | tee -a "$GITHUB_STEP_SUMMARY"
             rm -f reply.json
