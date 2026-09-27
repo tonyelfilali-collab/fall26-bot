@@ -5,7 +5,7 @@ import logging
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 import dotenv
 
@@ -53,7 +53,19 @@ from forecasting_tools import (
 from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
 
 from bot_config import GeminiPool, get_lineup
-from forecast_safety import clip_binary, floor_multiple_choice
+from forecast_safety import (
+    BINARY_FALLBACK,
+    adjust_binary,
+    all_outside_range,
+    dates_line,
+    distribution_problems,
+    fix_reversed_percentiles,
+    floor_multiple_choice,
+    question_range,
+    still_open_problem,
+    uniform_multiple_choice,
+    wide_fallback_distribution,
+)
 from deadlines import planned_forecast_timeout, quick_forecast_timeout
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
@@ -204,6 +216,12 @@ class FallBot2026(ForecastBot):
     # used in their path. Set in __main__.
     question_log: QuestionLogWriter | None = None
     run_mode = "tournament"
+    # Whether to submit forecasts to Metaculus. The library's own
+    # publish_reports_to_metaculus stays False, so the bot can check that the
+    # question is still open right before submitting.
+    submit_forecasts = False
+    # Questions that got the safe fallback forecast this run (makes the run red).
+    fallback_count = 0
     # Free Gemini lineup: plans each question's forecasters within the day's
     # budget. Set in __main__ from the lineup.
     gemini_pool: GeminiPool | None = None
@@ -216,12 +234,21 @@ class FallBot2026(ForecastBot):
     async def _aggregate_predictions(
         self, predictions: list[PredictionTypes], question: MetaculusQuestion
     ) -> PredictionTypes:
-        # Interim safety limits on the final forecast (see forecast_safety.py).
+        # Safety checks on the final forecast (forecast_safety.py, PLAN.md Step 4).
+        if isinstance(question, BinaryQuestion):
+            # Median, stretch (off), [market blend], extreme check, clip 2-98%.
+            return adjust_binary(predictions)  # type: ignore[arg-type]
         aggregated = await super()._aggregate_predictions(predictions, question)
-        if isinstance(question, BinaryQuestion) and isinstance(aggregated, float):
-            return clip_binary(aggregated)
         if isinstance(aggregated, PredictedOptionList):
             return floor_multiple_choice(aggregated)
+        if isinstance(aggregated, NumericDistribution) and isinstance(question, NumericQuestion):
+            problems = distribution_problems(aggregated, question)
+            if problems:
+                logger.warning(
+                    f"Question {question.id_of_post}: combined distribution broke the platform "
+                    f"rules ({'; '.join(problems)}), using the wide fallback"
+                )
+                return wide_fallback_distribution(question)
         return aggregated
 
     def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
@@ -347,17 +374,88 @@ class FallBot2026(ForecastBot):
         try:
             report = await super()._run_individual_question(question)
         except Exception as e:
-            record.update(submitted=False, error=describe_exception(e))
-            await self._save_record(question, record, started)
-            raise
+            # Never skip a question: submit a safe fallback forecast instead.
+            record["error"] = describe_exception(e)
+            try:
+                report = self._fallback_report(question, e)
+            except Exception:
+                record["submitted"] = False
+                await self._save_record(question, record, started)
+                raise e
+            self.fallback_count += 1
+            record["fallback"] = True
+            logger.warning(
+                f"Question {question.id_of_post}: no forecast could be made, "
+                "submitting the safe fallback forecast"
+            )
+            print(
+                f"::warning title=fallback-forecast::Question {question.id_of_post}: "
+                "safe fallback forecast submitted"
+            )
         record.update(
-            submitted=self.publish_reports_to_metaculus,
+            submitted=await self._submit_if_still_open(question, report),
             final_forecast=to_jsonable(report.prediction),
             minutes=report.minutes_taken,
             list_price_cost=report.price_estimate,
         )
         await self._save_record(question, record, started)
         return report
+
+    def _fallback_report(self, question: MetaculusQuestion, error: Exception) -> ForecastReport:
+        from forecasting_tools.data_models.data_organizer import DataOrganizer
+
+        if isinstance(question, BinaryQuestion):
+            prediction: Any = adjust_binary(
+                [question.community_prediction_at_access_time or BINARY_FALLBACK]
+            )
+        elif isinstance(question, MultipleChoiceQuestion):
+            prediction = uniform_multiple_choice(question.options)
+        elif isinstance(question, NumericQuestion):
+            prediction = wide_fallback_distribution(question)
+        else:
+            raise error
+        report_type = DataOrganizer.get_report_type_for_question_type(type(question))
+        return report_type(
+            question=question,
+            prediction=prediction,
+            explanation=(
+                "# Safe fallback forecast\n\nNo model forecast could be made for this "
+                "question, so a deliberately cautious forecast was submitted instead."
+            ),
+            price_estimate=0,
+            minutes_taken=0,
+            errors=[describe_exception(error)],
+        )
+
+    async def _submit_if_still_open(
+        self, question: MetaculusQuestion, report: ForecastReport
+    ) -> bool:
+        if not self.submit_forecasts:
+            return False
+        try:
+            fresh = await asyncio.to_thread(
+                self.metaculus_client.get_question_by_post_id,
+                question.id_of_post,
+                "unpack_subquestions",
+            )
+            if isinstance(fresh, list):
+                fresh = next(
+                    (q for q in fresh if q.id_of_question == question.id_of_question),
+                    question,
+                )
+            problem = still_open_problem(fresh)
+        except Exception as e:
+            # Can't check: submit anyway rather than risk skipping the question.
+            logger.warning(
+                f"Question {question.id_of_post}: could not re-check that it's open "
+                f"({type(e).__name__}); submitting anyway"
+            )
+            problem = None
+        if problem:
+            logger.warning(f"Question {question.id_of_post}: not submitted, {problem}")
+            return False
+        await report.publish_report_to_metaculus(metaculus_client=self.metaculus_client)
+        return True
 
     async def _save_record(self, question, record: dict, started: datetime) -> None:  # type: ignore[no-untyped-def]
         # Saved after submission; a failure here never affects the forecast.
@@ -527,7 +625,7 @@ class FallBot2026(ForecastBot):
             Your research assistant says:
             {research}
 
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
+            {dates_line(question)}
 
             Before answering you write:
             (a) The time left until the outcome to the question is known.
@@ -587,7 +685,7 @@ class FallBot2026(ForecastBot):
             Your research assistant says:
             {research}
 
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
+            {dates_line(question)}
 
             Before answering you write:
             (a) The time left until the outcome to the question is known.
@@ -661,7 +759,7 @@ class FallBot2026(ForecastBot):
             Your research assistant says:
             {research}
 
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
+            {dates_line(question)}
 
             {lower_bound_message}
             {upper_bound_message}
@@ -714,16 +812,55 @@ class FallBot2026(ForecastBot):
             - Turn any values that are in scientific notation into regular numbers.
             """
         )
-        percentile_list: list[Percentile] = await structure_output(
-            reasoning,
-            list[Percentile],
-            model=self.get_llm("parser", "llm"),
-            additional_instructions=parsing_instructions,
-            num_validation_samples=self._structure_output_validation_samples,
+        prediction = await self._parse_numeric_safely(
+            question, reasoning, parsing_instructions
         )
-        prediction = NumericDistribution.from_question(percentile_list, question)
         logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
+
+    async def _parse_numeric_safely(
+        self, question: NumericQuestion, reasoning: str, parsing_instructions: str
+    ) -> NumericDistribution:
+        """
+        Parse the percentiles, put reversed ones right, and catch unit errors:
+        if every value is outside the question's range, re-parse once with a
+        warning about units; if still outside, use the wide fallback.
+        """
+        lower, upper = question_range(question)
+        instructions = parsing_instructions
+        for attempt in range(2):
+            percentile_list: list[Percentile] = await structure_output(
+                reasoning,
+                list[Percentile],
+                model=self.get_llm("parser", "llm"),
+                additional_instructions=instructions,
+                num_validation_samples=self._structure_output_validation_samples,
+            )
+            percentile_list = fix_reversed_percentiles(percentile_list)
+            if not all_outside_range(percentile_list, lower, upper):
+                break
+            logger.warning(
+                f"Question {question.id_of_post}: every parsed value is outside the "
+                f"question's range (attempt {attempt + 1}); possible unit error"
+            )
+            instructions = parsing_instructions + clean_indents(
+                f"""
+                - IMPORTANT: a previous parse gave values that were all outside the question's
+                  range ({lower} to {upper} {question.unit_of_measure}). Check the units very
+                  carefully (thousands vs millions vs billions, percent vs fraction).
+                """
+            )
+        else:
+            return wide_fallback_distribution(question)
+        distribution = NumericDistribution.from_question(percentile_list, question)
+        problems = distribution_problems(distribution, question)
+        if problems:
+            logger.warning(
+                f"Question {question.id_of_post}: distribution broke the platform rules "
+                f"({'; '.join(problems)}), using the wide fallback"
+            )
+            return wide_fallback_distribution(question)
+        return distribution
 
     ##################################### DATE QUESTIONS #####################################
 
@@ -750,7 +887,7 @@ class FallBot2026(ForecastBot):
             Your research assistant says:
             {research}
 
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
+            {dates_line(question)}
 
             {lower_bound_message}
             {upper_bound_message}
@@ -1011,7 +1148,8 @@ if __name__ == "__main__":
         predictions_per_research_report=lineup.predictions_per_research_report,
         use_research_summary_to_forecast=False,
         enable_summarize_research=lineup.summarize_research,
-        publish_reports_to_metaculus=publish_to_metaculus,
+        # The bot submits itself, after checking the question is still open.
+        publish_reports_to_metaculus=False,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
@@ -1028,6 +1166,7 @@ if __name__ == "__main__":
     template_bot.only_model = args.only_model
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
+    template_bot.submit_forecasts = publish_to_metaculus
     template_bot.question_log = QuestionLogWriter()
 
     # Per-mode tournament URL shown in the summary banner footer.
@@ -1112,7 +1251,11 @@ if __name__ == "__main__":
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
-    if failures:
+    if template_bot.fallback_count:
+        logger.error(
+            f"{template_bot.fallback_count} question(s) got the safe fallback forecast"
+        )
+    if failures or template_bot.fallback_count:
         # A non-zero exit makes the Actions run fail (red).
         logger.error(f"{failures} question(s) failed")
         sys.exit(1)
