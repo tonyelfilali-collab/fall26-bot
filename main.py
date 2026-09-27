@@ -52,7 +52,7 @@ from forecasting_tools import (
 
 from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
 
-from bot_config import GeminiPool, get_lineup
+from bot_config import MARKET_MODE, GeminiPool, get_lineup
 from forecast_safety import (
     NoValidForecast,
     adjust_binary,
@@ -78,6 +78,8 @@ from distributions import (
 )
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
+from markets import match_question
+from markets import to_records as market_records
 from research import run_planned_research
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
@@ -409,8 +411,25 @@ class FallBot2026(ForecastBot):
             )
             await self._save_record(question, record, started)
             raise
+        submitted = await self._submit_if_still_open(question, report)
+        # Step 9, log-only: after submitting, find and judge matching markets
+        # and save them. Never changes the forecast; a failure is only logged.
+        if MARKET_MODE == "log-only" and isinstance(question, BinaryQuestion):
+            try:
+                candidates = await match_question(
+                    question, self.get_llm("parser", "llm").invoke
+                )
+                record["market_candidates"] = market_records(candidates)
+                logger.info(
+                    f"Question {question.id_of_post}: {len(candidates)} market candidate(s), "
+                    f"{sum(c.accepted for c in candidates)} accepted (log-only)"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Question {question.id_of_post}: market matching failed ({type(e).__name__})"
+                )
         record.update(
-            submitted=await self._submit_if_still_open(question, report),
+            submitted=submitted,
             final_forecast=to_jsonable(report.prediction),
             minutes=report.minutes_taken,
             list_price_cost=report.price_estimate,

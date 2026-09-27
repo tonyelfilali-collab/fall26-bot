@@ -35,6 +35,12 @@ HIGH_REASONING = {"reasoning": {"effort": "high"}}
 # that supports structured output.
 FREE_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 
+# PLAN.md Step 9 (markets.py): "log-only" = find and judge matching Polymarket
+# / Kalshi / Manifold markets for binary questions and SAVE them (question JSON
+# log), without blending them into forecasts. "off" = skip. Blending waits for
+# the architect.
+MARKET_MODE: Literal["off", "log-only"] = "log-only"
+
 # Google AI Studio directly (LiteLLM "gemini/" prefix, reads GEMINI_API_KEY).
 # Free tier (AI Studio rate-limit page, 27 Sep 2026): 5 requests/minute and
 # 20 requests/day, per model, per project. The day resets at midnight Pacific.

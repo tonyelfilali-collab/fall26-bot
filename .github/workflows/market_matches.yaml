@@ -1,0 +1,46 @@
+name: Market matches
+
+# PLAN.md Step 9, log-only. Manual only. Finds and judges Polymarket / Kalshi
+# / Manifold markets for a sample of open main-site binary questions and saves
+# a table (run summary + fall26-data). Forecasts nothing. The judge is the
+# free OpenRouter model, never the live Gemini quota.
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many questions to try"
+        type: string
+        default: "12"
+
+concurrency:
+  group: test-bench
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  markets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Find and judge market matches
+        run: poetry run python markets.py --limit "$LIMIT"
+        env:
+          LIMIT: ${{ inputs.limit }}
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
