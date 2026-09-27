@@ -259,6 +259,11 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   MiniBench one tier below. Chosen once per run from `/api/v1/key`; the last tier is kept in
   `fall26-data/status/spending_tier.json`; a change opens a GitHub issue (GitHub emails Tony).
 - Not done: the fast path's own model set (the quick forecast uses Opus 5.5 → Opus 5 on credits).
+- **OpenRouter free limit:** the free tier allows about **50 requests a day** across all `:free`
+  models (resets 00:00 UTC). A Step 6 Test Bot run on 27 Sep hit it (RateLimitError), so the
+  testing-only `free` lineup now researches with AskNews + free news (no model calls), leaving 2
+  free calls per test question (forecast + parse). Step 7's planner/dossier passed its own Test
+  Bot run (PR #22).
 
 ## Research (PLAN.md Step 7)
 

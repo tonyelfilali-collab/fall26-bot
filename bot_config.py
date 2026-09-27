@@ -131,7 +131,9 @@ def _free_lineup() -> Lineup:
             "default": free_llm,
             "parser": free_llm,
             "summarizer": free_llm,
-            "researcher": RESEARCHER,
+            # AskNews + free news, no model calls: the OpenRouter free tier
+            # allows ~50 requests a day, which Test Bot runs share.
+            "researcher": "asknews/news-summaries",
         },
         research_reports_per_question=1,
         predictions_per_research_report=1,
