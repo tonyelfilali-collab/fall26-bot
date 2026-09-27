@@ -96,27 +96,39 @@ def adjust_binary(forecasts: list[float], k: float = STRETCH_K) -> float:
 MULTIPLE_CHOICE_MIN = 0.01
 
 
+def floor_probabilities(probabilities: list[float], floor: float = MULTIPLE_CHOICE_MIN) -> list[float]:
+    """
+    Renormalise, lift every option below `floor` to exactly `floor`, and take
+    that extra from the other options in proportion (repeat if that pushes one
+    below the floor). Sums to 1; options already fine keep their ratios.
+    """
+    count = len(probabilities)
+    if count == 0 or floor * count >= 1:
+        return [1 / count] * count if count else []
+    total = sum(probabilities)
+    p = [x / total if total > 0 else 1 / count for x in probabilities]
+    fixed: set[int] = set()
+    while True:
+        low = {i for i, x in enumerate(p) if x < floor and i not in fixed}
+        if not low:
+            return p
+        fixed |= low
+        free = [i for i in range(count) if i not in fixed]
+        free_total = sum(p[i] for i in free)
+        room = 1 - floor * len(fixed)
+        p = [
+            floor if i in fixed else (p[i] / free_total * room if free_total > 0 else room / len(free))
+            for i in range(count)
+        ]
+
+
 def floor_multiple_choice(options: PredictedOptionList) -> PredictedOptionList:
-    """
-    Every option at least 1%, summing to 1: each option keeps the floor plus
-    its share of what's left (order kept). Unchanged if already fine.
-    """
-    predicted = options.predicted_options
-    total = sum(o.probability for o in predicted)
-    count = len(predicted)
-    if count == 0 or MULTIPLE_CHOICE_MIN * count >= 1:
-        return options
-    if min(o.probability for o in predicted) >= MULTIPLE_CHOICE_MIN and abs(total - 1) < 1e-9:
-        return options
-    remaining = 1 - MULTIPLE_CHOICE_MIN * count
+    """Every option at least 1%, summing to 1 (see floor_probabilities)."""
+    floored = floor_probabilities([o.probability for o in options.predicted_options])
     return PredictedOptionList(
         predicted_options=[
-            PredictedOption(
-                option_name=o.option_name,
-                probability=MULTIPLE_CHOICE_MIN
-                + remaining * (o.probability / total if total > 0 else 1 / count),
-            )
-            for o in predicted
+            PredictedOption(option_name=o.option_name, probability=p)
+            for o, p in zip(options.predicted_options, floored)
         ]
     )
 
