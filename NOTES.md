@@ -241,6 +241,28 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - **Public log:** only `Question N: articles found: X (AskNews a, free news f)`, never article text.
 - Tests: `tests/test_free_news.py` (no network).
 
+## Research (PLAN.md Step 7)
+
+`research.py` (tests: `tests/test_research.py`), researcher `planned-research` in `bot_config`:
+1. **Planner:** the lineup's parser model (on the free key: Gemini 3.5 → 3.1 Flash-Lite → 3.1
+   Flash-Lite preview; never the forecasting quota) writes up to 3 search queries and the key
+   facts that decide the question (JSON).
+2. **Search:** one AskNews call per query (strategy "default", 8 articles), **at most 3 AskNews
+   calls per question**, spaced for the free tier's 1 call per 10 s. One call is kept back for the
+   gap-fill (the 3rd query is used only if the first two found fewer than 3 articles). If AskNews
+   fails (e.g. 402) or finds fewer than 3 articles, Google News RSS + GDELT search the same
+   queries (up to 10 articles, deduplicated, newest first).
+3. **Dossier:** the parser model writes Current status (with dates) / What must happen to resolve /
+   Base rates / Key uncertainties, citing dates, no probabilities. Lines mentioning markets,
+   betting odds or crowd forecasts are removed. Capped at ~6,000 tokens (4,500 words).
+4. **Gap-fill:** if the dossier's last line names a missing fact, one extra search (AskNews if a
+   call is left, else free news) is appended.
+- If the planner or dossier writer fails, the articles themselves are the research.
+- Not done: the model web search via OpenRouter (Step 2 not reached; grounding isn't free), and
+  the "round-1 models disagree by >15 points" gap-fill trigger (needs Step 6's rounds).
+- Log: `articles found: N (AskNews a in c call(s), free news f); q queries; dossier ...; words`.
+  The question JSON log keeps the queries and counts (`research_detail`) and the dossier text.
+
 ## Numeric and multiple choice (PLAN.md Step 8)
 
 `distributions.py`, tests with worked examples in `tests/test_distributions.py`:
