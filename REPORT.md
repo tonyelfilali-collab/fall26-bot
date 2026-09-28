@@ -149,3 +149,16 @@ MiniBench first (B), #46 round 2 limit below half quota (B).
   no 429 from any Flash-Lite model in any run.
 - Second free test provider: Mistral free plan recommended (no card, $10/month credit); waiting for
   the architect.
+
+## Update 28 Sep 2026 (11:00–14:45 UTC)
+
+- OpenRouter: new key with credit (not free tier), key limit $1, usage $0 at every check.
+- #34 unit check merged (architect): flagged models dropped, all kept if every model is flagged.
+- Answer reading: how each answer was read is logged (#51); real-regression Test Bot option (#52);
+  two reading fixes from real free-model replies (#53 `Option_A` letter labels, #54 look-alike
+  dashes): the 37-question pack went from 31 to 37/37 read directly. Question-log save retry (#55).
+  Test Bot `free_model` option (#57, test-only).
+- **First real tournament question 45847 (discrete, 14:00–17:00 UTC):** from 14:02 every Gemini
+  Flash forecasting model answered HTTP 503 (Google overloaded) on every retry; Flash-Lite still
+  answered (research dossier written). Not quota, not our code. The bot retries every 10 minutes
+  and never guesses. Architect asked whether Flash-Lite may be a last-resort forecaster.
