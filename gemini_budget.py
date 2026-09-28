@@ -7,13 +7,16 @@ GitHub Actions jobs, so the day's counts are kept in a small JSON file in the
 private fall26-data repo. The forecasting workflows share one concurrency
 group, so only one run updates it at a time.
 
-Only successful requests are counted (architect, 27 Sep 2026): "overloaded"
-(503) and other failed calls don't count. A model is used up for the day only
-when Google itself answers "quota exceeded" (429 RESOURCE_EXHAUSTED).
+Every attempt is counted, failed ones included (28 Sep 2026: Google counted
+~20 failed 503 attempts per Flash model against the 20/day, then answered 429).
+A model is also used up for the day when Google answers "quota exceeded" (429
+RESOURCE_EXHAUSTED). A model that fails twice in a run is skipped for the
+rest of the run, and each question may try a model at most 4 times a day.
 """
 from __future__ import annotations
 
 import base64
+import contextvars
 import json
 import logging
 import math
@@ -91,6 +94,20 @@ class GitHubFileStore:
         self._sha = response.json()["content"]["sha"]
 
 
+# Google counts EVERY attempt against the 20/day, failed ones included: on
+# 28 Sep 2026 gemini-3.6/3.7/3.8-flash each answered ~20 times "overloaded"
+# (503) with 0 successes, then 429 "daily quota". So the ledger counts
+# attempts, a model is skipped for the rest of a run after 2 failures, and a
+# question may try each model at most a few times a day.
+MAX_FAILURES_PER_MODEL_PER_RUN = 2
+MAX_ATTEMPTS_PER_MODEL_PER_QUESTION_PER_DAY = 4
+
+# The question whose calls are running in the current asyncio task (main.py).
+current_question_key: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "quota_question", default=None
+)
+
+
 class QuotaLedger:
     """
     Counts requests per model for the current quota day.
@@ -116,6 +133,10 @@ class QuotaLedger:
         self.used: dict[str, int] = {}
         self.pending: dict[str, int] = {}
         self.in_flight: dict[str, int] = {}
+        # "post|model" -> attempts today (saved); model -> failures this run.
+        self.question_attempts: dict[str, int] = {}
+        self.run_failures: dict[str, int] = {}
+        self.last_refusal: dict[str, str] = {}
         try:
             data = store.load()
         except Exception as e:
@@ -123,11 +144,12 @@ class QuotaLedger:
             data = None
         if data and data.get("day") == self.day:
             self.used = {k: int(v) for k, v in data.get("used", {}).items()}
+            self.question_attempts = {k: int(v) for k, v in data.get("question_attempts", {}).items()}
 
     def _roll_over_if_new_day(self) -> None:
         today = quota_day()
         if today != self.day:
-            self.day, self.used, self.pending = today, {}, {}
+            self.day, self.used, self.pending, self.question_attempts = today, {}, {}, {}
 
     def _taken(self, model: str) -> int:
         return (
@@ -148,29 +170,57 @@ class QuotaLedger:
     def book(self, model: str) -> None:
         self.pending[model] = self.pending.get(model, 0) + 1
 
-    def start(self, model: str, booked: bool, allow_reserve: bool) -> bool:
-        """Hold one request to `model` while it runs, if the budget allows it."""
-        self._roll_over_if_new_day()
-        if booked and self.pending.get(model, 0) > 0:
-            self.pending[model] -= 1
-        else:
+    def _question_key(self, model: str) -> str | None:
+        question = current_question_key.get()
+        return f"{question}|{model}" if question else None
+
+    def _refusal(self, model: str, booked: bool, allow_reserve: bool) -> str | None:
+        if self.run_failures.get(model, 0) >= MAX_FAILURES_PER_MODEL_PER_RUN:
+            return f"failed {MAX_FAILURES_PER_MODEL_PER_RUN} times this run"
+        key = self._question_key(model)
+        if key and self.question_attempts.get(key, 0) >= MAX_ATTEMPTS_PER_MODEL_PER_QUESTION_PER_DAY:
+            return f"{MAX_ATTEMPTS_PER_MODEL_PER_QUESTION_PER_DAY} attempts on this question today"
+        if not booked:
             left = self.total_left(model) if allow_reserve else self.usable_left(model)
             if left <= 0:
-                return False
+                return "no budget left today"
+        return None
+
+    def start(self, model: str, booked: bool, allow_reserve: bool) -> bool:
+        """Hold one request to `model` while it runs, if the budget and the
+        retry limits allow it. A booking is released either way."""
+        self._roll_over_if_new_day()
+        booked = booked and self.pending.get(model, 0) > 0
+        if booked:
+            self.pending[model] -= 1
+        reason = self._refusal(model, booked, allow_reserve)
+        if reason:
+            self.last_refusal[model] = reason
+            return False
         self.in_flight[model] = self.in_flight.get(model, 0) + 1
+        key = self._question_key(model)
+        if key:
+            self.question_attempts[key] = self.question_attempts.get(key, 0) + 1
         return True
 
     def finish(self, model: str, succeeded: bool) -> None:
-        """A held request ended: only a success counts against the quota."""
+        """A held request ended: every attempt counts against the quota
+        (Google counts failed ones too); a failure also counts for this run."""
         self.in_flight[model] = max(0, self.in_flight.get(model, 0) - 1)
-        if succeeded:
-            self.used[model] = self.used.get(model, 0) + 1
+        # (Capped: a 429 "daily quota" has already marked the model used up.)
+        self.used[model] = min(self.used.get(model, 0) + 1, self.daily_limits.get(model, math.inf))
+        if not succeeded:
+            self.run_failures[model] = self.run_failures.get(model, 0) + 1
 
     def mark_used_up(self, model: str) -> None:
         self.used[model] = self.daily_limits[model]
 
     def snapshot(self) -> dict:
-        return {"day": self.day, "used": dict(sorted(self.used.items()))}
+        return {
+            "day": self.day,
+            "used": dict(sorted(self.used.items())),
+            "question_attempts": dict(sorted(self.question_attempts.items())),
+        }
 
     def save(self) -> None:
         try:

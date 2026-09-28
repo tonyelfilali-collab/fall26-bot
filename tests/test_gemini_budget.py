@@ -121,12 +121,13 @@ def test_ledger_booking_is_held_then_used():
     assert ledger.used["gemini/gemini-3.8-flash"] == 16
 
 
-def test_only_successful_calls_count():
+def test_every_attempt_counts_failed_ones_too():
+    # Google counted ~20 failed 503 attempts against the 20/day (28 Sep 2026).
     ledger = make_pool().ledger
     ledger.start("gemini/gemini-3.7-flash", booked=False, allow_reserve=False)
     ledger.finish("gemini/gemini-3.7-flash", succeeded=False)
-    assert ledger.used.get("gemini/gemini-3.7-flash", 0) == 0
-    assert ledger.usable_left("gemini/gemini-3.7-flash") == 16
+    assert ledger.used["gemini/gemini-3.7-flash"] == 1
+    assert ledger.usable_left("gemini/gemini-3.7-flash") == 15
 
 
 def test_ledger_persists_and_resets_on_a_new_day(monkeypatch):
@@ -212,8 +213,8 @@ def test_overloaded_model_hands_over_without_retrying(dummy):
     dummy.behaviour["gemini-3.6-flash"] = "overloaded"
     assert asyncio.run(chain.invoke("hi")) == "Probability: 40%"
     assert dummy.calls == ["gemini-3.6-flash", "gemini-3.8-flash"]
-    # Only the successful call counts; the overloaded one doesn't.
-    assert pool.ledger.used == {"gemini/gemini-3.8-flash": 1}
+    # Both attempts count (Google counts the overloaded one too).
+    assert pool.ledger.used == {"gemini/gemini-3.6-flash": 1, "gemini/gemini-3.8-flash": 1}
 
 
 def test_daily_quota_error_marks_model_used_up(dummy):
@@ -333,3 +334,38 @@ def test_question_with_a_single_forecast_is_submitted(dummy, monkeypatch):
     [report] = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.3)
+
+
+def test_a_model_is_skipped_after_two_failures_in_a_run(dummy):
+    pool = make_pool()
+    dummy.behaviour["gemini-3.6-flash"] = "overloaded"
+    chain = lambda: pool._forecaster("gemini/gemini-3.6-flash", backup=pool._forecaster("gemini/gemini-3.8-flash"))  # noqa: E731
+    for _ in range(4):
+        assert asyncio.run(chain().invoke("hi")) == "Probability: 40%"
+    # 3.6 was tried twice (1 retry), then skipped for the rest of the run.
+    assert dummy.calls.count("gemini-3.6-flash") == 2 and dummy.calls.count("gemini-3.8-flash") == 4
+    assert pool.ledger.last_refusal["gemini/gemini-3.6-flash"].startswith("failed 2 times")
+
+
+def test_attempts_per_model_per_question_per_day_are_capped(dummy):
+    pool = make_pool()
+    token = gemini_budget.current_question_key.set("45847")
+    try:
+        for _ in range(gemini_budget.MAX_ATTEMPTS_PER_MODEL_PER_QUESTION_PER_DAY):
+            assert pool.ledger.start("gemini/gemini-3.6-flash", booked=False, allow_reserve=True)
+            pool.ledger.finish("gemini/gemini-3.6-flash", succeeded=True)
+        assert not pool.ledger.start("gemini/gemini-3.6-flash", booked=False, allow_reserve=True)
+        assert "attempts on this question" in pool.ledger.last_refusal["gemini/gemini-3.6-flash"]
+    finally:
+        gemini_budget.current_question_key.reset(token)
+    # Another question may still use the model; the count is saved for the day.
+    assert pool.ledger.start("gemini/gemini-3.6-flash", booked=False, allow_reserve=True)
+    assert pool.ledger.snapshot()["question_attempts"] == {"45847|gemini/gemini-3.6-flash": 4}
+
+
+def test_a_refused_booking_is_released():
+    ledger = make_pool().ledger
+    ledger.book("gemini/gemini-3.6-flash")
+    ledger.run_failures["gemini/gemini-3.6-flash"] = 2
+    assert not ledger.start("gemini/gemini-3.6-flash", booked=True, allow_reserve=False)
+    assert ledger.pending.get("gemini/gemini-3.6-flash", 0) == 0
