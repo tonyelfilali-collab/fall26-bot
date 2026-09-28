@@ -286,6 +286,8 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - Manual workflow **Market matches** (`markets.py --limit N`) judges a sample of open main-site
   binary questions with the free OpenRouter model and saves a table (run summary + fall26-data).
 
+**Second free test provider: DROPPED (28 Sep 2026).** Cerebras needs a card; Groq's 8K tokens-per-minute cap blocks one 8k-token prompt; Mistral's own docs say API keys don't work until billing (a card) is active, so it breaks zero spend. Tier C tests stay on the free OpenRouter models, batched after 00:00 UTC. Check "no card" claims on the provider's own docs only.
+
 ## Test bench (PLAN.md Step 5)
 
 **DROPPED (28 Sep 2026):** Metaculus shows the community prediction on the website (account artvandelay) but deliberately leaves it out of the API, so the bench has no reference to score against. Code kept, unused; don't try to work around it.
