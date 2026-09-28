@@ -1,16 +1,18 @@
-name: Shadow scores
+name: Scoreboard
 
-# PLAN.md Step 10. Manual only. Scores the shadow variants saved in
-# fall26-data against the live forecasts on resolved binary questions (log
-# score). Read-only: forecasts nothing, spends nothing.
+# Scores every resolved tournament question logged in fall26-data: our live
+# log score per question type, and the shadow variants (binary). Read-only:
+# forecasts nothing, spends nothing. Weekly, plus a manual button.
 on:
+  schedule:
+    - cron: "30 6 * * 1" # Mondays 06:30 UTC
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  shadow_scores:
+  scoreboard:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -27,8 +29,8 @@ jobs:
           installer-parallel: true
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
-      - name: Score shadow variants
-        run: poetry run python shadow_score.py
+      - name: Score resolved questions
+        run: poetry run python scoreboard.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
