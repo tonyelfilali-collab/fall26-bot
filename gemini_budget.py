@@ -28,6 +28,8 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import time
+
 import requests
 
 from bot_helpers import PUBLIC_LOGGER_NAME
@@ -55,8 +57,18 @@ class MemoryStore:
         self.data = data
 
 
+# Test runs without the Gemini key have their own concurrency group, so they
+# may commit to fall26-data at the same moment as a live run: GitHub then
+# answers 409 (the branch moved) or briefly 5xx. The same save is tried again.
+# (Not 422: that means the file itself changed, which must not be overwritten.)
+STORE_SAVE_ATTEMPTS = 4
+STORE_RETRY_STATUSES = (409, 500, 502, 503, 504)
+
+
 class GitHubFileStore:
     """Keeps the ledger as a JSON file in a GitHub repo (the private fall26-data)."""
+
+    pause = staticmethod(time.sleep)
 
     def __init__(self, repo: str, path: str, token: str) -> None:
         self._url = f"https://api.github.com/repos/{repo}/contents/{path}"
@@ -90,9 +102,13 @@ class GitHubFileStore:
         }
         if self._sha:
             payload["sha"] = self._sha
-        response = requests.put(
-            self._url, headers=self._headers, json=payload, timeout=30
-        )
+        for attempt in range(STORE_SAVE_ATTEMPTS):
+            response = requests.put(
+                self._url, headers=self._headers, json=payload, timeout=30
+            )
+            if response.status_code not in STORE_RETRY_STATUSES or attempt == STORE_SAVE_ATTEMPTS - 1:
+                break
+            self.pause(1.0 + attempt)
         response.raise_for_status()
         self._sha = response.json()["content"]["sha"]
 
