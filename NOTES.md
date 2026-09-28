@@ -230,6 +230,23 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   `:free` models, testing area only). Its `lineup` option can pick `gemini-free` on purpose.
   Credit check makes no Gemini test call unless models are named.
 
+## Backup chain: Flash-Lite + Nemotron (Build 3, 29 Sep 2026)
+
+When no Gemini Flash forecaster answered (`main.py` `_backup_forecasts`, `bot_config.GeminiPool`):
+- **Closing within 45 min:** up to 2 Flash-Lite forecasts (reserve allowed) + 1 Nemotron
+  (`BACKUP_FORECAST_MODEL`, the `:free` shadow model), all at once; median of what answers, then the
+  normal checks. Question log: `emergency: "flash-lite+nemotron"`.
+- **Earlier, only if every Flash model is out of quota** for the current quota day (429, or ledger
+  at 0; `GeminiPool.flash_exhausted`; the day follows `gemini_budget.quota_day`, Pacific midnight):
+  Nemotron first; only if it gives nothing, up to 2 Flash-Lite forecasts from quota ABOVE the
+  reserve, and their answers are parsed above the reserve too. Log: `emergency:
+  "flash-exhausted: nemotron"` (or `..., then flash-lite`). A 503 is not exhaustion.
+- Nemotron: 240 s limit, 1 try, not in the Gemini ledger (OpenRouter free requests). Its failure
+  never blocks Flash-Lite.
+- Test Bot `lineup=replay-gemini` (+ `exhaust_flash`): the real pool logic with recorded replies,
+  0 model calls, ledger in memory only; the job summary shows the chain used and whether the
+  Flash-Lite reserve was touched.
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:

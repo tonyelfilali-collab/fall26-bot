@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       lineup:
-        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted."
+        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls."
         type: choice
-        options: [free, replay, replay-credits, real-regression, gemini-free]
+        options: [free, replay, replay-credits, replay-gemini, real-regression, gemini-free]
         default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
@@ -30,6 +30,10 @@ on:
         description: "Free lineup only: another OpenRouter ':free' model id (blank = the default free model)"
         type: string
         default: ""
+      exhaust_flash:
+        description: "replay-gemini only: every Flash model used up, Flash-Lite at its reserve (the Nemotron backup must answer)"
+        type: boolean
+        default: false
       fail_model:
         description: "replay-credits only: this model fails every call, so its backup runs (e.g. openrouter/anthropic/claude-opus-5.5)"
         type: string
@@ -73,6 +77,7 @@ jobs:
           if [ "$FAIL_PLANNED" = "true" ]; then args+=(--fail-planned-forecasts); fi
           if [ -n "$ONLY_MODEL" ]; then args+=(--only-model "$ONLY_MODEL"); fi
           if [ -n "$FAIL_MODEL" ]; then args+=(--fail-model "$FAIL_MODEL"); fi
+          if [ "$EXHAUST_FLASH" = "true" ]; then args+=(--exhaust-flash); fi
           if [ -n "$FREE_MODEL" ]; then args+=(--free-model "openrouter/${FREE_MODEL#openrouter/}"); fi
           poetry run python main.py "${args[@]}"
         env:
@@ -82,6 +87,7 @@ jobs:
           FAIL_PLANNED: ${{ inputs.fail_planned_forecasts }}
           ONLY_MODEL: ${{ inputs.only_model }}
           FAIL_MODEL: ${{ inputs.fail_model }}
+          EXHAUST_FLASH: ${{ inputs.exhaust_flash }}
           FREE_MODEL: ${{ inputs.free_model }}
           # Only the secrets the bot uses (see NOTES.md). No paid services.
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
