@@ -554,11 +554,15 @@ class FallBot2026(ForecastBot):
             },
         )
 
-    def _note_reading(self, question: MetaculusQuestion, how: str) -> None:
+    def _note_reading(self, question: MetaculusQuestion, how: str, reply: str = "") -> None:
         """How a model's answer was read: 'direct' (no model call), 'parser'
         (the parser model was needed) or 'dropped' (couldn't be read). Counts
-        only, for the question log and the real-regression table."""
-        self._record_for(question).setdefault("reading", []).append(how)
+        only in the public log; a reply that couldn't be read directly is kept
+        in the question log (private fall26-data), to fix the reader."""
+        record = self._record_for(question)
+        record.setdefault("reading", []).append(how)
+        if how != "direct" and reply:
+            record.setdefault("unread_replies", []).append(reply[-4000:])
         logger.info(f"Question {question.id_of_post}: answer read: {how}")
 
     async def _run_individual_question(self, question: MetaculusQuestion) -> ForecastReport:
@@ -892,10 +896,10 @@ class FallBot2026(ForecastBot):
                     num_validation_samples=self._structure_output_validation_samples,
                 )
             except Exception:
-                self._note_reading(question, "dropped")
+                self._note_reading(question, "dropped", reasoning)
                 raise
             parsed = binary_prediction.prediction_in_decimal
-            self._note_reading(question, "parser")
+            self._note_reading(question, "parser", reasoning)
         else:
             self._note_reading(question, "direct")
         decimal_pred = max(0.01, min(0.99, parsed))
@@ -975,9 +979,9 @@ class FallBot2026(ForecastBot):
                     additional_instructions=parsing_instructions,
                 )
             except Exception:
-                self._note_reading(question, "dropped")
+                self._note_reading(question, "dropped", reasoning)
                 raise
-            self._note_reading(question, "parser")
+            self._note_reading(question, "parser", reasoning)
         else:
             self._note_reading(question, "direct")
 
@@ -1083,9 +1087,9 @@ class FallBot2026(ForecastBot):
                 question, reasoning, parsing_instructions
             )
         except Exception:
-            self._note_reading(question, "dropped")
+            self._note_reading(question, "dropped", reasoning)
             raise
-        self._note_reading(question, "parser" if used_parser else "direct")
+        self._note_reading(question, "parser" if used_parser else "direct", reasoning)
         return distribution
 
     async def _read_numeric(
