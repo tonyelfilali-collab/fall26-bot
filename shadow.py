@@ -1,15 +1,19 @@
 """
 PLAN.md Step 10: silent tests (shadow mode).
 
-Shadow variants are extra forecasts for binary questions that are computed and
-SAVED (the question's JSON log in fall26-data, field "shadow") but NEVER
-submitted. shadow_score.py later scores them against the live forecast on
-resolved questions (log score).
+Shadow variants are extra forecasts that are computed and SAVED (the
+question's JSON log in fall26-data, field "shadow") but NEVER submitted.
+scoreboard.py scores them against the live forecast on resolved questions
+(log score), per question type.
 
-Variants:
-- "stretch-1.2" and "mean": free (no model call), computed from the forecasts
-  already made. stretch-1.2 is the PLAN's stretch setting (switched off live),
-  so Step 11 gets real data on it.
+Zero-cost variants (no model call, computed from the forecasts already made):
+- Binary: "stretch-1.2" (the PLAN's stretch setting, off live), "stretch-1.5",
+  "mean", "geo-mean-odds" (geometric mean of the odds), "trimmed-mean" (drops
+  the highest and lowest when there are 5 or more forecasts).
+- Multiple choice (live: median per option, 1% floor): "mean" (mean per
+  option), "floor-0.5%" (median per option, 0.5% floor).
+- Numeric / discrete (live: pointwise median of the CDFs, 5% uniform):
+  "mean-cdf" (pointwise mean), "uniform-2%" (median, 2% uniform).
 - "referee": a model sees each forecaster's number and a two-line reason and
   gives its own number, kept between the lowest and highest forecast; the
   candidate is the average of the referee and the median. SWITCHED OFF until
@@ -17,25 +21,93 @@ Variants:
 """
 from __future__ import annotations
 
+import logging
+import math
 import re
 import statistics
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
-from forecast_safety import adjust_binary, clip_binary, stretch
+from forecasting_tools import PredictedOptionList
 
-ZERO_COST_VARIANTS = ("stretch-1.2", "mean")
+from bot_helpers import PUBLIC_LOGGER_NAME
+from forecast_safety import adjust_binary, clip_binary, floor_probabilities, is_valid_probability, stretch
+
+logger = logging.getLogger(PUBLIC_LOGGER_NAME)
+
+ZERO_COST_VARIANTS = ("stretch-1.2", "stretch-1.5", "mean", "geo-mean-odds", "trimmed-mean")
+MULTIPLE_CHOICE_VARIANTS = ("mean", "floor-0.5%")
+NUMERIC_VARIANTS = ("mean-cdf", "uniform-2%")
+TRIM_FROM = 5  # trimmed mean drops the highest and lowest from this many forecasts
+_ODDS_CLAMP = 1e-3
 REFEREE_ENABLED = False
 
 
+def geometric_mean_of_odds(forecasts: list[float]) -> float:
+    odds = [math.log(p / (1 - p)) for p in (min(max(f, _ODDS_CLAMP), 1 - _ODDS_CLAMP) for f in forecasts)]
+    return 1 / (1 + math.exp(-statistics.fmean(odds)))
+
+
+def trimmed_mean(forecasts: list[float]) -> float:
+    ordered = sorted(forecasts)
+    return statistics.fmean(ordered[1:-1] if len(ordered) >= TRIM_FROM else ordered)
+
+
 def zero_cost_shadows(forecasts: list[float]) -> dict[str, float]:
-    """The free variants, each through the same final steps as the live answer."""
+    """The free binary variants, each through the same final steps as the live answer."""
+    forecasts = [float(f) for f in forecasts if is_valid_probability(f)]
     if not forecasts:
         return {}
+    shadows = {
+        "stretch-1.2": adjust_binary(forecasts, k=1.2),
+        "stretch-1.5": adjust_binary(forecasts, k=1.5),
+        "mean": clip_binary(stretch(statistics.fmean(forecasts))),
+        "geo-mean-odds": clip_binary(stretch(geometric_mean_of_odds(forecasts))),
+        "trimmed-mean": clip_binary(stretch(trimmed_mean(forecasts))),
+    }
+    return {name: p for name, p in shadows.items() if name in ZERO_COST_VARIANTS}
+
+
+def _option_list(names: list[str], probabilities: list[float]) -> dict:
+    # Plain numbers in the saved form of a PredictedOptionList: the library's
+    # own type lifts anything under ~0.99%, which would undo the 0.5% floor.
+    return {"predicted_options": [{"option_name": n, "probability": p} for n, p in zip(names, probabilities)]}
+
+
+def multiple_choice_shadows(
+    predictions: list[PredictedOptionList], raw: list[list[float]] | None = None
+) -> dict[str, dict]:
+    """
+    Mean per option (1% floor), and the live median with a 0.5% floor.
+    raw: each model's probabilities as written, before the 1% floor applied
+    when the answer is read (else the 0.5% floor could never show). Used when
+    every model's text could be read; otherwise the predictions themselves.
+    """
+    if not predictions:
+        return {}
+    names = [o.option_name for o in predictions[0].predicted_options]
+    if raw and len(raw) == len(predictions) and all(len(r) == len(names) for r in raw):
+        per_option = [[r[i] for r in raw] for i in range(len(names))]
+    else:
+        per_option = [
+            [o.probability for p in predictions for o in p.predicted_options if o.option_name == name] or [0.0]
+            for name in names
+        ]
+    return {
+        "mean": _option_list(names, floor_probabilities([statistics.fmean(v) for v in per_option])),
+        "floor-0.5%": _option_list(names, floor_probabilities([statistics.median(v) for v in per_option], floor=0.005)),
+    }
+
+
+def numeric_shadows(distributions: list[Any], question: Any) -> dict[str, Any]:
+    """Pointwise mean of the CDFs (5% uniform), and the live median with 2% uniform."""
+    from distributions import combine_numeric
+
     shadows = {}
-    if "stretch-1.2" in ZERO_COST_VARIANTS:
-        shadows["stretch-1.2"] = adjust_binary(forecasts, k=1.2)
-    if "mean" in ZERO_COST_VARIANTS:
-        shadows["mean"] = clip_binary(stretch(statistics.fmean(forecasts)))
+    for name, kwargs in (("mean-cdf", {"center": "mean"}), ("uniform-2%", {"weight": 0.02})):
+        try:
+            shadows[name] = combine_numeric(distributions, question, **kwargs)
+        except Exception as e:  # a shadow never stops the live forecast
+            logger.warning(f"Shadow {name} could not be built ({type(e).__name__})")
     return shadows
 
 
