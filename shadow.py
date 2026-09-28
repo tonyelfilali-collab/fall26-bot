@@ -11,7 +11,8 @@ Zero-cost variants (no model call, computed from the forecasts already made):
   "mean", "geo-mean-odds" (geometric mean of the odds), "trimmed-mean" (drops
   the highest and lowest when there are 5 or more forecasts).
 - Multiple choice (live: median per option, 1% floor): "mean" (mean per
-  option), "floor-0.5%" (median per option, 0.5% floor).
+  option). (A 0.5% floor variant was dropped: the library clamps options
+  below ~1%, so it could never be submitted.)
 - Numeric / discrete (live: pointwise median of the CDFs, 5% uniform):
   "mean-cdf" (pointwise mean), "uniform-2%" (median, 2% uniform).
 - "referee": a model sees each forecaster's number and a two-line reason and
@@ -35,7 +36,7 @@ from forecast_safety import adjust_binary, clip_binary, floor_probabilities, is_
 logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 
 ZERO_COST_VARIANTS = ("stretch-1.2", "stretch-1.5", "mean", "geo-mean-odds", "trimmed-mean")
-MULTIPLE_CHOICE_VARIANTS = ("mean", "floor-0.5%")
+MULTIPLE_CHOICE_VARIANTS = ("mean",)
 NUMERIC_VARIANTS = ("mean-cdf", "uniform-2%")
 TRIM_FROM = 5  # trimmed mean drops the highest and lowest from this many forecasts
 _ODDS_CLAMP = 1e-3
@@ -68,8 +69,7 @@ def zero_cost_shadows(forecasts: list[float]) -> dict[str, float]:
 
 
 def _option_list(names: list[str], probabilities: list[float]) -> dict:
-    # Plain numbers in the saved form of a PredictedOptionList: the library's
-    # own type lifts anything under ~0.99%, which would undo the 0.5% floor.
+    # Plain numbers, in the saved form of a PredictedOptionList.
     return {"predicted_options": [{"option_name": n, "probability": p} for n, p in zip(names, probabilities)]}
 
 
@@ -77,10 +77,10 @@ def multiple_choice_shadows(
     predictions: list[PredictedOptionList], raw: list[list[float]] | None = None
 ) -> dict[str, dict]:
     """
-    Mean per option (1% floor), and the live median with a 0.5% floor.
+    Mean per option (1% floor).
     raw: each model's probabilities as written, before the 1% floor applied
-    when the answer is read (else the 0.5% floor could never show). Used when
-    every model's text could be read; otherwise the predictions themselves.
+    when the answer is read. Used when every model's text could be read;
+    otherwise the predictions themselves.
     """
     if not predictions:
         return {}
@@ -94,7 +94,6 @@ def multiple_choice_shadows(
         ]
     return {
         "mean": _option_list(names, floor_probabilities([statistics.fmean(v) for v in per_option])),
-        "floor-0.5%": _option_list(names, floor_probabilities([statistics.median(v) for v in per_option], floor=0.005)),
     }
 
 
