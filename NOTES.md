@@ -145,9 +145,12 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
   users" for both on this new project: Credit check run
   https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36336713455.)
 - **Daily budget per model:** 20 requests/day each; 20% is held in reserve, so 16 are usable.
-  **Only successful calls are counted** (architect, 27 Sep): overloaded (503) and other failed
-  calls don't count. A model is used up for the day only when Google answers 429
-  RESOURCE_EXHAUSTED. Calls in progress hold a slot so parallel forecasts can't overbook. Counts are kept per model for the Google day (midnight Pacific = 07:00 UTC
+  **Every attempt is counted, failed ones too** (28 Sep: Google counted ~20 failed 503 attempts
+  per Flash model against the 20/day, then answered 429). A model is also used up when Google
+  answers 429 RESOURCE_EXHAUSTED. A model that fails twice in a run is skipped for the rest of
+  the run; a question may try each model at most 4 times a day; a question that failed is retried
+  in the next run, then every 30 minutes, and in every run in its last 45 minutes (retry backoff,
+  `fall26-data/status/retry_state.json`). Calls in progress hold a slot so parallel forecasts can't overbook. Counts are kept per model for the Google day (midnight Pacific = 07:00 UTC
   until 1 Nov, then 08:00 UTC) in `quota/gemini_free.json` in the private `fall26-data` repo
   (`DATA_REPO_TOKEN`), so they carry over between runs (`gemini_budget.py`). Runs never overlap
   (shared concurrency group), so the counts stay correct. A "daily quota exceeded" answer marks

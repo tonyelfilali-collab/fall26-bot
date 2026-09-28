@@ -3,8 +3,8 @@ Calling free Gemini models without going over their limits.
 
 - RequestPacer: spaces out request starts per model (requests per minute).
 - ThrottledLlm: a GeneralLlm that, before each call, checks the daily
-  QuotaLedger has room and waits on its model's pacer; only a successful call
-  is counted. If the model has no budget left, is overloaded, or is out of
+  QuotaLedger has room and waits on its model's pacer; every attempt is
+  counted (Google counts failed ones too). If the model has no budget left, is overloaded, or is out of
   quota, the call goes to its backup (the next model in the chain) instead of
   retrying the same model.
 """
@@ -109,7 +109,8 @@ class ThrottledLlm(GeneralLlm):
             # A booking is only good for the first call.
             self._booked = False
             if not started:
-                return await self._hand_over(prompt, "no budget left today")
+                reason = self._ledger.last_refusal.get(self.model, "no budget left today")
+                return await self._hand_over(prompt, reason)
         succeeded = False
         try:
             await self._pacer.wait_turn()
@@ -121,7 +122,7 @@ class ThrottledLlm(GeneralLlm):
                 self._ledger.mark_used_up(self.model)
             error_name = type(e).__name__
         finally:
-            # Only successful calls count against the quota.
+            # Every attempt counts against the quota (Google counts failed ones).
             if self._ledger is not None:
                 self._ledger.finish(self.model, succeeded)
         if not succeeded:
@@ -134,6 +135,8 @@ class ThrottledLlm(GeneralLlm):
 
     async def _hand_over(self, prompt, reason: str):  # type: ignore[no-untyped-def]
         if self._backup is None:
+            # Logged too, so every attempt's outcome can be counted from the logs.
+            logger.warning(f"{self.model}: {reason}, no backup model left")
             raise NoQuotaLeft(f"{self.model}: {reason}, and no backup model left")
         logger.warning(f"{self.model}: {reason}, trying {self._backup.model}")
         return await self._backup._mockable_direct_call_to_model(prompt)

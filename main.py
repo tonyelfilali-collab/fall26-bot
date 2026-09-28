@@ -106,6 +106,7 @@ from real_regression import reading_table
 from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
 from replay import current_question as replay_question
 from research import run_planned_research
+from gemini_budget import current_question_key
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
@@ -214,6 +215,45 @@ def rehearsal_table(records: list[dict]) -> str:
 
 # Real-regression: questions forecast at the same time.
 REGRESSION_BATCH = 4
+
+# Retry backoff (28 Sep): a question that failed is tried again in the next
+# run, then only every 30 minutes, except that every run tries it in the
+# last 45 minutes before its close (the Flash-Lite emergency window).
+RETRY_BACKOFF = timedelta(minutes=30)
+RETRY_STATE_PATH = "status/retry_state.json"
+RETRY_STATE_KEEP = timedelta(days=3)
+
+
+def should_try(entry: dict | None, close_time: datetime | None, now: datetime) -> bool:
+    """entry: this question's retry state ({"failures", "last_failure"}) or None."""
+    if not entry or int(entry.get("failures", 0)) <= 1:
+        return True
+    if close_time is not None and closes_within_at(close_time, EMERGENCY_WINDOW, now):
+        return True
+    last = datetime.fromisoformat(entry["last_failure"])
+    return now - last >= RETRY_BACKOFF
+
+
+def closes_within_at(close_time: datetime, window: timedelta, now: datetime) -> bool:
+    close = close_time if close_time.tzinfo else close_time.replace(tzinfo=timezone.utc)
+    return close - now <= window
+
+
+def update_retry_state(state: dict, attempted: list, failed: set, now: datetime) -> dict:
+    """After a run: failures +1 for failed questions, cleared for the others;
+    entries older than 3 days are dropped."""
+    for post in attempted:
+        key = str(post)
+        if post in failed:
+            entry = state.get(key, {})
+            state[key] = {"failures": int(entry.get("failures", 0)) + 1, "last_failure": now.isoformat()}
+        else:
+            state.pop(key, None)
+    return {
+        k: v for k, v in state.items()
+        if now - datetime.fromisoformat(v["last_failure"]) <= RETRY_STATE_KEEP
+    }
+
 
 # A MiniBench question closing within this time is forecast before the
 # seasonal ones (seasonal otherwise goes first, for time and for quota).
@@ -621,6 +661,8 @@ class FallBot2026(ForecastBot):
 
     async def _run_individual_question(self, question: MetaculusQuestion) -> ForecastReport:
         replay_question.set(question)  # replay mode answers from the question's shape
+        # Gemini calls count per question too (a cap per model per day).
+        current_question_key.set(str(question.id_of_post))
         started = datetime.now(timezone.utc)
         record = self._record_for(question)
         try:
@@ -1608,11 +1650,30 @@ if __name__ == "__main__":
                     f"Tournament {tournament_id}: could not run, {describe_exception(e)}"
                 )
                 forecast_reports.append(e)
+        # Retry backoff for questions that failed in earlier runs.
+        from gemini_budget import make_store
+
+        retry_store = make_store(RETRY_STATE_PATH)
+        try:
+            retry_state = retry_store.load() or {}
+        except Exception:
+            retry_state = {}
+        now = datetime.now(timezone.utc)
+        attempted: list = []
+        for tournament_id, questions in open_by_tournament.items():
+            kept = []
+            for q in questions:
+                if should_try(retry_state.get(str(q.id_of_post)), q.close_time, now):
+                    kept.append(q)
+                    attempted.append(q.id_of_post)
+                else:
+                    logger.info(f"Question {q.id_of_post}: failed before, next try within 30 min (backoff)")
+            open_by_tournament[tournament_id] = kept
         # Seasonal first, except MiniBench questions closing within 30 minutes.
         for seasonal, questions in queue_batches(
             open_by_tournament.get(FALL_2026_TOURNAMENT_ID, []),
             open_by_tournament.get(minibench_id, []),
-            datetime.now(timezone.utc),
+            now,
         ):
             template_bot.forecasting_seasonal = seasonal
             try:
@@ -1622,6 +1683,11 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error(f"Forecasting could not run, {describe_exception(e)}")
                 forecast_reports.append(e)
+        failed = set(template_bot.__dict__.get("unforecast_close_times", {}))
+        try:
+            retry_store.save(update_retry_state(retry_state, attempted, failed, datetime.now(timezone.utc)))
+        except Exception:
+            logger.warning("Retry state could not be saved")
     elif run_mode == "metaculus_cup":
         # The Metaculus Cup may be uninitialized near the start of a season
         # (Jan/May/Sep). MetaculusClient.ACX_2025_TOURNAMENT = 32564 and
