@@ -52,7 +52,8 @@ from forecasting_tools import (
 
 from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
 
-from bot_config import GeminiPool, get_lineup
+from bot_config import CreditsPlanner, GeminiPool, get_lineup
+from ensemble import round2_needed
 from forecast_safety import (
     NoValidForecast,
     adjust_binary,
@@ -112,6 +113,39 @@ def _http_status_note(error: BaseException) -> str:
             return f" (HTTP {status})"
         current = current.__cause__ or current.__context__
     return ""
+
+
+def choose_spending_tier() -> str:
+    """
+    Step 6: target spend per question = (remaining credit - 15% reserve) /
+    expected remaining questions -> Full / Standard / Lean. A change from the
+    last run's tier (kept in fall26-data) opens a GitHub issue (emails Tony).
+    """
+    import ensemble
+    from gemini_budget import make_store
+
+    credit = ensemble.openrouter_credit()
+    if credit is None:
+        logger.warning("Credit unknown; using the standard tier")
+        return "standard"
+    remaining, limit = credit
+    target = ensemble.target_spend_per_question(
+        remaining, limit, ensemble.expected_remaining_questions()
+    )
+    tier = ensemble.choose_tier(target)
+    store = make_store("status/spending_tier.json")
+    try:
+        previous = (store.load() or {}).get("tier")
+    except Exception:
+        previous = None
+    if previous != tier:
+        ensemble.notify_tier_change(previous, tier, target)
+        try:
+            store.save({"tier": tier, "target": round(target, 4)})
+        except Exception:
+            logger.warning("Spending tier could not be saved")
+    logger.info(f"Spending tier: {tier} (target ${target:.2f} per question)")
+    return tier
 
 
 # A question with no forecast that closes within this time can't count on a
@@ -234,7 +268,7 @@ class FallBot2026(ForecastBot):
     unforecast_close_times: dict = {}
     # Free Gemini lineup: plans each question's forecasters within the day's
     # budget. Set in __main__ from the lineup.
-    gemini_pool: GeminiPool | None = None
+    planner: GeminiPool | None = None
     # Whether the tournament being forecast is the seasonal one (it gets
     # priority when the budget is low). Set per tournament in __main__.
     forecasting_seasonal = True
@@ -274,7 +308,7 @@ class FallBot2026(ForecastBot):
     async def _research_and_make_predictions(
         self, question: MetaculusQuestion
     ) -> ResearchWithPredictions[PredictionTypes]:
-        if self.gemini_pool is None:
+        if self.planner is None:
             return await super()._research_and_make_predictions(question)
         # As in ForecastBot, but the number of forecasts and their models come
         # from the day's Gemini budget (up to 3 different models, at least 1).
@@ -284,8 +318,11 @@ class FallBot2026(ForecastBot):
         research = await self.run_research(question)
         record["research"] = {"fetched_at": utc_now(), "text": research}
         summary_report = await self.summarize_research(question, research)
-        forecasters = self.gemini_pool.plan(
-            seasonal=self.forecasting_seasonal, only_model=self.only_model
+        is_binary = isinstance(question, BinaryQuestion)
+        forecasters = self.planner.plan(
+            seasonal=self.forecasting_seasonal,
+            only_model=self.only_model,
+            binary=is_binary,
         )
         logger.info(
             f"Question {question.id_of_post}: {len(forecasters)} forecast(s) planned "
@@ -330,6 +367,27 @@ class FallBot2026(ForecastBot):
                 [forecast_with(f, "planned", timeout) for f in forecasters]
             )
         )
+        # Step 6: binary round 2 only when round 1 disagrees or is extreme.
+        if is_binary and valid_predictions and not self.only_model and round2_needed(
+            [p.prediction_value for p in valid_predictions]  # type: ignore[misc]
+        ):
+            extra = self.planner.round2(
+                seasonal=self.forecasting_seasonal,
+                used_models=[f.model for f in forecasters],
+            )
+            logger.info(
+                f"Question {question.id_of_post}: round 1 disagrees or is extreme, "
+                f"round 2 with {len(extra)} more forecast(s)"
+            )
+            if extra:
+                more, more_errors, _ = await self._gather_results_and_exceptions(
+                    [
+                        forecast_with(f, "round2", planned_forecast_timeout(question.close_time))
+                        for f in extra
+                    ]
+                )
+                valid_predictions += more
+                errors += more_errors
         # Nothing finished: one quick forecast with whichever model has quota.
         # Google's free tier is often briefly overloaded, so it gets a few
         # passes through the models, while time before the close allows.
@@ -337,7 +395,7 @@ class FallBot2026(ForecastBot):
             if valid_predictions:
                 break
             quick_timeout = quick_forecast_timeout(question.close_time)
-            if quick_timeout == 0 or not self.gemini_pool.any_quota_left():
+            if quick_timeout == 0 or not self.planner.any_quota_left():
                 break
             if quick_pass > 0:
                 await asyncio.sleep(QUICK_FORECAST_RETRY_WAIT_SECONDS)
@@ -347,11 +405,11 @@ class FallBot2026(ForecastBot):
             )
             valid_predictions, quick_errors, exception_group = (
                 await self._gather_results_and_exceptions(
-                    [forecast_with(self.gemini_pool.quick_forecaster(), "quick", quick_timeout)]
+                    [forecast_with(self.planner.quick_forecaster(), "quick", quick_timeout)]
                 )
             )
             errors = errors + quick_errors
-        await asyncio.to_thread(self.gemini_pool.ledger.save)
+        await asyncio.to_thread(self.planner.save)
         if len(valid_predictions) == 0:
             if exception_group is None:
                 raise RuntimeError(
@@ -1129,7 +1187,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--lineup",
-        choices=["free", "gemini-free", "credit"],
+        choices=["free", "gemini-free", "credits"],
         default=None,
         help="Model lineup (default: ACTIVE_LINEUP in bot_config.py). Test Bot uses 'free'.",
     )
@@ -1176,13 +1234,16 @@ if __name__ == "__main__":
         llms=lineup.llms,
         # The Gemini pool may plan fewer than the maximum forecasts; any
         # successful forecast is enough (0 forecasts still fails the question).
-        required_successful_predictions=0 if lineup.gemini_pool else 0.5,
+        required_successful_predictions=0 if lineup.planner else 0.5,
     )
     template_bot._structure_output_validation_samples = (
         lineup.parser_validation_samples
     )
     template_bot.break_on_purpose = args.break_on_purpose
-    template_bot.gemini_pool = lineup.gemini_pool
+    template_bot.planner = lineup.planner
+    if isinstance(lineup.planner, CreditsPlanner):
+        # Step 6: pick this run's spending tier from the remaining credit.
+        lineup.planner.seasonal_tier = choose_spending_tier()
     template_bot.only_model = args.only_model
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
@@ -1252,9 +1313,10 @@ if __name__ == "__main__":
 
     if template_bot.question_log.saved:
         print(f"Question JSON logs saved to fall26-data: {len(template_bot.question_log.saved)}")
-    if lineup.gemini_pool is not None:
-        ledger = lineup.gemini_pool.ledger
-        ledger.save()
+    if lineup.planner is not None:
+        lineup.planner.save()
+    if isinstance(lineup.planner, GeminiPool):
+        ledger = lineup.planner.ledger
         print(
             f"Gemini requests used today ({ledger.day}, Pacific): "
             + ", ".join(f"{m.removeprefix('gemini/')} {n}" for m, n in sorted(ledger.used.items()))

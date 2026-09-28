@@ -1,0 +1,151 @@
+"""
+PLAN.md Step 6: smart ensemble, built "credits-ready".
+
+- Binary: round 1, then round 2 ONLY if round 1 disagrees (spread over 15
+  points) or the median is extreme (below 10% or above 90%). Final answer:
+  the median of all forecasts (then the Step 4 adjustments).
+- Numeric and multiple choice: every forecaster at once (no rounds).
+- Spending tiers (credits lineup): the target spend per question is
+  (remaining credit - 15% reserve) / expected remaining questions; that picks
+  Full / Standard / Lean. MiniBench always runs one tier below the seasonal
+  tournament. A tier change opens a GitHub issue (GitHub emails Tony).
+
+The 'credits' lineup (PLAN.md section 3) is switched off until the architect
+says so; 'gemini-free' (bot_config.GeminiPool) uses the same round-2 rule.
+"""
+from __future__ import annotations
+
+import json
+import os
+import statistics
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+
+import requests
+
+ROUND2_SPREAD = 0.15
+ROUND2_LOW, ROUND2_HIGH = 0.10, 0.90
+
+
+def round2_needed(round1: list[float]) -> bool:
+    """Round 2 only when round 1 disagrees (>15 points) or the median is extreme."""
+    values = [v for v in round1 if isinstance(v, (int, float))]
+    if not values:
+        return False
+    median = statistics.median(values)
+    spread = max(values) - min(values)
+    # The small tolerance keeps exactly 15 points (0.55 - 0.40 in floating
+    # point is 0.15000000000000002) from counting as "over 15".
+    return spread > ROUND2_SPREAD + 1e-9 or median < ROUND2_LOW or median > ROUND2_HIGH
+
+
+# ---------------------------------------------------------------- credits lineup (PLAN.md section 3)
+
+OPUS_55 = "openrouter/anthropic/claude-opus-5.5"
+OPUS_5 = "openrouter/anthropic/claude-opus-5"
+FABLE_51 = "openrouter/anthropic/claude-fable-5.1"
+GPT_SOL = "openrouter/openai/gpt-5.6-sol"
+GPT_55 = "openrouter/openai/gpt-5.5"
+FLASH_36 = "openrouter/google/gemini-3.6-flash"
+GEMINI_31_PRO = "openrouter/google/gemini-3.1-pro-preview"
+
+# When a model errors, refuses or times out, the next one is tried.
+BACKUPS: dict[str, list[str]] = {
+    FABLE_51: [OPUS_55, OPUS_5],
+    OPUS_55: [OPUS_5],
+    GPT_SOL: [GPT_55],
+    FLASH_36: [GEMINI_31_PRO],
+}
+
+
+@dataclass(frozen=True)
+class Tier:
+    name: str
+    binary_round1: tuple[str, ...]
+    binary_round2: tuple[str, ...]
+    rough_cost: float  # dollars per question, PLAN.md section 3
+
+    @property
+    def all_forecasters(self) -> tuple[str, ...]:
+        """Numeric and multiple choice: everyone at once."""
+        return self.binary_round1 + self.binary_round2
+
+
+TIERS: dict[str, Tier] = {
+    "full": Tier("full", (OPUS_55, GPT_SOL, FLASH_36), (FABLE_51, OPUS_55, FLASH_36), 1.75),
+    "standard": Tier("standard", (OPUS_55, GPT_SOL, FLASH_36), (FLASH_36, FLASH_36), 0.80),
+    "lean": Tier("lean", (OPUS_55, FLASH_36), (FLASH_36,), 0.40),
+}
+TIER_ORDER = ("full", "standard", "lean")
+CREDIT_RESERVE = 0.15
+SEASON_END = date(2027, 1, 6)
+# Rough questions per day: seasonal plus MiniBench (retune once we see real numbers).
+QUESTIONS_PER_DAY = 12
+
+
+def target_spend_per_question(remaining: float, limit: float, expected_questions: float) -> float:
+    """(remaining credit - 15% reserve) / expected remaining questions."""
+    if expected_questions <= 0:
+        return 0.0
+    return max(0.0, remaining - CREDIT_RESERVE * limit) / expected_questions
+
+
+def choose_tier(target: float) -> str:
+    """The richest tier whose rough cost fits the target spend per question."""
+    for name in TIER_ORDER:
+        if target >= TIERS[name].rough_cost:
+            return name
+    return "lean"
+
+
+def tier_below(name: str) -> str:
+    """MiniBench always runs one tier below the seasonal tournament."""
+    index = TIER_ORDER.index(name)
+    return TIER_ORDER[min(index + 1, len(TIER_ORDER) - 1)]
+
+
+def expected_remaining_questions(today: date | None = None) -> float:
+    today = today or datetime.now(timezone.utc).date()
+    return max(1, (SEASON_END - today).days) * QUESTIONS_PER_DAY
+
+
+def openrouter_credit() -> tuple[float, float] | None:
+    """(remaining, limit) in dollars for OPENROUTER_API_KEY, or None if unknown."""
+    try:
+        response = requests.get(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()["data"]
+        if data.get("limit") is None or data.get("limit_remaining") is None:
+            return None
+        return float(data["limit_remaining"]), float(data["limit"])
+    except Exception:
+        return None
+
+
+def notify_tier_change(old: str | None, new: str, target: float) -> bool:
+    """Open a GitHub issue (GitHub emails the repo owner). Never raises."""
+    if old == new:
+        return False
+    try:
+        response = requests.post(
+            f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues",
+            headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"},
+            json={
+                "title": f"Spending tier changed: {old or 'none'} -> {new}",
+                "body": f"Target spend per question is now about ${target:.2f}. "
+                "MiniBench runs one tier below. (Automatic message from the bot.)",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
+def tier_record(tier: str, target: float) -> str:
+    return json.dumps({"tier": tier, "target": round(target, 4), "at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
