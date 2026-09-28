@@ -71,6 +71,22 @@ class Tier:
         return self.binary_round1 + self.binary_round2
 
 
+# OpenRouter prices, dollars per million tokens (prompt, completion), from the
+# Credits pre-flight run 36472633695 (28 Sep 2026). Used by the spend guards
+# (spend.py) to reserve an estimate per paid call. Rerun the pre-flight to refresh.
+MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "anthropic/claude-opus-5.5": (4.00, 20.00),
+    "openai/gpt-5.6-sol": (2.00, 10.00),
+    "google/gemini-3.6-flash": (0.75, 3.75),
+    "anthropic/claude-fable-5.1": (10.00, 50.00),
+    "anthropic/claude-opus-5": (5.00, 25.00),
+    "openai/gpt-5.5": (5.00, 30.00),
+    "google/gemini-3.1-pro-preview": (2.00, 12.00),
+}
+# A model missing from the table is estimated at the most expensive price.
+UNKNOWN_MODEL_PRICE = (10.00, 50.00)
+MODEL_PRICES = {f"openrouter/{k}": v for k, v in MODEL_PRICES.items()}
+
 # Credits 4b (cost_table.py, Credits pre-flight run 36472957797, 28 Sep 2026):
 # dollars per question = real OpenRouter prices x prompt tokens measured from
 # our question logs (binary 7,143; numeric 7,476; discrete 4,991; multiple
@@ -152,6 +168,27 @@ def notify_tier_change(old: str | None, new: str, target: float) -> bool:
                 "title": f"Spending tier changed: {old or 'none'} -> {new}",
                 "body": f"Target spend per question is now about ${target:.2f}. "
                 "MiniBench runs one tier below. (Automatic message from the bot.)",
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
+def notify_daily_cap(spent: float, cap: float) -> bool:
+    """Credits 4d: open a GitHub issue when today's spend reaches the daily cap
+    (GitHub emails Tony). Never raises."""
+    try:
+        response = requests.post(
+            f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues",
+            headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"},
+            json={
+                "title": "Daily spend cap reached: Lean tier for the rest of the day",
+                "body": f"OpenRouter spend today (UTC) is about ${spent:.2f}, at or over the daily cap of "
+                f"about ${cap:.2f} (2x the target daily spend). The bot runs the Lean tier until "
+                "midnight UTC. (Automatic message from the bot.)",
             },
             timeout=30,
         )

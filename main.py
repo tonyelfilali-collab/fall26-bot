@@ -110,6 +110,7 @@ from replay import current_question as replay_question
 from research import run_planned_research
 from gemini_budget import current_question_key
 from hard_data import hard_data_for
+from spend import DAILY_CAP_FACTOR, utc_day
 from stat_baseline import random_walk_baseline
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
@@ -157,7 +158,7 @@ def _http_status_note(error: BaseException) -> str:
     return ""
 
 
-def choose_spending_tier() -> str:
+def choose_spending_tier(spend=None) -> str:  # type: ignore[no-untyped-def]
     """
     Step 6: target spend per question = (remaining credit - 15% reserve) /
     expected remaining questions -> Full / Standard / Lean. A change from the
@@ -174,7 +175,7 @@ def choose_spending_tier() -> str:
     target = ensemble.target_spend_per_question(
         remaining, limit, ensemble.expected_remaining_questions()
     )
-    tier = ensemble.choose_tier(target)
+    tier = daily_cap_tier(ensemble.choose_tier(target), target, spend, ensemble.notify_daily_cap)
     store = make_store("status/spending_tier.json")
     try:
         previous = (store.load() or {}).get("tier")
@@ -188,6 +189,57 @@ def choose_spending_tier() -> str:
             logger.warning("Spending tier could not be saved")
     logger.info(f"Spending tier: {tier} (target ${target:.2f} per question)")
     return tier
+
+
+def _saved_prediction(question: MetaculusQuestion, saved: dict) -> ReasonedPrediction:
+    """A finished forecast saved by an earlier run (credits 4d), rebuilt."""
+    value = saved["value"]
+    if isinstance(question, BinaryQuestion):
+        prediction: Any = float(value)
+    elif isinstance(question, MultipleChoiceQuestion):
+        prediction = PredictedOptionList.model_validate(value)
+    elif isinstance(question, NumericQuestion):
+        prediction = NumericDistribution.model_validate(value)
+    else:
+        raise ValueError(f"no saved forecasts for {type(question).__name__}")
+    return ReasonedPrediction(prediction_value=prediction, reasoning=saved.get("reasoning") or "")
+
+
+def daily_cap_tier(tier: str, target: float, spend, notify) -> str:  # type: ignore[no-untyped-def]
+    """Credits 4d: once today's spend reaches 2x the target daily spend, Lean
+    for the rest of the (UTC) day, and one alert issue that day."""
+    if spend is None:
+        return tier
+    cap = DAILY_CAP_FACTOR * target * ensemble.QUESTIONS_PER_DAY
+    today = utc_day()
+    if spend.day_spent(today) < cap:
+        return tier
+    logger.warning(f"Daily spend cap reached (about ${cap:.2f}); Lean tier for the rest of the day")
+    if spend.alerted != today:
+        notify(spend.day_spent(today), cap)
+        spend.alerted = today
+        spend.save()
+    return "lean"
+
+
+def runaway_table(spend) -> tuple[bool, str]:  # type: ignore[no-untyped-def]
+    """Credits 4d runaway rehearsal: each question's charged spend vs its cap
+    (estimates only: every call timed out). Dollars, no forecasts."""
+    lines = [
+        "## Runaway rehearsal: every model timed out",
+        "",
+        "| Question | Charged (estimates) | Cap (2x tier cost) | Under the cap |",
+        "|---|---|---|---|",
+    ]
+    ok = bool(spend.caps)
+    for question, cap in sorted(spend.caps.items()):
+        spent = spend.question_spent(question)
+        under = spent <= cap + 1e-9
+        ok = ok and under
+        lines.append(f"| {question} | ${spent:.2f} | ${cap:.2f} | {'yes' if under else '**NO**'} |")
+    lines.append("")
+    lines.append(f"Paid calls started: {spend.paid_calls}; refused at the cap: {spend.refused}. **All under the cap: {'yes' if ok else 'NO'}**")
+    return ok, "\n".join(lines)
 
 
 def rehearsal_table(records: list[dict]) -> str:
@@ -424,6 +476,9 @@ class FallBot2026(ForecastBot):
     keep_records = False
     # Build 1b: the shadow forecaster's LLM (never submitted), or None.
     shadow_llm = None
+    # Test switch (replay-credits --retry-run): the submission fails, so the
+    # question is retried with its finished forecasts saved.
+    fail_submission = False
 
     async def _aggregate_predictions(
         self, predictions: list[PredictionTypes], question: MetaculusQuestion
@@ -563,24 +618,32 @@ class FallBot2026(ForecastBot):
         # The full set must be done 15 minutes before the close; what finished
         # by then is combined (median).
         timeout = planned_forecast_timeout(question.close_time)
+        planned_models = [f.model for f in forecasters]
+        # Credits 4d, never re-buy: forecasts this question already finished in
+        # an earlier run are reused, not bought again.
+        saved = self._saved_forecasts(question)
+        forecasters, reused = self._reuse_finished(question, record, forecasters, saved, "planned")
         valid_predictions, errors, exception_group = (
             await self._gather_results_and_exceptions(
                 [forecast_with(f, "planned", timeout) for f in forecasters]
             )
         )
+        valid_predictions = reused + valid_predictions
         # Step 6: binary round 2 only when round 1 disagrees or is extreme.
         if is_binary and valid_predictions and not self.only_model and round2_needed(
             [p.prediction_value for p in valid_predictions]  # type: ignore[misc]
         ):
             extra = self.planner.round2(
                 seasonal=self.forecasting_seasonal,
-                used_models=[f.model for f in forecasters],
+                used_models=planned_models,
             )
             logger.info(
                 f"Question {question.id_of_post}: round 1 disagrees or is extreme, "
                 f"round 2 with {len(extra)} more forecast(s)"
             )
             record["round2"] = bool(extra)
+            extra, reused = self._reuse_finished(question, record, extra, saved, "round2")
+            valid_predictions += reused
             if extra:
                 more, more_errors, _ = await self._gather_results_and_exceptions(
                     [
@@ -639,6 +702,7 @@ class FallBot2026(ForecastBot):
                     )
                 )
                 errors = errors + emergency_errors
+        self._store_finished(question, record)
         await asyncio.to_thread(self.planner.save)
         if len(valid_predictions) == 0:
             if exception_group is None:
@@ -654,6 +718,49 @@ class FallBot2026(ForecastBot):
             errors=errors,
             predictions=valid_predictions,
         )
+
+    # ------------------------------------------------ never re-buy (credits 4d)
+
+    def _saved_forecasts(self, question: MetaculusQuestion) -> list[dict]:
+        finished = getattr(self.planner, "finished", None)
+        return finished.get(str(question.id_of_post)) if finished is not None else []
+
+    def _reuse_finished(self, question: MetaculusQuestion, record: dict, forecasters: list, saved: list[dict], kind: str) -> tuple[list, list]:
+        """(forecasters still to run, reused predictions): a planned slot whose
+        model already finished a forecast of this kind is reused."""
+        remaining, reused = [], []
+        for forecaster in forecasters:
+            match = next((s for s in saved if s.get("kind") == kind and s.get("planned_model") == forecaster.model), None)
+            prediction = None
+            if match is not None:
+                saved.remove(match)
+                try:
+                    prediction = _saved_prediction(question, match)
+                except Exception:
+                    prediction = None
+            if prediction is None:
+                remaining.append(forecaster)
+                continue
+            record["forecasts"].append({
+                "kind": kind, "reused": True, "planned_model": forecaster.model, "status": "ok",
+                "answered_models": match.get("answered_models", []), "raw_output": match.get("reasoning", ""),
+                "parsed": match.get("value"), "seconds": 0,
+            })
+            reused.append(prediction)
+        if reused:
+            logger.info(f"Question {question.id_of_post}: {len(reused)} finished forecast(s) reused, not bought again")
+        return remaining, reused
+
+    def _store_finished(self, question: MetaculusQuestion, record: dict) -> None:
+        finished = getattr(self.planner, "finished", None)
+        if finished is None:
+            return
+        finished.put(str(question.id_of_post), [
+            {"kind": f["kind"], "planned_model": f["planned_model"], "value": f.get("parsed"),
+             "reasoning": f.get("raw_output", ""), "answered_models": f.get("answered_models", [])}
+            for f in record["forecasts"]
+            if f.get("status") == "ok" and f.get("kind") in ("planned", "round2")
+        ])
 
     def _record_for(self, question: MetaculusQuestion) -> dict:
         records = self.__dict__.setdefault("_question_records", {})
@@ -784,6 +891,8 @@ class FallBot2026(ForecastBot):
     async def _submit_if_still_open(
         self, question: MetaculusQuestion, report: ForecastReport
     ) -> bool:
+        if self.fail_submission:
+            raise RuntimeError("Deliberate submission failure (--retry-run rehearsal)")
         if not self.submit_forecasts:
             return False
         try:
@@ -1667,6 +1776,17 @@ if __name__ == "__main__":
         help="Forecast with only this Gemini model (e.g. gemini/gemini-3.8-flash)",
     )
     parser.add_argument(
+        "--runaway",
+        action="store_true",
+        help="replay-credits only: every model times out; checks each question stays under its spend cap",
+    )
+    parser.add_argument(
+        "--retry-run",
+        action="store_true",
+        help="replay-credits only: a first pass whose submission fails, then a retry pass that must "
+        "reuse the finished forecasts (no paid call)",
+    )
+    parser.add_argument(
         "--fail-model",
         default=None,
         help="replay-credits only: this model (e.g. openrouter/anthropic/claude-opus-5.5) "
@@ -1692,6 +1812,11 @@ if __name__ == "__main__":
             f"The {lineup.name} lineup may only run in test_questions mode, not {run_mode}. "
             "Change ACTIVE_LINEUP in bot_config.py."
         )
+    if (args.runaway or args.retry_run) and lineup.name != "replay-credits":
+        raise SystemExit("--runaway and --retry-run only work with the replay-credits lineup.")
+    if args.runaway:
+        _RecordedAnswer.timeout_all = True
+        print("Deliberate runaway: every model times out")
     if args.fail_model:
         if lineup.name != "replay-credits":
             raise SystemExit("--fail-model only works with the replay-credits lineup.")
@@ -1733,7 +1858,7 @@ if __name__ == "__main__":
         template_bot.keep_records = True
     elif isinstance(lineup.planner, CreditsPlanner):
         # Step 6: pick this run's spending tier from the remaining credit.
-        lineup.planner.seasonal_tier = choose_spending_tier()
+        lineup.planner.seasonal_tier = choose_spending_tier(lineup.planner.spend)
     template_bot.only_model = args.only_model
     # Build 1b: the free shadow forecaster (never submitted) on the live and
     # the free test lineups; the replay model in replay (0 calls).
@@ -1869,10 +1994,31 @@ if __name__ == "__main__":
             f"Testing {len(test_questions)} of {len(open_questions)} open questions: "
             + ", ".join(f"{q.id_of_post} ({q.question_type})" for q in test_questions)
         )
+        retry_lines: list[str] = []
+        if args.retry_run:
+            # Pass 1: forecasts finish, the submission fails on purpose.
+            spend = lineup.planner.spend
+            template_bot.fail_submission = True
+            asyncio.run(template_bot.forecast_questions(test_questions, return_exceptions=True))
+            template_bot.fail_submission = False
+            first = (spend.paid_calls, ReplayLlm.calls)
+            # The retry pass is like a new run: new records.
+            template_bot.__dict__.pop("kept_records", None)
+            template_bot.__dict__.pop("_question_records", None)
+            template_bot.__dict__["unforecast_close_times"] = {}
+            retry_lines.append(f"Pass 1 (submission failed on purpose): {first[0]} paid call(s), {first[1]} recorded replies")
         forecast_reports = asyncio.run(
             template_bot.forecast_questions(test_questions, return_exceptions=True)
         )
-        if lineup.name == "replay-credits":
+        if args.retry_run:
+            spend = lineup.planner.spend
+            paid, replies = spend.paid_calls - first[0], ReplayLlm.calls - first[1]
+            reused = sum(1 for r in template_bot.__dict__.get("kept_records", []) for f in r["forecasts"] if f.get("reused"))
+            retry_lines.append(f"Pass 2 (retry run): {paid} paid call(s), {replies} recorded replies, {reused} forecast(s) reused")
+            retry_lines.append(f"**Nothing bought twice: {'yes' if paid == 0 and replies == 0 and reused > 0 else 'NO'}**")
+            if not (paid == 0 and replies == 0 and reused > 0):
+                forecast_reports.append(RuntimeError("retry run bought forecasts again"))
+        if lineup.name == "replay-credits" and not args.retry_run and not args.runaway:
             # MiniBench runs one tier lower: forecast the binary question
             # again as if it were a MiniBench question.
             template_bot.forecasting_seasonal = False
@@ -1900,6 +2046,20 @@ if __name__ == "__main__":
             if summary_path:
                 with open(summary_path, "a", encoding="utf-8") as f:
                     f.write(table + "\n\n")
+    runaway_ok = False
+    if args.runaway and isinstance(lineup.planner, CreditsPlanner) and lineup.planner.spend is not None:
+        runaway_ok, table = runaway_table(lineup.planner.spend)
+        print(table)
+        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(table + "\n\n")
+    if args.retry_run and retry_lines:
+        print("\n".join(retry_lines))
+        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write("## Retry run (never re-buy)\n\n" + "\n\n".join(retry_lines) + "\n\n")
     shadow_stats = template_bot.__dict__.get("shadow_stats")
     if shadow_stats:
         line = (
@@ -1933,6 +2093,10 @@ if __name__ == "__main__":
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
+    if failures and runaway_ok:
+        # A runaway rehearsal: no forecast is expected; the caps held.
+        print(f"{failures} question(s) got no forecast, as expected: every model timed out")
+        failures = 0
     if failures and args.real_regression:
         # A report run: failures are what the table is for.
         print(f"{failures} regression question(s) got no forecast (see the table)")

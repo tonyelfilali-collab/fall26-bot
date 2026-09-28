@@ -230,6 +230,25 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   `:free` models, testing area only). Its `lineup` option can pick `gemini-free` on purpose.
   Credit check makes no Gemini test call unless models are named.
 
+## Credits readiness (29 Sep 2026; credits lineup still OFF)
+
+- **4a pre-flight** (`preflight.py`, Credits pre-flight workflow): every `ensemble.py` model id vs
+  OpenRouter's public list (exists, reasoning, prices); free models must be $0.
+- **4b cost table** (`cost_table.py`, same workflow): real prices x prompt tokens measured from
+  question logs + ASSUMED 8k output per forecast. `ensemble.COST_TABLE`; tier cost = its most
+  expensive column (full $1.02, standard $0.39, lean $0.26 on 28 Sep).
+- **4c free first:** the Flash 3.6 slot tries the AI Studio key first (`CREDITS_FREE_FIRST`),
+  OpenRouter only when it can't answer; planner/dossier/parser/summarizer on the free Flash-Lite pool.
+- **4d spend guards** (`spend.py`): each paid call's real OpenRouter cost (LiteLLM passes OpenRouter's
+  `usage.cost` through) goes to `fall26-data/status/spend.json` (per UTC day, per question).
+  Per-question cap = 2x tier cost (each running call reserves an estimate: real prices, 7.5k prompt,
+  ASSUMED 8k output); a reached cap stops new paid forecasts (finished ones are combined). A timeout
+  is charged the estimate and that model is not tried again on the question. Daily cap = 2x target
+  daily spend -> Lean for the rest of the UTC day + one alert issue. Paid models: 2 tries of the chain,
+  5 s apart; a reached cap is never retried. Finished forecasts are kept 3 days
+  (`status/finished_forecasts.json`) and reused on a retry run.
+  Rehearsals: Test Bot `replay-credits` + `runaway` (every model times out) / `retry_run`.
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:

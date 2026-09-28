@@ -108,7 +108,7 @@ def test_credits_lineup_is_off_and_ready():
     assert [c.model for c in planner.plan(seasonal=False, binary=False)] == [free(m, m) for m in ensemble.TIERS["lean"].all_forecasters]
     chain = planner.plan(seasonal=True)[0]
     assert chain.model == ensemble.OPUS_55 and chain._backup.model == ensemble.OPUS_5
-    assert chain.litellm_kwargs["timeout"] == 600 and chain.allowed_tries == 3
+    assert chain.litellm_kwargs["timeout"] == 600 and chain.allowed_tries == 2  # 4d: paid models 2 tries
 
 
 # ---------------------------------------------------------------- round 2 in the bot (gemini-free, dummy server)

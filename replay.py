@@ -85,10 +85,13 @@ class _RecordedAnswer(GeneralLlm):
     deliberate outage for the model named in `failing_model`."""
 
     failing_model: str | None = None  # e.g. "openrouter/anthropic/claude-opus-5.5"
+    timeout_all = False  # credits 4d "runaway" rehearsal: every model times out
     binary_percent: dict[str, float] = {}  # real model -> its recorded binary answer
 
     async def _mockable_direct_call_to_model(self, prompt: Any) -> TextTokenCostResponse:
         real_model = self.model.removeprefix("replay/")
+        if _RecordedAnswer.timeout_all:
+            raise litellm.Timeout(message="replay: deliberate timeout", model=self.model, llm_provider="replay")
         if real_model == _RecordedAnswer.failing_model:
             raise litellm.ServiceUnavailableError(
                 message="replay: deliberate outage", llm_provider="replay", model=self.model

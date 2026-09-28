@@ -21,7 +21,8 @@ from typing import Literal
 from forecasting_tools import GeneralLlm
 
 import ensemble
-from gemini_budget import QuotaLedger, make_store
+from gemini_budget import QuotaLedger, current_question_key, make_store
+from spend import FINISHED_PATH, QUESTION_CAP_FACTOR, SPEND_PATH, FinishedForecasts, SpendGuard
 from llm_throttle import RequestPacer, ThrottledLlm
 from replay import REPLAY_MODEL, ReplayChainLlm, ReplayLlm, _RecordedAnswer
 
@@ -395,7 +396,10 @@ class CreditsPlanner:
     The PLAN.md section 3 lineup on the Metaculus credit key (OFF until the
     architect says so). The spending tier (ensemble.py) is chosen once per
     run; MiniBench runs one tier below. Every forecaster: high reasoning,
-    600 s timeout, 3 tries, then its backups (ensemble.BACKUPS).
+    600 s timeout, 2 tries (4d; a timeout goes straight to the backup, never
+    the same paid model again on that question), then its backups
+    (ensemble.BACKUPS). Spend guards (4d, spend.py): per-question cap = 2x the
+    tier's cost; finished forecasts are reused on a retry run.
     Free first (4c): a slot in FREE_FIRST tries the free AI Studio key first
     (its daily ledger) and goes to OpenRouter only when that can't answer
     (429, 503, timeout, or no free quota left).
@@ -405,6 +409,9 @@ class CreditsPlanner:
     pacer: RequestPacer = field(default_factory=lambda: RequestPacer(600))
     # The free Gemini pool (AI Studio key, daily ledger). None = OpenRouter only.
     gemini: GeminiPool | None = None
+    # Spend guards (4d): the spend ledger and the finished-forecast store.
+    spend: SpendGuard | None = None
+    finished: FinishedForecasts | None = None
 
     def _tier(self, seasonal: bool) -> ensemble.Tier:
         return ensemble.TIERS[self.tier_name(seasonal)]
@@ -418,9 +425,10 @@ class CreditsPlanner:
             model=name,
             pacer=self.pacer,
             backup=backup,
+            spend=self.spend,
             temperature=None,
             timeout=600,
-            allowed_tries=3,
+            allowed_tries=PAID_ALLOWED_TRIES,
             extra_body=HIGH_REASONING,
         )
 
@@ -437,6 +445,9 @@ class CreditsPlanner:
 
     def plan(self, seasonal: bool, only_model: str | None = None, binary: bool = True) -> list[ThrottledLlm]:
         tier = self._tier(seasonal)
+        if self.spend is not None:
+            # 4d: this question's hard cap, 2x the tier's cost per question.
+            self.spend.set_cap(current_question_key.get(), QUESTION_CAP_FACTOR * tier.rough_cost)
         models = tier.binary_round1 if binary else tier.all_forecasters
         return [self._chain(m) for m in ([only_model] if only_model else models)]
 
@@ -452,7 +463,15 @@ class CreditsPlanner:
     def save(self) -> None:
         if self.gemini is not None:
             self.gemini.save()
+        if self.spend is not None:
+            self.spend.save()
+        if self.finished is not None:
+            self.finished.save()
 
+
+# Credits 4d: paid models get 2 tries of their whole chain (a timeout already
+# goes to the backup without retrying the same model).
+PAID_ALLOWED_TRIES = 2
 
 # Credits 4c: slots that try the free AI Studio key first (OpenRouter id -> Gemini id).
 CREDITS_FREE_FIRST = {ensemble.FLASH_36: "gemini/gemini-3.6-flash"}
@@ -478,7 +497,11 @@ def _credits_lineup() -> Lineup:
     # Flash-Lite pool, never OpenRouter.
     pool = _credits_gemini_pool(make_store(GEMINI_LEDGER_PATH))
     helper = pool.parser()
-    planner = CreditsPlanner(gemini=pool)
+    planner = CreditsPlanner(
+        gemini=pool,
+        spend=SpendGuard(make_store(SPEND_PATH)),
+        finished=FinishedForecasts(make_store(FINISHED_PATH)),
+    )
     return Lineup(
         name="credits",
         llms={
@@ -530,7 +553,10 @@ class ReplayCreditsPlanner(CreditsPlanner):
     """The credits planner (tiers, rounds, backups) with every slot a replay."""
 
     def _paid(self, name: str, backup: ThrottledLlm | None) -> ThrottledLlm:
-        return ReplayChainLlm(model=f"replay/{name}", pacer=self.pacer, backup=backup, temperature=None, allowed_tries=1)
+        return ReplayChainLlm(
+            model=f"replay/{name}", pacer=self.pacer, backup=backup, spend=self.spend,
+            temperature=None, allowed_tries=PAID_ALLOWED_TRIES,
+        )
 
 
 def _replay_credits_lineup() -> Lineup:
@@ -542,7 +568,9 @@ def _replay_credits_lineup() -> Lineup:
     pool = _credits_gemini_pool(MemoryStore(), llm_class=ReplayChainLlm)
     # Recorded replies need no pacing (the real Gemini pace is 4-12 a minute).
     pool.pacers = {m: RequestPacer(6000) for m in pool.pacers}
-    planner = ReplayCreditsPlanner(gemini=pool)
+    planner = ReplayCreditsPlanner(
+        gemini=pool, spend=SpendGuard(MemoryStore()), finished=FinishedForecasts(MemoryStore())
+    )
     parser = pool.parser()
     return Lineup(
         name="replay-credits",
