@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       lineup:
-        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls."
+        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted."
         type: choice
-        options: [free, replay, replay-credits, gemini-free]
+        options: [free, replay, replay-credits, real-regression, gemini-free]
         default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
@@ -59,7 +59,11 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Run bot
         run: |
-          args=(--mode test_questions --lineup "${LINEUP:-free}")
+          if [ "$LINEUP" = "real-regression" ]; then
+            args=(--mode test_questions --lineup free --real-regression)
+          else
+            args=(--mode test_questions --lineup "${LINEUP:-free}")
+          fi
           if [ "$BREAK_ON_PURPOSE" = "true" ]; then args+=(--break-on-purpose); fi
           if [ "$ONE_BINARY" = "true" ]; then args+=(--one-binary); fi
           if [ "$FAIL_PLANNED" = "true" ]; then args+=(--fail-planned-forecasts); fi
