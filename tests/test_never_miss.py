@@ -174,6 +174,14 @@ def test_health_red_when_a_question_was_missed():
     assert not ok.red and ok.ok
 
 
+def test_health_ignores_closed_questions_we_forecast():
+    # The library ignores is_previously_forecasted_by_user=False, so the API
+    # returns closed questions we did forecast too (false alarm on 45516).
+    report = health_check.Report()
+    health_check.check_missed_questions({"seasonal": [_q(45516, -30, True)], "MiniBench": [_q(8, -5, False)]}, report)
+    assert report.red == ["MiniBench question 8 closed without our forecast (missed)"]
+
+
 def test_health_red_without_a_successful_run_for_3_hours():
     report = health_check.Report()
     health_check.check_recent_success(NOW - timedelta(hours=4), NOW, report)

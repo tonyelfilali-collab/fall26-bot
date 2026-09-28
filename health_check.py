@@ -86,6 +86,7 @@ def check_missed_questions(missed_by_tournament: dict, report: Report) -> None:
         f"{tournament} question {q.id_of_post} closed without our forecast (missed)"
         for tournament, questions in missed_by_tournament.items()
         for q in questions
+        if not q.already_forecasted
     ]
     if missed:
         report.red += missed
@@ -183,7 +184,7 @@ def open_questions() -> dict:
 
 
 def missed_questions(since: datetime) -> dict:
-    """Tournament questions that closed since `since` without our forecast."""
+    """Tournament questions that closed since `since` (ours or not)."""
     from forecasting_tools import ApiFilter, MetaculusClient
 
     from main import FALL_2026_MINIBENCH_ID, FALL_2026_TOURNAMENT_ID
@@ -195,7 +196,8 @@ def missed_questions(since: datetime) -> dict:
             allowed_tournaments=[tournament],
             allowed_statuses=["closed", "resolved"],
             close_time_gt=since,
-            is_previously_forecasted_by_user=False,
+            # (The library ignores is_previously_forecasted_by_user=False, so
+            # questions we forecast are filtered out in check_missed_questions.)
             group_question_mode="unpack_subquestions",
         )
         missed[label] = asyncio.run(
