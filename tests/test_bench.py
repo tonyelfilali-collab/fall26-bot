@@ -93,3 +93,11 @@ def test_run_config_resumes_from_saved_results(monkeypatch):
     second = bench.run_config("free", "free-1", [q], store, "quick")
     assert calls == [[7]]  # the second run reused the saved result
     assert first[0].kl == pytest.approx(bench.kl_binary(0.7, 0.6)) == second[0].kl
+
+
+@pytest.mark.parametrize("question_type", ["binary", "numeric", "discrete", "multiple_choice"])
+def test_question_filter_is_valid_for_every_type(question_type):
+    # The library only accepts the community-prediction filter for binary questions.
+    f = bench.question_filter(question_type)
+    assert f.allowed_types == [question_type]
+    assert f.community_prediction_exists == (True if question_type == "binary" else None)

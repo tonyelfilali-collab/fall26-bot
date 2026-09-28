@@ -189,17 +189,26 @@ def question_counts(size: int) -> dict[str, int]:
     return counts
 
 
+def question_filter(question_type: str) -> ApiFilter:
+    """
+    Open main-site questions of one type with at least 30 forecasters. The
+    library's community-prediction filter only works for binary questions, so
+    for the other types the community prediction is checked after fetching.
+    """
+    return ApiFilter(
+        allowed_statuses=["open"],
+        allowed_types=[question_type],
+        num_forecasters_gte=MIN_FORECASTERS,
+        community_prediction_exists=True if question_type == "binary" else None,
+        is_in_main_feed=True,
+        group_question_mode="exclude",
+    )
+
+
 def select_questions(client: MetaculusClient, size: int, seed: int = 0) -> list[Any]:
     chosen = []
     for question_type, count in question_counts(size).items():
-        api_filter = ApiFilter(
-            allowed_statuses=["open"],
-            allowed_types=[question_type],
-            num_forecasters_gte=MIN_FORECASTERS,
-            community_prediction_exists=True,
-            is_in_main_feed=True,
-            group_question_mode="exclude",
-        )
+        api_filter = question_filter(question_type)
         found = asyncio.run(
             client.get_questions_matching_filter(
                 api_filter, num_questions=count * 2, randomly_sample=True, error_if_question_target_missed=False

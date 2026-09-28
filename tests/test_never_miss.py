@@ -60,7 +60,7 @@ def _bot(pool, answers):
         llms=llms, publish_reports_to_metaculus=False, enable_summarize_research=False,
         predictions_per_research_report=3, required_successful_predictions=0,
     )
-    bot.gemini_pool = pool
+    bot.planner = pool
     bot.question_log = FakeWriter()
     bot.run_mode = "test_questions"
     return bot
@@ -114,12 +114,12 @@ def test_slow_forecasts_are_cut_off_and_the_finished_ones_submitted(dummy, monke
     pool = make_pool()
     bot = _bot(pool, None)
     delays = iter([0.0, 0.0, 5.0])  # the third forecast is too slow
-    values = iter([0.2, 0.4, 0.9])
+    values = iter([0.30, 0.35, 0.9])  # close together: no round 2
     monkeypatch.setattr(main.FallBot2026, "_binary_prompt_to_forecast", lambda self, q, p: _answer(self, next(values), next(delays)))
     monkeypatch.setattr(main, "planned_forecast_timeout", lambda close_time: 1.0)
     [report] = asyncio.run(bot.forecast_questions([_question()], return_exceptions=True))
     assert not isinstance(report, BaseException), report
-    assert report.prediction == pytest.approx(0.3)  # median of the two that finished
+    assert report.prediction == pytest.approx(0.325)  # median of the two that finished
     [(_, record)] = bot.question_log.records
     assert sorted(f["status"] for f in record["forecasts"]) == ["failed", "ok", "ok"]
 
