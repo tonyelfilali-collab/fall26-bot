@@ -18,6 +18,10 @@ on:
         description: "Only run the community-prediction diagnostic (no model calls)"
         type: boolean
         default: false
+      fetch_fixtures:
+        description: "Only fetch closed past-tournament question shapes for the regression pack (no model calls)"
+        type: boolean
+        default: false
       config_a:
         description: "Config A"
         type: choice
@@ -67,11 +71,13 @@ jobs:
       - name: Run the test bench
         run: |
           if [ "$DIAGNOSE" = "true" ]; then poetry run python bench_diagnose.py; exit 0; fi
+          if [ "$FETCH_FIXTURES" = "true" ]; then poetry run python fixtures_fetch.py; exit 0; fi
           args=(--size "$SIZE" --config-a "$CONFIG_A" --label-a "$LABEL_A")
           if [ "$CONFIG_B" != "none" ]; then args+=(--config-b "$CONFIG_B" --label-b "$LABEL_B"); fi
           poetry run python bench.py "${args[@]}"
         env:
           DIAGNOSE: ${{ inputs.diagnose }}
+          FETCH_FIXTURES: ${{ inputs.fetch_fixtures }}
           SIZE: ${{ inputs.size }}
           CONFIG_A: ${{ inputs.config_a }}
           LABEL_A: ${{ inputs.label_a }}
@@ -83,3 +89,9 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+      - name: Upload fixtures
+        if: inputs.fetch_fixtures
+        uses: actions/upload-artifact@v7
+        with:
+          name: past-questions
+          path: past_questions.json
