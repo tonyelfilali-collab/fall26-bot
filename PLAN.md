@@ -426,6 +426,27 @@ Step 11 (Tuning). Using resolved questions in fall26-data, fit the stretch facto
 
 ---
 
+## 6b. Switch-on day checklist (credits lineup)
+
+Architect, 29 Sep 2026. The credits lineup stays OFF until every step is done, in order.
+Tools: Credit check, Credits pre-flight, Test Bot (`replay-credits` rehearsals), spend ledger
+(`fall26-data/status/spend.json`).
+
+1. **Keys.** Tony pastes the Metaculus credit key into the `OPENROUTER_API_KEY` secret. His own
+   key (the $1-limit one) moves to a new test-only secret; Claude Code points the free test
+   lineups at it.
+2. **Credit check** shows the donated limit (not $1) and usage $0.
+3. **Credits pre-flight** is green: every model id exists, takes reasoning; prices noted.
+4. **Credits Test Bot on the 4 types** (bot-testing-area, real models). Record the REAL cost per
+   question from the spend ledger (not the estimate).
+5. **The architect sets the starting tier** from that measured cost: one tier below what the
+   numbers allow.
+6. **First 24 hours:** a spend report per question (spend ledger vs `ensemble.COST_TABLE`). Step
+   up a tier only if the real cost is within 20% of the estimate.
+
+Guards already in place (4d): per-question cap 2x tier cost, daily cap 2x target daily spend
+(then Lean + alert issue), finished forecasts never bought twice, paid models 2 tries.
+
 ## 7. Progress log
 
 | Date | What happened | Next |
