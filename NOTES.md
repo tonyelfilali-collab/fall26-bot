@@ -241,6 +241,22 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - **Public log:** only `Question N: articles found: X (AskNews a, free news f)`, never article text.
 - Tests: `tests/test_free_news.py` (no network).
 
+## Silent tests / shadow mode (PLAN.md Step 10)
+
+`shadow.py` + `shadow_score.py` (tests: `tests/test_shadow.py`):
+- Shadow forecasts for **binary** questions are saved in the question's JSON log (`shadow`) and
+  **never submitted** (tested: the live answer is unchanged).
+- **Free variants (on):** `stretch-1.2` (the PLAN's stretch setting, off live, so Step 11 gets
+  data) and `mean` (mean instead of median); both go through the same final steps. No model calls.
+- **Referee (OFF until credits, `shadow.REFEREE_ENABLED`):** sees each forecaster's number plus a
+  two-line reason, answers "Probability: ZZ%", is kept between the lowest and highest forecast;
+  candidate = average of the referee and the median. Uses the planner's quick forecaster (Opus
+  5.5 on credits).
+- **Scoring:** manual workflow **Shadow scores** reads the tournament question logs in fall26-data
+  (latest submitted log per question), looks up resolutions, and reports the mean log score per
+  variant and the mean difference from live on the same questions. PLAN.md: the referee goes live
+  only after ≥80 resolved binary questions and only if it beats the median.
+
 ## Market prices (PLAN.md Step 9), LOG-ONLY
 
 `markets.py` (tests: `tests/test_markets.py`); `bot_config.MARKET_MODE = "log-only"`:

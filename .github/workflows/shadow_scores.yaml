@@ -1,0 +1,34 @@
+name: Shadow scores
+
+# PLAN.md Step 10. Manual only. Scores the shadow variants saved in
+# fall26-data against the live forecasts on resolved binary questions (log
+# score). Read-only: forecasts nothing, spends nothing.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shadow_scores:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Score shadow variants
+        run: poetry run python shadow_score.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
