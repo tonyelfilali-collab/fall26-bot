@@ -27,6 +27,6 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
       - name: Show tournament info
-        run: poetry run python probe_minibench.py; poetry run python tournament_info.py
+        run: poetry run python tournament_info.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}

@@ -19,7 +19,7 @@ silence_noisy_dependencies()
 from forecasting_tools import MetaculusClient  # noqa: E402
 
 from main import FALL_2026_TOURNAMENT_ID  # noqa: E402
-from minibench import _is_minibench, _metaculus_get, current_minibench  # noqa: E402
+from minibench import current_minibench  # noqa: E402
 
 API = "https://www.metaculus.com/api"
 MAX_QUESTIONS_SHOWN = 10
@@ -70,15 +70,6 @@ def main() -> None:
     sections: list[str] = []
     minibench_id, how = current_minibench()
     sections += [f"**Current MiniBench round: {minibench_id}** (found by {how})", ""]
-    listing = _metaculus_get("projects/tournaments/")
-    tournaments = listing.get("results", []) if isinstance(listing, dict) else listing or []
-    rounds = [f"{t.get('id')} ({t.get('start_date', '?')[:10]} to {t.get('close_date', '?')[:10]})"
-              for t in tournaments if isinstance(t, dict) and _is_minibench(t)]
-    sections += [
-        f"Tournament list: {'unavailable' if listing is None else f'{len(tournaments)} tournaments'}; "
-        f"MiniBench rounds in it: {', '.join(rounds) or 'none'}",
-        "",
-    ]
     for label, slug_or_id in (
         ("Seasonal tournament", FALL_2026_TOURNAMENT_ID),
         ("MiniBench", minibench_id),
