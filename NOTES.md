@@ -241,6 +241,24 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - **Public log:** only `Question N: articles found: X (AskNews a, free news f)`, never article text.
 - Tests: `tests/test_free_news.py` (no network).
 
+## Market prices (PLAN.md Step 9), LOG-ONLY
+
+`markets.py` (tests: `tests/test_markets.py`); `bot_config.MARKET_MODE = "log-only"`:
+- For each **binary** question, **after** its forecast is submitted: keywords from the title →
+  Polymarket (gamma public-search), Kalshi (v1 search + v2 market for rules and 24 h volume),
+  Manifold (search-markets), all keyless. Up to 2 candidates per source, 5 in all.
+- Checks: **liquid** (volume ≥ 10,000 Polymarket / 1,000 Kalshi / 1,000 Manifold) and **fresh**
+  (price updated within 24 h: Polymarket updatedAt, Manifold lastUpdatedTime, Kalshi 24 h volume).
+- **Judge:** the parser model (Flash-Lite live, never the forecasting quota; 1 call per question)
+  answers same event / same resolution source / same deadline for each. **Accepted only if all
+  three are yes and it's fresh and liquid.**
+- Saved as `market_candidates` in the question's JSON log. **Never blended**: the forecast is
+  identical with it on or off (tested). A failure is only logged.
+- Not done: multiple-choice mapping (every option must map to a market), and blending (Step 9's
+  50/50 log-odds blend), both waiting for the architect.
+- Manual workflow **Market matches** (`markets.py --limit N`) judges a sample of open main-site
+  binary questions with the free OpenRouter model and saves a table (run summary + fall26-data).
+
 ## Test bench (PLAN.md Step 5)
 
 `bench.py` + manual workflow **Test bench** (`evaluate.yml`), never publishes. Tests: `tests/test_bench.py`.
