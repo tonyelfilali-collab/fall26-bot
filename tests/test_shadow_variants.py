@@ -51,18 +51,17 @@ def test_binary_invalid_forecasts_ignored():
 # ---------------------------------------------------------------- multiple choice
 
 
-def test_multiple_choice_mean_and_half_percent_floor():
+def test_multiple_choice_mean():
     raw = [[0.9, 0.1, 0.0], [0.2, 0.8, 0.0], [0.4, 0.6, 0.0]]
     predictions = [options(*r) for r in raw]  # as read live: lifted to about 1%
     shadows = shadow.multiple_choice_shadows(predictions, raw=raw)
+    assert set(shadows) == {"mean"}  # the 0.5% floor variant was dropped
     mean = [o["probability"] for o in shadows["mean"]["predicted_options"]]
-    floor = [o["probability"] for o in shadows["floor-0.5%"]["predicted_options"]]
-    assert sum(mean) == pytest.approx(1) and sum(floor) == pytest.approx(1)
+    assert sum(mean) == pytest.approx(1)
     assert mean[0] == pytest.approx(0.5 * 0.99, abs=1e-6) and mean[2] == pytest.approx(0.01)
-    assert floor[2] == pytest.approx(0.005)  # 0.5% floor, live uses 1%
     # Without the raw text, the read (floored) numbers are used.
     fallback = shadow.multiple_choice_shadows(predictions)
-    assert fallback["floor-0.5%"]["predicted_options"][2]["probability"] > 0.009
+    assert sum(o["probability"] for o in fallback["mean"]["predicted_options"]) == pytest.approx(1)
 
 
 def test_raw_multiple_choice_values_are_not_floored():
