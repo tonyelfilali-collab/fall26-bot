@@ -101,3 +101,27 @@ def test_question_filter_is_valid_for_every_type(question_type):
     f = bench.question_filter(question_type)
     assert f.allowed_types == [question_type]
     assert f.community_prediction_exists == (True if question_type == "binary" else None)
+
+
+def test_mini_size_mix():
+    assert bench.question_counts(10) == {"binary": 6, "numeric": 1, "discrete": 1, "multiple_choice": 2}
+
+
+def test_the_bot_never_sees_the_community_prediction():
+    api = {"question": {"aggregations": {"recency_weighted": {"latest": {"centers": [0.62]}}}}}
+    q = BinaryQuestion(question_text="x", id_of_post=1, api_json=api, community_prediction_at_access_time=0.62)
+    seen = bench.blind(q)
+    assert seen.community_prediction_at_access_time is None
+    assert bench.community_prediction(seen) is None
+    assert bench.community_prediction(q) == pytest.approx(0.62)  # the original keeps it for scoring
+
+
+def test_the_live_bot_refuses_the_read_token():
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, METACULUS_READ_TOKEN="x")
+    result = subprocess.run([sys.executable, "main.py", "--mode", "test_questions"], env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode != 0
+    assert "METACULUS_READ_TOKEN must not be given to the bot" in result.stderr

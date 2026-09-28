@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import os
 import contextvars
 import logging
 import sys
@@ -1231,6 +1232,10 @@ class FallBot2026(ForecastBot):
 
 if __name__ == "__main__":
     configure_public_logging()
+    if os.getenv("METACULUS_READ_TOKEN"):
+        # Tony's personal read-only token is for the test bench only: the live
+        # bot must never use it or see community predictions.
+        raise SystemExit("METACULUS_READ_TOKEN must not be given to the bot.")
 
     parser = argparse.ArgumentParser(description="Run the template forecasting bot")
     parser.add_argument(

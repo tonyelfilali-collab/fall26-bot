@@ -292,6 +292,13 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   fixed seed), plus cost. Saved in `bench/<size>/reports/` and the run summary.
 - Configs: `free` or `credits`; **`gemini-free` is refused** (never the live Gemini quota). The
   noise level = the same config twice under two labels.
+- **Community predictions are read with `METACULUS_READ_TOKEN`** (Tony's personal account,
+  read-only, added 28 Sep): the bot account can't see them. It's passed **only** to
+  `evaluate.yml`, which no longer gets `METACULUS_TOKEN`. The bot forecasts a copy of each
+  question with the community prediction removed (`bench.blind`), and `main.py` refuses to start
+  if `METACULUS_READ_TOKEN` is set, so the live bot can never use it.
+- Sizes: mini = 10 (fits the OpenRouter free limit), quick = 30, full = 60. An empty question
+  list is never saved.
 - Its own concurrency group, so it never holds up the live bot.
 
 ## Reading answers without a model call (item 4a)
