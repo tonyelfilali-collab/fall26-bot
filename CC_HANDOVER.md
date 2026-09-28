@@ -96,9 +96,10 @@ R=tonyelfilali-collab/fall26-bot; after="<ISO time of merge>"; until id=$(gh run
 
 Run the **Credit check** workflow (reads the key's info; runs no model) and read the table:
 ```bash
-R=tonyelfilali-collab/fall26-bot; gh workflow run credit_check.yaml -R $R; sleep 8; id=$(gh run list -R $R -w credit_check.yaml -L1 --json databaseId -q '.[0].databaseId'); gh run watch $id -R $R >/dev/null; gh run view $id -R $R --log | cut -f3- | grep -E "^\| (Limit|Used|Remaining|Free)" | sort -u
+R=tonyelfilali-collab/fall26-bot; gh workflow run credit_check.yaml -R $R; sleep 8; id=$(gh run list -R $R -w credit_check.yaml -L1 --json databaseId -q '.[0].databaseId'); gh run watch $id -R $R >/dev/null; gh run view $id -R $R --log | cut -f3- | grep -E "^[^ ]+ \| (Limit|Used|Remaining|Free tier)" | cut -d' ' -f2- | sort -u
 ```
-Expected: Limit 1, Used 0, Free tier key false. The same run also checks FRED and CoinGecko.
+Expected: Limit 1, Used 0, Free tier key false. (Each log line starts with a timestamp;
+the filter above skips it. The first version of this command missed it and printed nothing.) The same run also checks FRED and CoinGecko.
 
 ## 5. Lessons (also in saved memory)
 
