@@ -86,6 +86,7 @@ class _RecordedAnswer(GeneralLlm):
 
     failing_model: str | None = None  # e.g. "openrouter/anthropic/claude-opus-5.5"
     timeout_all = False  # credits 4d "runaway" rehearsal: every model times out
+    unknown_cost = False  # credits 4d "unknown-cost" rehearsal: paid replies come back with no cost
     binary_percent: dict[str, float] = {}  # real model -> its recorded binary answer
 
     async def _mockable_direct_call_to_model(self, prompt: Any) -> TextTokenCostResponse:
@@ -106,8 +107,18 @@ class _RecordedAnswer(GeneralLlm):
             text = f"Replayed reasoning.\nProbability: {percent:g}%"
         return TextTokenCostResponse(
             data=text, prompt_tokens_used=0, completion_tokens_used=0,
-            total_tokens_used=0, model=self.model, cost=0.0,
+            total_tokens_used=0, model=self.model, cost=_recorded_cost(real_model),
         )
+
+
+def _recorded_cost(real_model: str) -> float:
+    """A paid slot's recorded cost (half the spend estimate: real costs come in
+    under it); 0 for free models, or when the rehearsal says cost unknown."""
+    if _RecordedAnswer.unknown_cost or not real_model.startswith("openrouter/"):
+        return 0.0
+    from spend import estimate_cost
+
+    return 0.5 * estimate_cost(real_model)
 
 
 class ReplayChainLlm(ThrottledLlm, _RecordedAnswer):

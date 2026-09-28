@@ -110,7 +110,7 @@ from replay import current_question as replay_question
 from research import run_planned_research
 from gemini_budget import current_question_key
 from hard_data import hard_data_for
-from spend import DAILY_CAP_FACTOR, utc_day
+from spend import SpendGuard, guard_tier, unknown_cost_alert, utc_day
 from stat_baseline import random_walk_baseline
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
@@ -169,13 +169,19 @@ def choose_spending_tier(spend=None) -> str:  # type: ignore[no-untyped-def]
 
     credit = ensemble.openrouter_credit()
     if credit is None:
-        logger.warning("Credit unknown; using the standard tier")
-        return "standard"
-    remaining, limit = credit
-    target = ensemble.target_spend_per_question(
-        remaining, limit, ensemble.expected_remaining_questions()
-    )
-    tier = daily_cap_tier(ensemble.choose_tier(target), target, spend, ensemble.notify_daily_cap)
+        # Fail closed (4d): unknown credit, cheapest tier.
+        logger.warning("Credit unknown; Lean tier for this run")
+        tier, target = "lean", ensemble.TIERS["lean"].rough_cost
+    else:
+        remaining, limit = credit
+        target = ensemble.target_spend_per_question(
+            remaining, limit, ensemble.expected_remaining_questions()
+        )
+        tier = ensemble.choose_tier(target)
+    # 4d: ledger unreadable, daily cap, key usage vs ledger -> Lean (+ alert).
+    tier = guard_tier(tier, target, spend, ensemble.openrouter_key_usage(), ensemble.open_alert_issue)
+    if spend is not None:
+        spend.save()
     store = make_store("status/spending_tier.json")
     try:
         previous = (store.load() or {}).get("tier")
@@ -205,28 +211,21 @@ def _saved_prediction(question: MetaculusQuestion, saved: dict) -> ReasonedPredi
     return ReasonedPrediction(prediction_value=prediction, reasoning=saved.get("reasoning") or "")
 
 
-def daily_cap_tier(tier: str, target: float, spend, notify) -> str:  # type: ignore[no-untyped-def]
-    """Credits 4d: once today's spend reaches 2x the target daily spend, Lean
-    for the rest of the (UTC) day, and one alert issue that day."""
-    if spend is None:
-        return tier
-    cap = DAILY_CAP_FACTOR * target * ensemble.QUESTIONS_PER_DAY
-    today = utc_day()
-    if spend.day_spent(today) < cap:
-        return tier
-    logger.warning(f"Daily spend cap reached (about ${cap:.2f}); Lean tier for the rest of the day")
-    if spend.alerted != today:
-        notify(spend.day_spent(today), cap)
-        spend.alerted = today
-        spend.save()
-    return "lean"
+# Spend-guard rehearsals (Test Bot replay-credits, credits 4d).
+SPEND_REHEARSALS = {
+    "runaway": "every model times out; each question stays under its cap",
+    "retry-run": "pass 1's submission fails; pass 2 buys nothing",
+    "unknown-cost": "paid replies have no cost; they are charged the estimate, hit the (small) caps, alert",
+    "missing-ledger": "the spend ledger is missing; Lean tier + alert",
+    "key-mismatch": "the key spent $1 more than our ledger; Lean tier + alert",
+}
 
 
 def runaway_table(spend) -> tuple[bool, str]:  # type: ignore[no-untyped-def]
     """Credits 4d runaway rehearsal: each question's charged spend vs its cap
     (estimates only: every call timed out). Dollars, no forecasts."""
     lines = [
-        "## Runaway rehearsal: every model timed out",
+        "## Spend caps: each question's charged spend vs its cap",
         "",
         "| Question | Charged (estimates) | Cap (2x tier cost) | Under the cap |",
         "|---|---|---|---|",
@@ -1776,15 +1775,10 @@ if __name__ == "__main__":
         help="Forecast with only this Gemini model (e.g. gemini/gemini-3.8-flash)",
     )
     parser.add_argument(
-        "--runaway",
-        action="store_true",
-        help="replay-credits only: every model times out; checks each question stays under its spend cap",
-    )
-    parser.add_argument(
-        "--retry-run",
-        action="store_true",
-        help="replay-credits only: a first pass whose submission fails, then a retry pass that must "
-        "reuse the finished forecasts (no paid call)",
+        "--rehearsal",
+        choices=list(SPEND_REHEARSALS),
+        default=None,
+        help="replay-credits only, spend-guard rehearsals: " + "; ".join(f"{k}: {v}" for k, v in SPEND_REHEARSALS.items()),
     )
     parser.add_argument(
         "--fail-model",
@@ -1812,11 +1806,14 @@ if __name__ == "__main__":
             f"The {lineup.name} lineup may only run in test_questions mode, not {run_mode}. "
             "Change ACTIVE_LINEUP in bot_config.py."
         )
-    if (args.runaway or args.retry_run) and lineup.name != "replay-credits":
-        raise SystemExit("--runaway and --retry-run only work with the replay-credits lineup.")
-    if args.runaway:
+    if args.rehearsal and lineup.name != "replay-credits":
+        raise SystemExit("--rehearsal only works with the replay-credits lineup.")
+    if args.rehearsal:
+        print(f"Spend-guard rehearsal: {args.rehearsal} ({SPEND_REHEARSALS[args.rehearsal]})")
+    if args.rehearsal == "runaway":
         _RecordedAnswer.timeout_all = True
-        print("Deliberate runaway: every model times out")
+    if args.rehearsal == "unknown-cost":
+        _RecordedAnswer.unknown_cost = True
     if args.fail_model:
         if lineup.name != "replay-credits":
             raise SystemExit("--fail-model only works with the replay-credits lineup.")
@@ -1847,14 +1844,32 @@ if __name__ == "__main__":
     )
     template_bot.break_on_purpose = args.break_on_purpose
     template_bot.planner = lineup.planner
+    rehearsal_alerts: list[str] = []
+
+    def rehearsal_notify(title: str, body: str) -> None:
+        rehearsal_alerts.append(title)
+        print(f"ALERT (rehearsal, no issue opened): {title}")
+
     if isinstance(lineup.planner, ReplayCreditsPlanner):
-        # Rehearsal: the real tier choice on a made-up credit (no credit
-        # lookup, no saved tier, no GitHub issue).
-        lineup.planner.seasonal_tier = ensemble.choose_tier(
-            ensemble.target_spend_per_question(
-                REHEARSAL_CREDIT, REHEARSAL_CREDIT, ensemble.expected_remaining_questions()
-            )
+        # Rehearsal: the real tier choice and spend guards on a made-up credit
+        # and key usage (no credit lookup, no saved tier, no GitHub issue).
+        planner = lineup.planner
+        target = ensemble.target_spend_per_question(
+            REHEARSAL_CREDIT, REHEARSAL_CREDIT, ensemble.expected_remaining_questions()
         )
+        key_usage = 0.0
+        if args.rehearsal == "missing-ledger":
+            from gemini_budget import MemoryStore
+
+            planner.spend = SpendGuard(MemoryStore(None))
+        if args.rehearsal == "key-mismatch":
+            # The key says $1 more was spent today than our ledger knows.
+            planner.spend.key_day_start[utc_day()] = 0.0
+            key_usage = planner.spend.day_spent() + 1.0
+        if args.rehearsal == "unknown-cost":
+            planner.cap_factor = 0.5  # small caps, so unknown-cost calls reach them
+        planner.seasonal_tier = guard_tier(ensemble.choose_tier(target), target, planner.spend, key_usage, rehearsal_notify)
+        print(f"Spending tier: {planner.seasonal_tier}")
         template_bot.keep_records = True
     elif isinstance(lineup.planner, CreditsPlanner):
         # Step 6: pick this run's spending tier from the remaining credit.
@@ -1995,7 +2010,7 @@ if __name__ == "__main__":
             + ", ".join(f"{q.id_of_post} ({q.question_type})" for q in test_questions)
         )
         retry_lines: list[str] = []
-        if args.retry_run:
+        if args.rehearsal == "retry-run":
             # Pass 1: forecasts finish, the submission fails on purpose.
             spend = lineup.planner.spend
             template_bot.fail_submission = True
@@ -2010,7 +2025,7 @@ if __name__ == "__main__":
         forecast_reports = asyncio.run(
             template_bot.forecast_questions(test_questions, return_exceptions=True)
         )
-        if args.retry_run:
+        if args.rehearsal == "retry-run":
             spend = lineup.planner.spend
             paid, replies = spend.paid_calls - first[0], ReplayLlm.calls - first[1]
             reused = sum(1 for r in template_bot.__dict__.get("kept_records", []) for f in r["forecasts"] if f.get("reused"))
@@ -2018,7 +2033,7 @@ if __name__ == "__main__":
             retry_lines.append(f"**Nothing bought twice: {'yes' if paid == 0 and replies == 0 and reused > 0 else 'NO'}**")
             if not (paid == 0 and replies == 0 and reused > 0):
                 forecast_reports.append(RuntimeError("retry run bought forecasts again"))
-        if lineup.name == "replay-credits" and not args.retry_run and not args.runaway:
+        if lineup.name == "replay-credits" and not args.rehearsal:
             # MiniBench runs one tier lower: forecast the binary question
             # again as if it were a MiniBench question.
             template_bot.forecasting_seasonal = False
@@ -2047,14 +2062,37 @@ if __name__ == "__main__":
                 with open(summary_path, "a", encoding="utf-8") as f:
                     f.write(table + "\n\n")
     runaway_ok = False
-    if args.runaway and isinstance(lineup.planner, CreditsPlanner) and lineup.planner.spend is not None:
-        runaway_ok, table = runaway_table(lineup.planner.spend)
-        print(table)
-        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
-        if summary_path:
-            with open(summary_path, "a", encoding="utf-8") as f:
-                f.write(table + "\n\n")
-    if args.retry_run and retry_lines:
+    if isinstance(lineup.planner, CreditsPlanner) and lineup.planner.spend is not None:
+        guard = lineup.planner.spend
+        # 4d: a run with any unknown-cost paid call opens an alert (once a day).
+        unknown_cost_alert(guard, rehearsal_notify if lineup.name == "replay-credits" else ensemble.open_alert_issue)
+        guard.save()
+        if args.rehearsal in ("runaway", "unknown-cost"):
+            runaway_ok, table = runaway_table(guard)
+            if args.rehearsal == "unknown-cost":
+                runaway_ok = runaway_ok and guard.refused > 0 and guard.unknown_cost_calls > 0 and any(
+                    "unknown cost" in a for a in rehearsal_alerts
+                )
+                table += f"\n\nUnknown-cost calls (charged the estimate): {guard.unknown_cost_calls}"
+                if not runaway_ok:
+                    forecast_reports.append(RuntimeError("unknown-cost rehearsal failed"))
+            print(table)
+            summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+            if summary_path:
+                with open(summary_path, "a", encoding="utf-8") as f:
+                    f.write(table + "\n\n")
+        if args.rehearsal in ("missing-ledger", "key-mismatch"):
+            wanted = "could not be loaded" if args.rehearsal == "missing-ledger" else "key usage above"
+            ok = lineup.planner.seasonal_tier == "lean" and any(wanted in a for a in rehearsal_alerts)
+            line = f"**{args.rehearsal}: tier {lineup.planner.seasonal_tier}, alerts {rehearsal_alerts or 'none'}: {'OK' if ok else 'FAILED'}**"
+            print(line)
+            summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+            if summary_path:
+                with open(summary_path, "a", encoding="utf-8") as f:
+                    f.write(line + "\n\n")
+            if not ok:
+                forecast_reports.append(RuntimeError(f"{args.rehearsal} rehearsal failed"))
+    if args.rehearsal == "retry-run" and retry_lines:
         print("\n".join(retry_lines))
         summary_path = os.getenv("GITHUB_STEP_SUMMARY")
         if summary_path:
@@ -2093,7 +2131,7 @@ if __name__ == "__main__":
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
-    if failures and runaway_ok:
+    if failures and runaway_ok and args.rehearsal == "runaway":
         # A runaway rehearsal: no forecast is expected; the caps held.
         print(f"{failures} question(s) got no forecast, as expected: every model timed out")
         failures = 0

@@ -412,6 +412,8 @@ class CreditsPlanner:
     # Spend guards (4d): the spend ledger and the finished-forecast store.
     spend: SpendGuard | None = None
     finished: FinishedForecasts | None = None
+    # Per-question cap = cap_factor x the tier's cost (a rehearsal may lower it).
+    cap_factor: float = QUESTION_CAP_FACTOR
 
     def _tier(self, seasonal: bool) -> ensemble.Tier:
         return ensemble.TIERS[self.tier_name(seasonal)]
@@ -447,7 +449,7 @@ class CreditsPlanner:
         tier = self._tier(seasonal)
         if self.spend is not None:
             # 4d: this question's hard cap, 2x the tier's cost per question.
-            self.spend.set_cap(current_question_key.get(), QUESTION_CAP_FACTOR * tier.rough_cost)
+            self.spend.set_cap(current_question_key.get(), self.cap_factor * tier.rough_cost)
         models = tier.binary_round1 if binary else tier.all_forecasters
         return [self._chain(m) for m in ([only_model] if only_model else models)]
 
@@ -569,7 +571,7 @@ def _replay_credits_lineup() -> Lineup:
     # Recorded replies need no pacing (the real Gemini pace is 4-12 a minute).
     pool.pacers = {m: RequestPacer(6000) for m in pool.pacers}
     planner = ReplayCreditsPlanner(
-        gemini=pool, spend=SpendGuard(MemoryStore()), finished=FinishedForecasts(MemoryStore())
+        gemini=pool, spend=SpendGuard(MemoryStore({})), finished=FinishedForecasts(MemoryStore())
     )
     parser = pool.parser()
     return Lineup(

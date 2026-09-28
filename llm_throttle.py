@@ -122,38 +122,43 @@ class ThrottledLlm(GeneralLlm):
                 return await self._hand_over(prompt, reason)
         if self._spend is not None:
             refusal = self._spend.refusal(self.model)
-            if refusal == "cap":
+            if refusal in ("cap", "no question"):
                 from spend import SpendCapReached
 
-                logger.warning(f"{self.model}: question spend cap reached, no new paid forecast")
+                why = "question spend cap reached" if refusal == "cap" else "no question to charge it to"
+                logger.warning(f"{self.model}: {why}, no new paid forecast")
                 self._spend.refused += 1
-                raise SpendCapReached(f"{self.model}: question spend cap reached")
+                raise SpendCapReached(f"{self.model}: {why}")
             if refusal:
                 return await self._hand_over(prompt, refusal)
             self._spend.start(self.model)
         succeeded = False
-        cut_off = True  # a call that timed out or was cancelled may still be billed
+        failure: BaseException | None = None
         try:
             await self._pacer.wait_turn()
             response = await super()._mockable_direct_call_to_model(prompt)
             succeeded = True
-            cut_off = False
         except _TRY_BACKUP_ERRORS as e:
             if self._ledger is not None and _is_daily_quota_error(e):
                 # Google itself says the day's quota is gone.
                 self._ledger.mark_used_up(self.model)
             error_name = type(e).__name__
-            cut_off = isinstance(e, litellm.Timeout)
-        except Exception:
-            cut_off = False
+            failure = e
+        except BaseException as e:  # (incl. cancellation: it may still be billed)
+            failure = e
             raise
         finally:
             # Every attempt counts against the quota (Google counts failed ones).
             if self._ledger is not None:
                 self._ledger.finish(self.model, succeeded)
             if self._spend is not None:
-                cost = getattr(response, "cost", None) if succeeded else None
-                self._spend.finish(self.model, cost, timed_out=cut_off)
+                self._spend.finish(
+                    self.model,
+                    succeeded,
+                    cost=getattr(response, "cost", None) if succeeded else None,
+                    error=failure,
+                    timed_out=isinstance(failure, litellm.Timeout),
+                )
         if not succeeded:
             return await self._hand_over(prompt, error_name)
         logger.info(f"{self.model}: answered")

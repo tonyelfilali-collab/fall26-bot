@@ -177,25 +177,42 @@ def notify_tier_change(old: str | None, new: str, target: float) -> bool:
         return False
 
 
-def notify_daily_cap(spent: float, cap: float) -> bool:
-    """Credits 4d: open a GitHub issue when today's spend reaches the daily cap
-    (GitHub emails Tony). Never raises."""
+def open_alert_issue(title: str, body: str) -> bool:
+    """Credits 4d: open a GitHub issue (GitHub emails Tony), unless an open
+    issue already has this title (alert titles carry the date: once a day).
+    Never raises."""
     try:
+        repo = os.environ["GITHUB_REPOSITORY"]
+        headers = {"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
+        existing = requests.get(
+            f"https://api.github.com/repos/{repo}/issues", headers=headers,
+            params={"state": "open", "per_page": 100}, timeout=30,
+        )
+        existing.raise_for_status()
+        if any(issue.get("title") == title for issue in existing.json()):
+            return False
         response = requests.post(
-            f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues",
-            headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"},
-            json={
-                "title": "Daily spend cap reached: Lean tier for the rest of the day",
-                "body": f"OpenRouter spend today (UTC) is about ${spent:.2f}, at or over the daily cap of "
-                f"about ${cap:.2f} (2x the target daily spend). The bot runs the Lean tier until "
-                "midnight UTC. (Automatic message from the bot.)",
-            },
-            timeout=30,
+            f"https://api.github.com/repos/{repo}/issues", headers=headers,
+            json={"title": title, "body": body}, timeout=30,
         )
         response.raise_for_status()
         return True
     except Exception:
         return False
+
+
+def openrouter_key_usage() -> float | None:
+    """Total dollars this OPENROUTER_API_KEY has spent (OpenRouter's own count), or None."""
+    try:
+        response = requests.get(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return float(response.json()["data"]["usage"])
+    except Exception:
+        return None
 
 
 def tier_record(tier: str, target: float) -> str:

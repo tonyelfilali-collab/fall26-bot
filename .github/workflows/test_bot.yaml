@@ -30,14 +30,11 @@ on:
         description: "Free lineup only: another OpenRouter ':free' model id (blank = the default free model)"
         type: string
         default: ""
-      runaway:
-        description: "replay-credits only: every model times out; each question must stay under its spend cap"
-        type: boolean
-        default: false
-      retry_run:
-        description: "replay-credits only: pass 1's submission fails, pass 2 must reuse the finished forecasts (nothing bought twice)"
-        type: boolean
-        default: false
+      rehearsal:
+        description: "replay-credits only, spend-guard rehearsal: runaway (every model times out, caps hold), retry-run (nothing bought twice), unknown-cost (charged the estimate, hits caps, alert), missing-ledger (Lean + alert), key-mismatch (Lean + alert)"
+        type: choice
+        options: [none, runaway, retry-run, unknown-cost, missing-ledger, key-mismatch]
+        default: none
       fail_model:
         description: "replay-credits only: this model fails every call, so its backup runs (e.g. openrouter/anthropic/claude-opus-5.5)"
         type: string
@@ -85,8 +82,7 @@ jobs:
           if [ "$FAIL_PLANNED" = "true" ]; then args+=(--fail-planned-forecasts); fi
           if [ -n "$ONLY_MODEL" ]; then args+=(--only-model "$ONLY_MODEL"); fi
           if [ -n "$FAIL_MODEL" ]; then args+=(--fail-model "$FAIL_MODEL"); fi
-          if [ "$RUNAWAY" = "true" ]; then args+=(--runaway); fi
-          if [ "$RETRY_RUN" = "true" ]; then args+=(--retry-run); fi
+          if [ -n "$REHEARSAL" ] && [ "$REHEARSAL" != "none" ]; then args+=(--rehearsal "$REHEARSAL"); fi
           if [ -n "$FREE_MODEL" ]; then args+=(--free-model "openrouter/${FREE_MODEL#openrouter/}"); fi
           poetry run python main.py "${args[@]}"
         env:
@@ -96,8 +92,7 @@ jobs:
           FAIL_PLANNED: ${{ inputs.fail_planned_forecasts }}
           ONLY_MODEL: ${{ inputs.only_model }}
           FAIL_MODEL: ${{ inputs.fail_model }}
-          RUNAWAY: ${{ inputs.runaway }}
-          RETRY_RUN: ${{ inputs.retry_run }}
+          REHEARSAL: ${{ inputs.rehearsal }}
           FREE_MODEL: ${{ inputs.free_model }}
           # Only the secrets the bot uses (see NOTES.md). No paid services.
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
