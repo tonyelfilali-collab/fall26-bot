@@ -113,6 +113,8 @@ from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
 from replay import current_question as replay_question
 from research import run_planned_research, with_official_line
 from gemini_budget import current_question_key
+from consistency import INDEX_PATH, ForecastIndex
+from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from spend import SpendGuard, guard_tier, unknown_cost_alert, utc_day
 from stat_baseline import random_walk_baseline
@@ -521,6 +523,9 @@ class FallBot2026(ForecastBot):
     # Test switch (replay-credits --retry-run): the submission fails, so the
     # question is retried with its finished forecasts saved.
     fail_submission = False
+    # Related-question consistency shadow: our latest submitted binary
+    # forecasts (fall26-data index in tournament mode), or None.
+    consistency_index: ForecastIndex | None = None
 
     async def _aggregate_predictions(
         self, predictions: list[PredictionTypes], question: MetaculusQuestion
@@ -903,6 +908,8 @@ class FallBot2026(ForecastBot):
             await self._save_record(question, record, started)
             raise
         submitted = await self._submit_if_still_open(question, report)
+        if submitted and isinstance(question, BinaryQuestion):
+            self._consistency_shadow(question, record, report.prediction)
         # Step 10: the referee shadow (OFF until credits), saved, never submitted.
         if REFEREE_ENABLED and isinstance(question, BinaryQuestion) and self.planner is not None:
             try:
@@ -947,6 +954,30 @@ class FallBot2026(ForecastBot):
         )
         await self._save_record(question, record, started)
         return report
+
+    def _consistency_shadow(self, question: MetaculusQuestion, record: dict, prediction) -> None:  # type: ignore[no-untyped-def]
+        """Sibling binary questions (differ in one number or date) must go the
+        right way; the isotonic-adjusted forecast is saved as the 'consistent'
+        shadow (never submitted). A failure is only logged."""
+        index = self.consistency_index
+        if index is None:
+            return
+        try:
+            tournament = "seasonal" if self.forecasting_seasonal else "minibench"
+            index.put(question.id_of_post, question.question_text, question.close_time, float(prediction), tournament)
+            found = consistency_shadow_for(index, question.id_of_post, tournament)
+            index.save()
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: consistency shadow failed ({type(e).__name__})")
+            return
+        if found is None:
+            return
+        record.setdefault("shadow", {})["consistent"] = found["consistent"]
+        record["consistency"] = found
+        logger.info(
+            f"Question {question.id_of_post}: sibling group of {len(found['group'])} "
+            f"({found['kind']} ladder, {found['direction']}); {found['violations']} violation(s)"
+        )
 
     async def _attach_hard_data(self, question: MetaculusQuestion, record: dict, task) -> None:  # type: ignore[no-untyped-def]
         self.__dict__.get("_hard_data_tasks", {}).pop(id(question), None)
@@ -2028,6 +2059,13 @@ if __name__ == "__main__":
         template_bot.shadow_llm = ReplayLlm()
     if lineup.name == "replay-gemini":
         template_bot.keep_records = True
+    # Consistency shadow index: the real one only for live tournament runs.
+    from gemini_budget import MemoryStore as _MemoryStore
+    from gemini_budget import make_store as _make_store
+
+    template_bot.consistency_index = ForecastIndex(
+        _make_store(INDEX_PATH) if run_mode == "tournament" else _MemoryStore({})
+    )
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
     template_bot.submit_forecasts = publish_to_metaculus
