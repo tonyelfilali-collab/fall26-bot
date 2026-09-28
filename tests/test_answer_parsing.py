@@ -192,3 +192,13 @@ def test_names_still_win_over_letters():
     text = "Option_A: 90%\nOption_B: 10%\nAlpha: 20%\nBeta: 80%"
     result = parse_multiple_choice_answer(text, options)
     assert [o.probability for o in result.predicted_options] == pytest.approx([0.2, 0.8])
+
+
+def test_multiple_choice_lookalike_dashes_and_spaces():
+    # Real free-model reply (regression pack, question 40861): a non-breaking
+    # hyphen in "Saint‑Germain" and non-breaking spaces.
+    options = ["Paris Saint-Germain", "Marseille", "Lens", "Another team"]
+    text = "Paris Saint‑Germain: 55%  \nMarseille: 20%  \nLens: 15%  \nAnother team: 10%"
+    result = parse_multiple_choice_answer(text, options)
+    assert [o.option_name for o in result.predicted_options] == options
+    assert [o.probability for o in result.predicted_options] == pytest.approx([0.55, 0.2, 0.15, 0.1])

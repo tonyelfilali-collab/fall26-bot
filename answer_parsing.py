@@ -73,9 +73,22 @@ def _as_probability(number: str, percent: str) -> float:
     return _to_float(number) / (100 if percent else 1)
 
 
+# Models often write look-alike dashes and spaces ("Saint‑Germain" with a
+# non-breaking hyphen): matched as the plain ones.
+_LOOKALIKES = str.maketrans({
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
+    "\u00a0": " ", "\u202f": " ", "\u2009": " ",
+})
+
+
+def _plain(text: str) -> str:
+    return text.translate(_LOOKALIKES)
+
+
 def _values_by_name(text: str, options: list[str]) -> list[float] | None:
+    text = _plain(text)
     values: list[float] = []
-    for option in options:
+    for option in (_plain(o) for o in options):
         pattern = rf"^\W*(?:Option[_ ]?)?{re.escape(option)}\W*[:=-]\s*({_NUMBER})\s*(%?)\s*$"
         found = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
         if not found:
