@@ -67,6 +67,11 @@ GEMINI_PARSER_MODELS = (
     "gemini/gemini-3.1-flash-lite",
     "gemini/gemini-3.1-flash-lite-preview",
 )
+# Build 1b (architect's pick, 28 Sep): a free OpenRouter model that forecasts
+# every live question as a SHADOW only (never submitted; question log and
+# scoreboard), to judge it as a backup for when Gemini is overloaded.
+SHADOW_FORECAST_MODEL = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+assert SHADOW_FORECAST_MODEL.endswith(":free")
 GEMINI_FREE_REQUESTS_PER_DAY = 20
 # Each model's calls are paced under the 5/minute limit.
 GEMINI_FREE_REQUESTS_PER_MINUTE = 4
