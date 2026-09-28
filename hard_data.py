@@ -146,7 +146,8 @@ def hard_data_for(question: Any, today: date | None = None, get: Get = requests.
         data = fetch_fred(match.series, today, get) if match.source == "fred" else fetch_coingecko(match.series, get)
         found.update(data)
     except Exception as e:
-        found["error"] = type(e).__name__
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        found["error"] = f"{type(e).__name__}{f' (HTTP {status})' if status else ''}"
     return found
 
 
