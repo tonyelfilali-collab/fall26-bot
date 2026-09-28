@@ -7,7 +7,8 @@ emails Tony) if:
 - an open seasonal or MiniBench question closes within 60 minutes without our
   forecast;
 - there has been no successful tournament run for 3 hours.
-Warns (yellow, not red) if any Gemini model has less than 20% of its daily
+Warns (yellow, not red) if MiniBench has had no open question for 3 days
+(e.g. a new round the bot can't find), if any Gemini model has less than 20% of its daily
 quota left (07:00 UK is the end of Google's quota day, so this is normal on
 busy days), if AskNews still returns 402, or if any tournament run in the last
 24 hours could not save a question's JSON log or the quota ledger.
@@ -43,6 +44,7 @@ TOURNAMENT_WORKFLOW = "run_bot_on_tournament.yaml"
 CLOSING_SOON = timedelta(minutes=60)
 MAX_TIME_WITHOUT_SUCCESS = timedelta(hours=3)
 MIN_QUOTA_LEFT = 0.2
+MINIBENCH_QUIET_LIMIT = timedelta(days=3)
 WATCHED_ANNOTATIONS = (LOG_FAILURE_ANNOTATION, "quota-ledger-failed")
 # summer (BST) -> 06:00 UTC, winter (GMT) -> 07:00 UTC
 _UK_7AM_CRON = {timedelta(hours=1): "0 6 * * *", timedelta(0): "0 7 * * *"}
@@ -103,6 +105,16 @@ def check_recent_success(last_success: datetime | None, now: datetime, report: R
     else:
         minutes = int((now - last_success).total_seconds() // 60)
         report.ok.append(f"Last successful tournament run {minutes} min ago")
+
+
+def check_minibench_activity(recently_open: int, report: Report) -> None:
+    """recently_open: MiniBench questions open at some point in the last 3 days."""
+    if recently_open == 0:
+        report.warnings.append(
+            "MiniBench has had no open questions for 3 days (new round not found, or a pause)"
+        )
+    else:
+        report.ok.append(f"MiniBench had {recently_open} open question(s) in the last 3 days")
 
 
 def check_gemini_quota(ledger: dict | None, today: str, report: Report) -> None:
@@ -171,27 +183,50 @@ def recent_annotation_titles(since: datetime) -> list[str]:
     return titles
 
 
-def open_questions() -> dict:
+def open_questions(minibench_id: int | str) -> dict:
     from forecasting_tools import MetaculusClient
 
-    from main import FALL_2026_MINIBENCH_ID, FALL_2026_TOURNAMENT_ID
+    from main import FALL_2026_TOURNAMENT_ID
 
     client = MetaculusClient()
     return {
         "seasonal": client.get_all_open_questions_from_tournament(FALL_2026_TOURNAMENT_ID),
-        "MiniBench": client.get_all_open_questions_from_tournament(FALL_2026_MINIBENCH_ID),
+        "MiniBench": client.get_all_open_questions_from_tournament(minibench_id),
     }
 
 
-def missed_questions(since: datetime) -> dict:
+def minibench_recently_open(minibench_id: int | str, now: datetime) -> int:
+    """MiniBench questions (current round and the slug's) open at some point in the last 3 days."""
+    from forecasting_tools import ApiFilter, MetaculusClient
+
+    from minibench import MINIBENCH_SLUG
+
+    client = MetaculusClient()
+    seen = set()
+    for tournament in dict.fromkeys([minibench_id, MINIBENCH_SLUG]):
+        api_filter = ApiFilter(
+            allowed_tournaments=[tournament],
+            allowed_statuses=["open", "closed", "resolved"],
+            close_time_gt=now - MINIBENCH_QUIET_LIMIT,
+            open_time_lt=now,
+            group_question_mode="unpack_subquestions",
+        )
+        questions = asyncio.run(
+            client.get_questions_matching_filter(api_filter, error_if_question_target_missed=False)
+        )
+        seen |= {q.id_of_question or q.id_of_post for q in questions}
+    return len(seen)
+
+
+def missed_questions(since: datetime, minibench_id: int | str) -> dict:
     """Tournament questions that closed since `since` (ours or not)."""
     from forecasting_tools import ApiFilter, MetaculusClient
 
-    from main import FALL_2026_MINIBENCH_ID, FALL_2026_TOURNAMENT_ID
+    from main import FALL_2026_TOURNAMENT_ID
 
     client = MetaculusClient()
     missed = {}
-    for label, tournament in (("seasonal", FALL_2026_TOURNAMENT_ID), ("MiniBench", FALL_2026_MINIBENCH_ID)):
+    for label, tournament in (("seasonal", FALL_2026_TOURNAMENT_ID), ("MiniBench", minibench_id)):
         api_filter = ApiFilter(
             allowed_tournaments=[tournament],
             allowed_statuses=["closed", "resolved"],
@@ -232,9 +267,16 @@ def asknews_status() -> int | None:
 def run(simulate_miss: bool) -> Report:
     now = datetime.now(timezone.utc)
     report = Report()
+    from minibench import MINIBENCH_SLUG, current_minibench_id
+
+    try:
+        minibench_id = current_minibench_id()
+    except Exception:
+        minibench_id = MINIBENCH_SLUG
     checks = [
-        ("missed questions", lambda: check_missed_questions(missed_questions(now - timedelta(hours=24)), report)),
-        ("open questions", lambda: check_open_questions(open_questions(), now, report)),
+        ("missed questions", lambda: check_missed_questions(missed_questions(now - timedelta(hours=24), minibench_id), report)),
+        ("open questions", lambda: check_open_questions(open_questions(minibench_id), now, report)),
+        ("MiniBench activity", lambda: check_minibench_activity(minibench_recently_open(minibench_id, now), report)),
         ("recent runs", lambda: check_recent_success(last_successful_tournament_run(), now, report)),
         (
             "Gemini quota",
