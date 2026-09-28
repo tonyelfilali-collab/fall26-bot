@@ -107,12 +107,13 @@ Opus 5.5 and Fable 5.1 are too new to appear yet.
 
 - **Yes/no questions**
   - Round 1: Claude Opus 5.5, GPT-5.6 Sol and Gemini 3.6 Flash.
-  - Round 2 runs only if the round-1 spread is more than 15 points, or the median is below 10% or above 90%. It adds Claude Fable 5.1, Claude Opus 5.5 and Gemini 3.6 Flash.
-- **Numeric and multiple-choice questions:** always all 6 forecasts, because that's where bots lose the most points.
-- **Planner, parser and summarizer:** Gemini 3.6 Flash.
-- **All forecasters:** high reasoning effort, 600-second timeout, 3 tries.
+  - Round 2 runs only if the round-1 spread is more than 15 points, or the median is below 10% or above 90%. It adds one more forecast per family: Claude Opus 5.5, GPT-5.6 Sol and Gemini 3.6 Flash.
+  - (29 Sep, architect: Claude Fable 5.1 removed. Fable 5 vs Opus 5 is 16.1 vs 15.8 on the leaderboard, within noise, at 2.5x the price; balanced families beat repeating one model.)
+- **Numeric and multiple-choice questions:** always all 6 forecasts (2 per family), because that's where bots lose the most points.
+- **Planner, parser and summarizer:** the free Gemini Flash-Lite pool (credits 4c). The Gemini 3.6 Flash slots try the free AI Studio key first, OpenRouter only when it can't answer.
+- **All forecasters:** high reasoning effort, 600-second timeout, 2 tries (credits 4d; a timeout goes straight to the backup).
+- **Cost per question** (credits 4b, measured prompts + assumed 8k output): full $0.64, standard $0.39, lean $0.26 (`ensemble.COST_TABLE`).
 - **Backups** when a model fails, times out or refuses:
-  - Fable 5.1 → Opus 5.5 → Opus 5
   - Opus 5.5 → Opus 5
   - GPT-5.6 Sol → GPT-5.5 High
   - Gemini 3.6 Flash → Gemini 3.1 Pro
@@ -133,11 +134,11 @@ For numeric: take the pointwise median of the models' CDFs, mix 95% of it with 5
 
 The bot works out a target spend per question: (remaining credit − 15% reserve) ÷ expected remaining questions. It then picks a tier:
 
-| Tier | Models | Rough cost per question |
+| Tier | Models | Cost per question (4b: measured prompts, assumed 8k output) |
 |---|---|---|
-| Full | The lineup above | ~$1.50–2.00 |
-| Standard | Opus 5.5, GPT-5.6 Sol, Gemini 3.6 Flash ×3 | ~$0.80 |
-| Lean | Opus 5.5 + Gemini 3.6 Flash ×2 | ~$0.40 |
+| Full | The lineup above (Opus 5.5 ×2, GPT-5.6 Sol ×2, Gemini 3.6 Flash ×2) | ~$0.64 |
+| Standard | Opus 5.5, GPT-5.6 Sol, Gemini 3.6 Flash ×3 | ~$0.39 |
+| Lean | Opus 5.5 + Gemini 3.6 Flash ×2 | ~$0.26 |
 | Fast path (less than 15–25 min to close, or the full path failed) | Opus 5.5 + Gemini 3.6 Flash ×2, AskNews research only | ~5 minutes to run |
 
 - MiniBench always runs one tier below the seasonal tournament.

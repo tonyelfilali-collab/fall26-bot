@@ -591,7 +591,7 @@ REHEARSAL_BINARY_PERCENT = {
 }
 # Rehearsal credit (dollars, remaining = limit) for the tier choice: $700
 # (minus the 15% reserve) over ~100 days x 12 questions is about $0.50 a
-# question -> standard (the 4b costs: standard $0.39, full $1.02).
+# question -> standard (the 4b costs: standard $0.39, full $0.64).
 REHEARSAL_CREDIT = 700.0
 
 

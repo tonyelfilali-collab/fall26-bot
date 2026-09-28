@@ -46,7 +46,7 @@ def test_worked_example_target_spend():
 
 @pytest.mark.parametrize(
     "target, tier",
-    [(2.00, "full"), (1.02, "full"), (1.01, "standard"), (0.39, "standard"), (0.38, "lean"), (0.10, "lean")],
+    [(2.00, "full"), (0.64, "full"), (0.63, "standard"), (0.39, "standard"), (0.38, "lean"), (0.10, "lean")],
 )
 def test_choose_tier(target, tier):
     assert ensemble.choose_tier(target) == tier

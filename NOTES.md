@@ -271,7 +271,8 @@ total within ~6,000 tokens (`research.with_official_line`).
   OpenRouter's public list (exists, reasoning, prices); free models must be $0.
 - **4b cost table** (`cost_table.py`, same workflow): real prices x prompt tokens measured from
   question logs + ASSUMED 8k output per forecast. `ensemble.COST_TABLE`; tier cost = its most
-  expensive column (full $1.02, standard $0.39, lean $0.26 on 28 Sep).
+  expensive column (full $0.64, standard $0.39, lean $0.26 on 28 Sep, after Fable 5.1 was removed:
+  full round 2 = one more Opus 5.5, GPT-5.6 Sol and Gemini 3.6 Flash; Fable only in the pre-flight price list).
 - **4c free first:** the Flash 3.6 slot tries the AI Studio key first (`CREDITS_FREE_FIRST`),
   OpenRouter only when it can't answer; planner/dossier/parser/summarizer on the free Flash-Lite pool.
 - **4d spend guards** (`spend.py`), all fail closed: each paid call's real OpenRouter cost (LiteLLM
