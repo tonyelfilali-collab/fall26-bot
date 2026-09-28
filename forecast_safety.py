@@ -240,3 +240,32 @@ def dates_line(question: Any, now: datetime | None = None) -> str:
         f"{day(getattr(question, 'close_time', None))} and is scheduled to resolve on "
         f"{day(getattr(question, 'scheduled_resolution_time', None))}."
     )
+
+
+# ---------------------------------------------------------------- unit check vs the current value
+
+
+UNIT_RATIO_LIMIT = 10.0
+def median_of(percentiles: list[Percentile]) -> float | None:
+    """The 50th percentile (interpolated between the nearest two if missing)."""
+    points = sorted(percentiles, key=lambda p: p.percentile)
+    for low, high in zip(points, points[1:]):
+        if low.percentile <= 0.5 <= high.percentile:
+            if high.percentile == low.percentile:
+                return low.value
+            t = (0.5 - low.percentile) / (high.percentile - low.percentile)
+            return low.value + t * (high.value - low.value)
+    return None
+
+
+def off_by_10x(percentiles: list[Percentile], current_value: float | None) -> bool:
+    """
+    True if the median is more than 10x or less than 0.1x the current value
+    from research (a likely unit error). Only for positive values, where the
+    ratio means something.
+    """
+    median = median_of(percentiles)
+    if current_value is None or median is None or current_value <= 0 or median <= 0:
+        return False
+    ratio = median / current_value
+    return ratio > UNIT_RATIO_LIMIT or ratio < 1 / UNIT_RATIO_LIMIT

@@ -63,6 +63,7 @@ class ResearchResult:
     free_articles: int = 0
     gap_filled: bool = False
     dossier_written: bool = False
+    current_value: CurrentValue | None = None
 
     @property
     def articles(self) -> int:
@@ -101,8 +102,26 @@ def planner_prompt(question_text: str, resolution_criteria: str, dates: str) -> 
 # ---------------------------------------------------------------- dossier
 
 
-def dossier_prompt(question_text: str, resolution_criteria: str, dates: str, key_facts: list[str], articles: str) -> str:
+CURRENT_VALUE_LINE = "CURRENT VALUE:"
+
+
+def dossier_prompt(
+    question_text: str,
+    resolution_criteria: str,
+    dates: str,
+    key_facts: list[str],
+    articles: str,
+    unit: str | None = None,
+) -> str:
     facts = "\n".join(f"- {f}" for f in key_facts) or "- (none listed)"
+    # Numeric/discrete questions: a structured current-value line for the unit check.
+    value_line = (
+        f"Also include, on its own line, the latest known value of the quantity in the "
+        f"question's unit ({unit}): '{CURRENT_VALUE_LINE} <number> | UNIT: {unit} | DATE: <YYYY-MM-DD>' "
+        f"(a plain number, no words like 'million'), or '{CURRENT_VALUE_LINE} unknown'.\n"
+        if unit is not None
+        else ""
+    )
     return (
         "You write a research dossier for a forecaster. Do not forecast and do not give probabilities.\n\n"
         f"Question: {question_text}\n\nResolution criteria: {resolution_criteria}\n\n{dates}\n\n"
@@ -113,10 +132,34 @@ def dossier_prompt(question_text: str, resolution_criteria: str, dates: str, key
         "## Base rates and history\n"
         "## Key uncertainties\n"
         "Do NOT mention prediction markets, betting odds or crowd forecasts.\n"
-        f"Keep it under {int(MAX_DOSSIER_TOKENS * WORDS_PER_TOKEN * 0.8)} words.\n"
+        + value_line
+        + f"Keep it under {int(MAX_DOSSIER_TOKENS * WORDS_PER_TOKEN * 0.8)} words.\n"
         "Last line: 'MISSING: <one search query for the most important fact the articles don't cover>' "
         "or 'MISSING: none'."
     )
+
+
+@dataclass
+class CurrentValue:
+    value: float
+    unit: str
+    date: str
+
+
+def parse_current_value(text: str) -> CurrentValue | None:
+    """The dossier's 'CURRENT VALUE: <number> | UNIT: <unit> | DATE: <date>' line, if any."""
+    match = re.search(
+        r"CURRENT VALUE:\s*\$?\s*([-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*\|\s*UNIT:\s*([^|\n]*?)\s*\|\s*DATE:\s*([^\s|]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        value = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    return CurrentValue(value=value, unit=match.group(2).strip(), date=match.group(3).strip())
 
 
 def split_missing(dossier: str) -> tuple[str, str | None]:
@@ -239,7 +282,12 @@ async def run_planned_research(
     # 3. Dossier.
     missing = None
     try:
-        dossier_text = await invoke_helper(dossier_prompt(text, criteria, dates, plan.key_facts, articles_text))
+        unit = getattr(question, "unit_of_measure", None)
+        if getattr(question, "question_type", None) in ("numeric", "discrete"):
+            unit = unit or "(the question's unit)"
+        else:
+            unit = None
+        dossier_text = await invoke_helper(dossier_prompt(text, criteria, dates, plan.key_facts, articles_text, unit))
         dossier, missing = split_missing(dossier_text)
         result.dossier_written = bool(dossier.strip())
     except Exception as e:
@@ -262,6 +310,7 @@ async def run_planned_research(
             dossier += f"\n\n## Extra search: {missing}\n{extra}"
 
     result.dossier = cap_tokens(remove_market_prices(dossier))
+    result.current_value = parse_current_value(result.dossier)
     return result
 
 
