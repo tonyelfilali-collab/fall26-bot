@@ -88,15 +88,6 @@ def test_10x_boundaries(median, current, flagged):
     assert fs.off_by_10x(nine(*(median * f for f in (0.5, 0.6, 0.7, 0.9, 1, 1.1, 1.3, 1.4, 1.5))), current) is flagged
 
 
-def test_worked_example_wide_distribution_around_the_current_value():
-    wide = fs.wide_around(250, STEP8_PERCENTILES, question())
-    values = {p.percentile: p.value for p in wide}
-    assert values[0.5] == pytest.approx(250)
-    assert values[0.975] == pytest.approx(750)  # 3x
-    assert values[0.025] == pytest.approx(250 / 3)  # a third
-    assert all(a < b for a, b in zip([p.value for p in wide], [p.value for p in wide][1:]))
-
-
 # ---------------------------------------------------------------- in the bot
 
 
@@ -128,13 +119,6 @@ def test_x1000_error_is_reparsed_once(monkeypatch):
     assert cdf_at(result, 250) == pytest.approx(0.5, abs=0.02)
 
 
-def test_x1000_error_twice_uses_a_wide_distribution_around_the_current_value(monkeypatch):
-    bot, q = _bot(monkeypatch, [X1000, X1000])
-    result = asyncio.run(bot._parse_numeric_safely(q, "no percentile lines here", "instructions"))
-    assert cdf_at(result, 250) == pytest.approx(0.5, abs=0.02)
-    assert cdf_at(result, 750) == pytest.approx(0.975, abs=0.02)
-
-
 def test_10x_inside_the_range_is_reparsed(monkeypatch):
     bot, q = _bot(monkeypatch, [X11, RIGHT])
     result = asyncio.run(bot._parse_numeric_safely(q, "no percentile lines here", "instructions"))
@@ -151,3 +135,43 @@ def test_outside_the_range_twice_without_a_current_value_is_dropped(monkeypatch)
     bot, q = _bot(monkeypatch, [X1000, X1000], current_value=None)
     with pytest.raises(fs.NoValidForecast):
         asyncio.run(bot._parse_numeric_safely(q, "no percentile lines here", "instructions"))
+
+
+# ---------------------------------------------------------------- still flagged after the re-ask
+
+
+def _flagged_forecast(monkeypatch, bot, q, parses):
+    answers = iter(parses)
+
+    async def fake_structure_output(text, output_type, model=None, additional_instructions=None, num_validation_samples=1):
+        return next(answers)
+
+    monkeypatch.setattr(main, "structure_output", fake_structure_output)
+    return asyncio.run(bot._parse_numeric_safely(q, "no percentile lines here", "instructions"))
+
+
+def test_one_model_still_10x_off_is_dropped(monkeypatch):
+    # Worked example: two models say ~250 thousand, one keeps saying ~2,750 (x11)
+    # after the re-ask: that one is dropped; the final median is ~250.
+    bot, q = _bot(monkeypatch, [RIGHT])
+    good_1 = _flagged_forecast(monkeypatch, bot, q, [RIGHT])
+    good_2 = _flagged_forecast(monkeypatch, bot, q, [RIGHT])
+    bad = _flagged_forecast(monkeypatch, bot, q, [X11, X11])
+    final = asyncio.run(bot._aggregate_predictions([good_1, bad, good_2], q))
+    assert cdf_at(final, 250) == pytest.approx(0.95 * 0.5 + 0.05 * 250 / 5000, abs=0.02)
+
+
+def test_every_model_10x_off_keeps_them_all(monkeypatch, caplog):
+    # All three say ~2,750 while research says 250: research is probably wrong.
+    bot, q = _bot(monkeypatch, [X11])
+    forecasts = [_flagged_forecast(monkeypatch, bot, q, [X11, X11]) for _ in range(3)]
+    with caplog.at_level("WARNING", logger="fall26"):
+        final = asyncio.run(bot._aggregate_predictions(forecasts, q))
+    assert cdf_at(final, 2750) == pytest.approx(0.95 * 0.5 + 0.05 * 2750 / 5000, abs=0.02)
+    assert "keeping them all" in caplog.text
+
+
+def test_no_made_up_forecast_anywhere():
+    import forecast_safety
+
+    assert not hasattr(forecast_safety, "wide_around")

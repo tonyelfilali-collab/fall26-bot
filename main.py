@@ -72,7 +72,6 @@ from forecast_safety import (
     fix_reversed_percentiles,
     floor_multiple_choice,
     off_by_10x,
-    wide_around,
     question_range,
     still_open_problem,
 )
@@ -396,6 +395,9 @@ class FallBot2026(ForecastBot):
             # Step 8: median per option, renormalise, 1% floor, renormalise.
             return median_multiple_choice(predictions)  # type: ignore[arg-type]
         if isinstance(question, NumericQuestion):
+            # Unit check: drop models still over 10x away from the current
+            # value, unless every model is (then the value is probably wrong).
+            predictions = self._drop_unit_flagged(question, predictions)  # type: ignore[arg-type]
             # Step 8: pointwise median of the models' CDFs, then 95% of it with
             # 5% uniform over the question's range; then the Step 4 checks.
             aggregated = combine_numeric(predictions, question)  # type: ignore[arg-type]
@@ -410,6 +412,26 @@ class FallBot2026(ForecastBot):
                 )
             return aggregated
         return await super()._aggregate_predictions(predictions, question)
+
+    def _drop_unit_flagged(self, question: MetaculusQuestion, predictions: list) -> list:  # type: ignore[type-arg]
+        flagged_ids = self.__dict__.get("_unit_flagged", {})
+        flagged = [p for p in predictions if flagged_ids.get(id(p)) is p]
+        for p in flagged:
+            flagged_ids.pop(id(p), None)
+        if not flagged:
+            return predictions
+        if len(flagged) == len(predictions):
+            logger.warning(
+                f"Question {question.id_of_post}: every model is over 10x away from the "
+                "current value in research; keeping them all (the current value is "
+                "probably wrong)"
+            )
+            return predictions
+        logger.warning(
+            f"Question {question.id_of_post}: dropping {len(flagged)} of "
+            f"{len(predictions)} forecast(s) over 10x away from the current value"
+        )
+        return [p for p in predictions if not any(p is f for f in flagged)]
 
     def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
         # A planned forecast uses the model chain chosen for it.
@@ -1106,9 +1128,12 @@ class FallBot2026(ForecastBot):
         Parse the percentiles, put reversed ones right, and catch unit errors
         (Step 4): if every value is outside the question's range, or the
         median is more than 10x / less than 0.1x the current value found in
-        research, re-parse once with a warning about units. If still wrong:
-        a wide distribution around the current value if research found one,
-        otherwise this forecast is dropped.
+        research, re-ask the parser once with a warning about units.
+        - Still outside the range: this forecast is dropped.
+        - Still over 10x away from the current value: the forecast is kept
+          but flagged; when combining, flagged models are dropped, unless
+          EVERY model is flagged (then the current value is probably wrong:
+          all are kept and a warning is logged). Never a made-up forecast.
         """
         lower, upper = question_range(question)
         current = self._record_for(question).get("research_detail", {}).get("current_value")
@@ -1120,6 +1145,7 @@ class FallBot2026(ForecastBot):
             reasoning, STEP8_PERCENTILES, question.unit_of_measure
         )
         used_parser = False
+        outside = off = False
         for attempt in range(2):
             if attempt == 0 and direct is not None:
                 percentile_list = direct
@@ -1152,15 +1178,8 @@ class FallBot2026(ForecastBot):
                   vs fraction).
                 """
             )
-        else:
-            if current_value is not None and current_value > 0:
-                logger.warning(
-                    f"Question {question.id_of_post}: still a unit error after re-parsing; "
-                    "using a wide distribution around the current value"
-                )
-                percentile_list = wide_around(current_value, STEP8_PERCENTILES, question)
-            else:
-                raise NoValidForecast("the parsed values look like a unit error, twice")
+        if outside:
+            raise NoValidForecast("every parsed value is outside the question's range, twice")
         # Step 8: this model's CDF via PCHIP through its percentiles.
         distribution = pchip_distribution(percentile_list, question)
         problems = distribution_problems(distribution, question)
@@ -1168,6 +1187,10 @@ class FallBot2026(ForecastBot):
             raise NoValidForecast(
                 f"distribution broke the platform rules ({'; '.join(problems)})"
             )
+        if off:
+            # Still over 10x away from the current value: decided when combining.
+            # Keep the object itself so its id can't be reused by another one.
+            self.__dict__.setdefault("_unit_flagged", {})[id(distribution)] = distribution
         return distribution, used_parser
 
     ##################################### DATE QUESTIONS #####################################

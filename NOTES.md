@@ -408,12 +408,11 @@ parser quota, and half of each free-model Test Bot run (OpenRouter ~50/day).
 - **Unit check vs the current value (28 Sep):** for numeric/discrete questions the Step 7 dossier
   ends with `CURRENT VALUE: <number> | UNIT: <unit> | DATE: <date>` (or `unknown`), parsed into
   `research_detail.current_value`. If a model's median is more than 10× or less than 0.1× that
-  value (positive values only), the answer is re-parsed once with a units warning naming the
-  current value; if still off, a **wide log-normal around the current value** is used (median =
-  current value, 97.5% = 3×, 2.5% = ⅓, kept inside the range). The architect asked for this
-  fallback: it's anchored on the researched value, not a pure guess. Without a current value
-  (e.g. research failed), only the "every value outside the range" check applies, and a forecast
-  that fails it twice is dropped. Tests: `tests/test_unit_check.py` (x1000 and x11 examples). Not done yet: the
+  value (positive values only; skipped if the value is missing or ≤ 0), the parser is re-asked
+  once with a units warning naming the current value. If still off, that model is **dropped** when
+  combining, unless **every** model is flagged: then all are kept (the current value is probably
+  wrong) and a warning is logged. Never a made-up forecast (architect, 28 Sep: no wide
+  distribution around the current value). Tests: `tests/test_unit_check.py` (x1000 and x11 examples). Not done yet: the
   "median more than 10x or under 0.1x the current value from research" check, because the
   research has no structured current value yet (planner facts, Step 7).
 - **Every prompt** includes today's date and the question's close and resolve dates.
