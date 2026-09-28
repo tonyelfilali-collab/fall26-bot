@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -60,11 +61,18 @@ def record_path(mode: str, question: Any, started: datetime) -> str:
     return f"questions/{mode}/{started:%Y-%m-%d}/{post}_{started:%H%M%S}.json"
 
 
+# Several questions finish at once, and GitHub rejects clashing writes to the
+# same branch (409/422) or is briefly unavailable (5xx): try again.
+SAVE_ATTEMPTS = 4
+SAVE_RETRY_STATUSES = (409, 422, 500, 502, 503, 504)
+
+
 class QuestionLogWriter:
     """Writes records to the data repo with DATA_REPO_TOKEN (or nowhere, if unset)."""
 
-    def __init__(self, token: str | None = None, repo: str = DATA_REPO) -> None:
+    def __init__(self, token: str | None = None, repo: str = DATA_REPO, pause=time.sleep) -> None:  # type: ignore[no-untyped-def]
         self._token = token if token is not None else os.getenv("DATA_REPO_TOKEN")
+        self._pause = pause
         self._repo = repo
         self.saved: list[str] = []
 
@@ -74,20 +82,25 @@ class QuestionLogWriter:
         try:
             if not self._token:
                 raise RuntimeError("DATA_REPO_TOKEN is not set")
-            response = requests.put(
-                f"https://api.github.com/repos/{self._repo}/contents/{path}",
-                headers={
-                    "Authorization": f"Bearer {self._token}",
-                    "Accept": "application/vnd.github+json",
-                },
-                json={
-                    "message": f"Question {post} log",
-                    "content": base64.b64encode(
-                        json.dumps(to_jsonable(record), indent=2).encode()
-                    ).decode(),
-                },
-                timeout=30,
-            )
+            body = {
+                "message": f"Question {post} log",
+                "content": base64.b64encode(
+                    json.dumps(to_jsonable(record), indent=2).encode()
+                ).decode(),
+            }
+            for attempt in range(SAVE_ATTEMPTS):
+                response = requests.put(
+                    f"https://api.github.com/repos/{self._repo}/contents/{path}",
+                    headers={
+                        "Authorization": f"Bearer {self._token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                    json=body,
+                    timeout=30,
+                )
+                if response.status_code not in SAVE_RETRY_STATUSES or attempt == SAVE_ATTEMPTS - 1:
+                    break
+                self._pause(1.0 + attempt)
             response.raise_for_status()
         except Exception as e:
             logger.warning(
