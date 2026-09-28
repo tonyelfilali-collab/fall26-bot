@@ -432,6 +432,8 @@ Architect, 29 Sep 2026. The credits lineup stays OFF until every step is done, i
 Tools: Credit check, Credits pre-flight, Test Bot (`replay-credits` rehearsals), spend ledger
 (`fall26-data/status/spend.json`).
 
+0. **Empty spend ledger.** Claude Code creates `fall26-data/status/spend.json` as `{}` (a missing or
+   unreadable ledger means Lean + an alert, by design).
 1. **Keys.** Tony pastes the Metaculus credit key into the `OPENROUTER_API_KEY` secret. His own
    key (the $1-limit one) moves to a new test-only secret; Claude Code points the free test
    lineups at it.
@@ -443,6 +445,10 @@ Tools: Credit check, Credits pre-flight, Test Bot (`replay-credits` rehearsals),
    numbers allow.
 6. **First 24 hours:** a spend report per question (spend ledger vs `ensemble.COST_TABLE`). Step
    up a tier only if the real cost is within 20% of the estimate.
+7. **After the first 10 live questions on credits:** replace `spend.ESTIMATE_OUTPUT_TOKENS` (8k,
+   assumed) with the measured 75th percentile of output tokens per model (the spend ledger keeps
+   each paid call's output tokens), recompute the tier costs (`ensemble.COST_TABLE`) and caps, and
+   report to the architect.
 
 Guards already in place (4d): per-question cap 2x tier cost, daily cap 2x target daily spend
 (then Lean + alert issue), finished forecasts never bought twice, paid models 2 tries.
