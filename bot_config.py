@@ -78,6 +78,8 @@ assert SHADOW_FORECAST_MODEL.endswith(":free")
 # hard time limit, and its pace (OpenRouter free models: 20 requests/minute).
 BACKUP_FORECAST_MODEL = SHADOW_FORECAST_MODEL
 BACKUP_FORECAST_TIMEOUT_SECONDS = 240
+# Nemotron makes this many backup forecasts at the same time (median).
+BACKUP_FORECASTS = 2
 BACKUP_REQUESTS_PER_MINUTE = 10
 # Flash forecasters: 20 a day each (Google counts over-limit attempts too).
 GEMINI_FREE_REQUESTS_PER_DAY = 20

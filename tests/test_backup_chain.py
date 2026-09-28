@@ -1,10 +1,9 @@
 """Build 3: Nemotron in the backup chain (architect, 29 Sep).
 
-- Closing within 45 min, no Flash forecast: Flash-Lite (up to 2, reserve
-  allowed) + Nemotron (1), median of what answers.
-- Every Flash model out of quota (429 or ledger at 0): the backup chain right
-  away, Nemotron (1) + Flash-Lite (up to 2) together, Flash-Lite only above its
-  reserve. A 503 is not exhaustion.
+- Both closing within 45 min (no Flash forecast) and when every Flash model is
+  out of quota (429 or ledger at 0; a 503 is not): Nemotron first, 2 forecasts
+  at the same time, median; Flash-Lite (up to 2) ONLY if Nemotron gives no
+  answer. Flash-Lite may use its reserve in the window, only above it earlier.
 Gemini calls go to the local dummy server; Nemotron is a recorded reply.
 """
 from __future__ import annotations
@@ -73,7 +72,7 @@ def test_all_flash_429_with_flash_lite_at_reserve_nemotron_only(dummy, monkeypat
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.3)
     assert record["emergency"] == "flash-exhausted: nemotron"
-    assert _answered(record, "backup") == [BACKUP_FORECAST_MODEL]
+    assert _answered(record, "backup") == [BACKUP_FORECAST_MODEL] * 2  # 2 runs
     # The Flash-Lite reserve is untouched: no Flash-Lite call, counts unchanged.
     assert _flash_lite_calls(dummy) == []
     assert {m: pool.ledger.used[m] for m in GEMINI_PARSER_MODELS} == FLASH_LITE_AT_RESERVE
@@ -83,21 +82,17 @@ def test_ledger_at_zero_is_exhaustion_too(dummy, monkeypatch, nemotron):  # noqa
     used = {f"gemini/{m}": 20 for m in FLASH}
     report, record, _ = _run(dummy, monkeypatch, nemotron, 120, used=used, flash="ok")
     assert not isinstance(report, BaseException), report
-    assert record["emergency"] == "flash-exhausted: nemotron+flash-lite"
+    assert record["emergency"] == "flash-exhausted: nemotron"
     assert not [c for c in dummy.calls if c in FLASH]  # no Flash call at all
 
 
-def test_exhausted_nemotron_and_flash_lite_together(dummy, monkeypatch, nemotron):  # noqa: F811
-    # Architect (29 Sep): outside the window Nemotron AND Flash-Lite, median.
-    used = {m: 15 for m in GEMINI_PARSER_MODELS}  # 1 usable request left on each
-    report, record, pool = _run(dummy, monkeypatch, nemotron, 120, used=used, flash="daily_quota")
+def test_nemotron_answers_so_flash_lite_is_not_used(dummy, monkeypatch, nemotron):  # noqa: F811
+    # Flash-Lite has plenty of quota, but Nemotron answered: no Flash-Lite forecast.
+    report, record, pool = _run(dummy, monkeypatch, nemotron, 120, flash="daily_quota")
     assert not isinstance(report, BaseException), report
-    assert record["emergency"] == "flash-exhausted: nemotron+flash-lite"
-    answered = _answered(record, "backup")
-    assert BACKUP_FORECAST_MODEL in answered
-    assert len([m for m in answered if "flash-lite" in m]) == 2
-    # Above the reserve only: no model went past its 16 usable requests.
-    assert all(pool.ledger.used[m] <= 16 for m in GEMINI_PARSER_MODELS)
+    assert record["emergency"] == "flash-exhausted: nemotron"
+    assert _answered(record, "backup") == [BACKUP_FORECAST_MODEL] * 2
+    assert _flash_lite_calls(dummy) == []
 
 
 def test_exhausted_and_nemotron_down_uses_flash_lite_above_reserve_only(dummy, monkeypatch, nemotron):  # noqa: F811
@@ -105,7 +100,7 @@ def test_exhausted_and_nemotron_down_uses_flash_lite_above_reserve_only(dummy, m
     used = {**FLASH_LITE_AT_RESERVE, "gemini/gemini-3.5-flash-lite": 15}  # 1 usable left there
     report, record, pool = _run(dummy, monkeypatch, nemotron, 120, used=used, flash="daily_quota")
     assert not isinstance(report, BaseException), report
-    assert record["emergency"] == "flash-exhausted: nemotron+flash-lite"
+    assert record["emergency"] == "flash-exhausted: nemotron failed -> flash-lite"
     assert _answered(record, "backup") == ["gemini/gemini-3.5-flash-lite"]
     # Only the one usable request was spent; every model is now at its reserve.
     assert {m: pool.ledger.used[m] for m in GEMINI_PARSER_MODELS} == FLASH_LITE_AT_RESERVE
@@ -115,16 +110,16 @@ def test_exhausted_nemotron_down_flash_lite_at_reserve_submits_nothing(dummy, mo
     nemotron.down = True
     report, record, pool = _run(dummy, monkeypatch, nemotron, 120, used=FLASH_LITE_AT_RESERVE, flash="daily_quota")
     assert isinstance(report, BaseException)  # never a guess; retried next run
+    assert record["emergency"] == "flash-exhausted: nemotron failed, no flash-lite"
     assert {m: pool.ledger.used[m] for m in GEMINI_PARSER_MODELS} == FLASH_LITE_AT_RESERVE
 
 
-def test_window_flash_lite_plus_nemotron(dummy, monkeypatch, nemotron):  # noqa: F811
+def test_window_nemotron_first(dummy, monkeypatch, nemotron):  # noqa: F811
     report, record, _ = _run(dummy, monkeypatch, nemotron, 30)
     assert not isinstance(report, BaseException), report
-    assert record["emergency"] == "flash-lite+nemotron"
-    answered = _answered(record, "emergency")
-    assert BACKUP_FORECAST_MODEL in answered
-    assert len([m for m in answered if "flash-lite" in m]) == 2
+    assert record["emergency"] == "window: nemotron"
+    assert _answered(record, "emergency") == [BACKUP_FORECAST_MODEL] * 2
+    assert _flash_lite_calls(dummy) == []
 
 
 def test_window_nemotron_down_flash_lite_alone_still_submits(dummy, monkeypatch, nemotron):  # noqa: F811
@@ -132,10 +127,10 @@ def test_window_nemotron_down_flash_lite_alone_still_submits(dummy, monkeypatch,
     report, record, _ = _run(dummy, monkeypatch, nemotron, 30)
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.3)
-    assert record["emergency"] == "flash-lite+nemotron"
+    assert record["emergency"] == "window: nemotron failed -> flash-lite"
     emergency = [f for f in record["forecasts"] if f["kind"] == "emergency"]
     failed = [f for f in emergency if f["status"] == "failed"]
-    assert [f["planned_model"] for f in failed] == [BACKUP_FORECAST_MODEL]
+    assert [f["planned_model"] for f in failed] == [BACKUP_FORECAST_MODEL] * 2
     assert len(_answered(record, "emergency")) == 2  # both Flash-Lite
 
 

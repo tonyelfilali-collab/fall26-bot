@@ -33,7 +33,7 @@ def test_emergency_flash_lite_close_to_the_deadline(dummy, monkeypatch):  # noqa
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.3)
     [(_, record)] = bot.question_log.records
-    assert record["emergency"] == "flash-lite"
+    assert record["emergency"] == "window: flash-lite"  # no Nemotron configured here
     emergency = [f for f in record["forecasts"] if f["kind"] == "emergency"]
     assert len(emergency) == 2 and all(f["status"] == "ok" for f in emergency)
     assert all(m.startswith("gemini/gemini-3.") and "flash-lite" in m for f in emergency for m in f["answered_models"])

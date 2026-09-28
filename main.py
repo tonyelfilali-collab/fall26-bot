@@ -55,6 +55,7 @@ from forecasting_tools.data_models.forecast_report import ResearchWithPrediction
 
 import ensemble
 from bot_config import (
+    BACKUP_FORECASTS,
     BACKUP_FORECAST_TIMEOUT_SECONDS,
     MARKET_MODE,
     SHADOW_FORECAST_MODEL,
@@ -683,50 +684,57 @@ class FallBot2026(ForecastBot):
     async def _backup_forecasts(self, question: MetaculusQuestion, record: dict, forecast_with) -> tuple:  # type: ignore[no-untyped-def]
         """
         The backup chain when no Flash forecaster answered (architect, 29 Sep):
-        Up to 2 Flash-Lite forecasts and 1 Nemotron forecast, at the same
-        time; whatever answers is combined as usual (median, checks). Nemotron
-        failing never blocks Flash-Lite.
+        Nemotron first: 2 forecasts at the same time, median of what answers.
+        Only if Nemotron gives no answer: up to 2 Flash-Lite forecasts. Then
+        the normal combine and checks. When it runs:
         - Closing within 45 min: Flash-Lite may use its reserve.
         - Earlier, only if EVERY Flash model is out of quota today (429 or
           ledger at 0; a 503 is not, the normal retries go on): Flash-Lite
           uses only quota above its reserve, and answers are parsed above
           the reserve too, so research and parsing for later questions are
           never starved.
+        The path used is saved in the question log ("emergency").
         Returns (predictions, errors, exception group or None).
         """
         pool = self.planner
         assert isinstance(pool, GeminiPool)
-        time_left = quick_forecast_timeout(question.close_time)
         in_window = question.close_time is not None and closes_within(question.close_time, EMERGENCY_WINDOW)
         if not in_window and not pool.flash_exhausted():
             return [], [], None
-        nemotron = pool.backup_forecaster()
-        nemotron_timeout = min(BACKUP_FORECAST_TIMEOUT_SECONDS, time_left or BACKUP_FORECAST_TIMEOUT_SECONDS)
-        flash_lite = pool.emergency_forecasters(allow_reserve=in_window)
-        if in_window:
-            kind = "emergency"
-            names = (["flash-lite"] if flash_lite else []) + (["nemotron"] if nemotron else [])
-            label = "+".join(names)
-            logger.warning(
-                f"Question {question.id_of_post}: closes within 45 min with no Flash forecast; "
-                f"emergency: {len(flash_lite)} Flash-Lite + {1 if nemotron else 0} Nemotron forecast(s)"
-            )
-        else:
-            kind = "backup"
-            names = (["nemotron"] if nemotron else []) + (["flash-lite"] if flash_lite else [])
-            label = "flash-exhausted: " + "+".join(names)
-            logger.warning(
-                f"Question {question.id_of_post}: every Flash model is out of quota today; backup chain: "
-                f"{1 if nemotron else 0} Nemotron + {len(flash_lite)} Flash-Lite (above its reserve) forecast(s)"
-            )
-        if not names:
-            return [], [], None
-        record["emergency"] = label
+        prefix = "window" if in_window else "flash-exhausted"
+        kind = "emergency" if in_window else "backup"
         above_reserve = not in_window
-        return await self._gather_results_and_exceptions(
-            ([forecast_with(nemotron, kind, nemotron_timeout, above_reserve=above_reserve)] if nemotron else [])
-            + [forecast_with(f, kind, time_left, above_reserve=above_reserve) for f in flash_lite]
+        logger.warning(
+            f"Question {question.id_of_post}: "
+            + ("closes within 45 min with no Flash forecast" if in_window else "every Flash model is out of quota today")
+            + "; backup chain: Nemotron first"
         )
+        valid: list = []
+        errors: list = []
+        group = None
+        nemotron = [pool.backup_forecaster() for _ in range(BACKUP_FORECASTS)] if pool.nemotron else []
+        if nemotron:
+            time_left = quick_forecast_timeout(question.close_time)
+            timeout = min(BACKUP_FORECAST_TIMEOUT_SECONDS, time_left or BACKUP_FORECAST_TIMEOUT_SECONDS)
+            valid, errors, group = await self._gather_results_and_exceptions(
+                [forecast_with(n, kind, timeout, above_reserve=above_reserve) for n in nemotron]
+            )
+            if valid:
+                record["emergency"] = f"{prefix}: nemotron"
+                logger.info(f"Question {question.id_of_post}: backup chain: {len(valid)} Nemotron forecast(s)")
+                return valid, errors, group
+        time_left = quick_forecast_timeout(question.close_time)
+        flash_lite = pool.emergency_forecasters(allow_reserve=in_window) if time_left != 0 else []
+        if not flash_lite:
+            if nemotron:
+                record["emergency"] = f"{prefix}: nemotron failed, no flash-lite"
+            return valid, errors, group
+        record["emergency"] = f"{prefix}: " + ("nemotron failed -> flash-lite" if nemotron else "flash-lite")
+        more, more_errors, more_group = await self._gather_results_and_exceptions(
+            [forecast_with(f, kind, time_left, above_reserve=above_reserve) for f in flash_lite]
+        )
+        logger.info(f"Question {question.id_of_post}: backup chain: {len(more)} Flash-Lite forecast(s)")
+        return more, errors + more_errors, more_group or group
 
     def _record_for(self, question: MetaculusQuestion) -> dict:
         records = self.__dict__.setdefault("_question_records", {})
