@@ -40,9 +40,10 @@ FREE_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 
 # PLAN.md Step 9 (markets.py): "log-only" = find and judge matching Polymarket
 # / Kalshi / Manifold markets for binary questions and SAVE them (question JSON
-# log), without blending them into forecasts. "off" = skip. Blending waits for
-# the architect.
-MARKET_MODE: Literal["off", "log-only"] = "log-only"
+# log), without blending them into forecasts. "off" = skip. OFF since 28 Sep
+# (architect): 0 of 20 candidates matched, and it saves Flash-Lite quota. The
+# code stays; the manual "Market matches" workflow still works.
+MARKET_MODE: Literal["off", "log-only"] = "off"
 
 # Google AI Studio directly (LiteLLM "gemini/" prefix, reads GEMINI_API_KEY).
 # Free tier (AI Studio rate-limit page, 27 Sep 2026): 5 requests/minute and
