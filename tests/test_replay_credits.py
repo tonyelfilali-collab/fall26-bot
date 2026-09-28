@@ -39,7 +39,13 @@ def run(bot, questions, seasonal=True):
 def test_lineup_is_test_only_free_and_all_replay():
     lineup = bot_config.get_lineup("replay-credits")
     assert lineup.test_only and lineup.free_only
-    assert all(name.startswith("replay/") or name == replay.REPLAY_MODEL for name in lineup.llm_model_names())
+    # Every slot is a recorded reply: the paid ones as "replay/<id>", the free
+    # AI Studio ones (4c) under their Gemini name but still replay objects.
+    for llm in lineup.llms.values():
+        while llm is not None and not isinstance(llm, str):
+            assert isinstance(llm, (replay.ReplayChainLlm, replay.ReplayLlm)), llm
+            assert llm.model.startswith(("replay/", "gemini/")) or llm.model == replay.REPLAY_MODEL
+            llm = getattr(llm, "_backup", None)
 
 
 def test_rehearsal_credit_picks_a_real_tier():
@@ -68,7 +74,7 @@ def test_minibench_is_one_tier_lower(rehearsal):
     binary = run(bot, QUESTIONS[:1], seasonal=False)["binary"]
     assert binary["tier"] == "lean"
     assert [f["planned_model"] for f in binary["forecasts"] if f["kind"] == "planned"] == [
-        f"replay/{m}" for m in ensemble.TIERS["lean"].binary_round1
+        bot_config.CREDITS_FREE_FIRST.get(m, f"replay/{m}") for m in ensemble.TIERS["lean"].binary_round1
     ]
 
 
@@ -82,3 +88,61 @@ def test_forced_failure_uses_the_backup_and_still_submits(rehearsal, monkeypatch
     table = main.rehearsal_table(list(records.values()))
     assert "claude-opus-5.5 -> claude-opus-5" in table
 
+
+
+# ---------------------------------------------------------------- 4c: free first
+
+
+def _flash_answers(records):
+    return [f["answered_models"] for r in records.values() for f in r["forecasts"]
+            if f["planned_model"] == bot_config.CREDITS_FREE_FIRST[ensemble.FLASH_36]]
+
+
+def test_flash_slot_uses_the_free_key_first(rehearsal):
+    lineup, bot = rehearsal
+    records = run(bot, QUESTIONS)
+    answers = _flash_answers(records)
+    assert answers and all(a == ["gemini/gemini-3.6-flash"] for a in answers)
+    # Counted in the free ledger (in memory in the rehearsal).
+    assert lineup.planner.gemini.ledger.used["gemini/gemini-3.6-flash"] == len(answers)
+
+
+@pytest.mark.parametrize("error", ["429", "503"])
+def test_free_key_429_or_503_goes_to_openrouter(rehearsal, monkeypatch, error):
+    import litellm
+
+    _, bot = rehearsal
+
+    original = replay._RecordedAnswer._mockable_direct_call_to_model
+
+    async def free_key_down(self, prompt):
+        if self.model == "gemini/gemini-3.6-flash":
+            if error == "429":
+                raise litellm.RateLimitError(message="GenerateRequestsPerDayPerProjectPerModel", llm_provider="gemini", model=self.model)
+            raise litellm.ServiceUnavailableError(message="overloaded", llm_provider="gemini", model=self.model)
+        return await original(self, prompt)
+
+    monkeypatch.setattr(replay._RecordedAnswer, "_mockable_direct_call_to_model", free_key_down)
+    records = run(bot, QUESTIONS)
+    answers = _flash_answers(records)
+    assert answers and all(a == [f"replay/{ensemble.FLASH_36}"] for a in answers)
+
+
+def test_research_parser_and_summarizer_use_the_free_flash_lite_pool():
+    lineup = bot_config.get_lineup("replay-credits")
+    for purpose in ("parser", "summarizer"):
+        chain, models = lineup.llms[purpose], []
+        while chain is not None:
+            models.append(chain.model)
+            chain = getattr(chain, "_backup", None)
+        assert models == list(bot_config.GEMINI_PARSER_MODELS)
+
+
+def test_live_credits_lineup_helpers_are_free(monkeypatch):
+    monkeypatch.delenv("DATA_REPO_TOKEN", raising=False)
+    lineup = bot_config.get_lineup("credits")
+    assert all(bot_config.is_free_model(m) for m in (lineup.llms["parser"].model, lineup.llms["summarizer"].model))
+    assert lineup.llms["researcher"] == bot_config.RESEARCHER
+    flash = lineup.planner._chain(ensemble.FLASH_36)
+    assert flash.model == "gemini/gemini-3.6-flash" and flash._backup.model == ensemble.FLASH_36
+    assert flash._backup._backup.model == ensemble.GEMINI_31_PRO

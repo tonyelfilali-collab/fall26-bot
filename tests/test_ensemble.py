@@ -101,9 +101,11 @@ def test_credits_lineup_is_off_and_ready():
     assert bot_config.ACTIVE_LINEUP == "gemini-free"
     lineup = bot_config.get_lineup("credits")
     planner = lineup.planner
-    assert [c.model for c in planner.plan(seasonal=True)] == list(ensemble.TIERS["standard"].binary_round1)
+    # The Flash 3.6 slot starts on the free AI Studio key (4c).
+    free = bot_config.CREDITS_FREE_FIRST.get
+    assert [c.model for c in planner.plan(seasonal=True)] == [free(m, m) for m in ensemble.TIERS["standard"].binary_round1]
     # MiniBench one tier below (standard -> lean), numeric/MC get everyone:
-    assert [c.model for c in planner.plan(seasonal=False, binary=False)] == list(ensemble.TIERS["lean"].all_forecasters)
+    assert [c.model for c in planner.plan(seasonal=False, binary=False)] == [free(m, m) for m in ensemble.TIERS["lean"].all_forecasters]
     chain = planner.plan(seasonal=True)[0]
     assert chain.model == ensemble.OPUS_55 and chain._backup.model == ensemble.OPUS_5
     assert chain.litellm_kwargs["timeout"] == 600 and chain.allowed_tries == 3
