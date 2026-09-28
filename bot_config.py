@@ -23,9 +23,9 @@ from forecasting_tools import GeneralLlm
 import ensemble
 from gemini_budget import QuotaLedger, make_store
 from llm_throttle import RequestPacer, ThrottledLlm
-from replay import REPLAY_MODEL, ReplayLlm
+from replay import REPLAY_MODEL, ReplayChainLlm, ReplayLlm, _RecordedAnswer
 
-ACTIVE_LINEUP: Literal["free", "gemini-free", "credits", "replay"] = "gemini-free"
+ACTIVE_LINEUP: Literal["free", "gemini-free", "credits", "replay", "replay-credits"] = "gemini-free"
 
 # PLAN.md Step 7 (research.py): planner -> AskNews (at most 3 calls per
 # question, ASKNEWS_API_KEY) or free news -> dossier -> gap-fill. The planner
@@ -90,7 +90,7 @@ def is_free_model(model: str) -> bool:
     Gemini through the Google AI Studio key (free tier, no billing on it).
     Every other model, including every paid OpenRouter model, is False.
     """
-    if model == REPLAY_MODEL:
+    if model == REPLAY_MODEL or model.startswith("replay/"):
         return True  # recorded replies, no model at all
     if model.startswith("openrouter/"):
         return model.endswith(":free")
@@ -336,8 +336,11 @@ class CreditsPlanner:
     pacer: RequestPacer = field(default_factory=lambda: RequestPacer(600))
 
     def _tier(self, seasonal: bool) -> ensemble.Tier:
-        name = self.seasonal_tier if seasonal else ensemble.tier_below(self.seasonal_tier)
-        return ensemble.TIERS[name]
+        return ensemble.TIERS[self.tier_name(seasonal)]
+
+    def tier_name(self, seasonal: bool) -> str:
+        """This run's tier; MiniBench one below the seasonal tournament."""
+        return self.seasonal_tier if seasonal else ensemble.tier_below(self.seasonal_tier)
 
     def _chain(self, model: str) -> ThrottledLlm:
         llm: ThrottledLlm | None = None
@@ -413,11 +416,53 @@ def _replay_lineup() -> Lineup:
     )
 
 
+# Credits rehearsal: each slot's recorded binary answer (percent), chosen so
+# round 1 disagrees (37 / 62 / 30) and round 2 runs.
+REHEARSAL_BINARY_PERCENT = {
+    ensemble.OPUS_55: 37, ensemble.GPT_SOL: 62, ensemble.FLASH_36: 30, ensemble.FABLE_51: 45,
+    ensemble.OPUS_5: 40, ensemble.GPT_55: 55, ensemble.GEMINI_31_PRO: 33,
+}
+# Rehearsal credit (dollars, remaining = limit) for the tier choice: $1500
+# over ~100 days x 12 questions is about $1.06 a question -> standard.
+REHEARSAL_CREDIT = 1500.0
+
+
+@dataclass
+class ReplayCreditsPlanner(CreditsPlanner):
+    """The credits planner (tiers, rounds, backups) with every slot a replay."""
+
+    def _chain(self, model: str) -> ThrottledLlm:
+        llm: ThrottledLlm | None = None
+        for name in reversed([model, *ensemble.BACKUPS.get(model, [])]):
+            llm = ReplayChainLlm(model=f"replay/{name}", pacer=self.pacer, backup=llm, temperature=None, allowed_tries=1)
+        assert llm is not None
+        return llm
+
+
+def _replay_credits_lineup() -> Lineup:
+    """Test Bot's credits rehearsal: the credits lineup logic, 0 model calls."""
+    _RecordedAnswer.binary_percent = REHEARSAL_BINARY_PERCENT
+    planner = ReplayCreditsPlanner()
+    replay = ReplayLlm()
+    return Lineup(
+        name="replay-credits",
+        llms={"default": planner.quick_forecaster(), "parser": replay, "summarizer": replay, "researcher": "replay"},
+        research_reports_per_question=1,
+        predictions_per_research_report=len(ensemble.TIERS["full"].all_forecasters),
+        parser_validation_samples=1,
+        summarize_research=False,
+        free_only=True,
+        test_only=True,
+        planner=planner,
+    )
+
+
 _LINEUPS = {
     "free": _free_lineup,
     "gemini-free": _gemini_free_lineup,
     "credits": _credits_lineup,
     "replay": _replay_lineup,
+    "replay-credits": _replay_credits_lineup,
 }
 
 

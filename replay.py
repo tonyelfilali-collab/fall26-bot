@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextvars
 from typing import Any
 
+import litellm
 from forecasting_tools import (
     BinaryQuestion,
     DateQuestion,
@@ -23,6 +24,9 @@ from forecasting_tools import (
     MultipleChoiceQuestion,
     NumericQuestion,
 )
+from forecasting_tools.ai_models.ai_utils.response_types import TextTokenCostResponse
+
+from llm_throttle import ThrottledLlm
 
 REPLAY_MODEL = "replay/recorded"
 REPLAY_RESEARCH = "Replay research (frozen): no searches were made."
@@ -71,3 +75,38 @@ class ReplayLlm(GeneralLlm):
             raise RuntimeError("replay: no current question")
         ReplayLlm.calls += 1
         return recorded_reply(question)
+
+
+# ---------------------------------------------------------------- credits rehearsal
+
+
+class _RecordedAnswer(GeneralLlm):
+    """The model call at the bottom of a ThrottledLlm: a recorded reply, or a
+    deliberate outage for the model named in `failing_model`."""
+
+    failing_model: str | None = None  # e.g. "openrouter/anthropic/claude-opus-5.5"
+    binary_percent: dict[str, float] = {}  # real model -> its recorded binary answer
+
+    async def _mockable_direct_call_to_model(self, prompt: Any) -> TextTokenCostResponse:
+        real_model = self.model.removeprefix("replay/")
+        if real_model == _RecordedAnswer.failing_model:
+            raise litellm.ServiceUnavailableError(
+                message="replay: deliberate outage", llm_provider="replay", model=self.model
+            )
+        question = current_question.get()
+        if question is None:
+            raise RuntimeError("replay: no current question")
+        ReplayLlm.calls += 1
+        text = recorded_reply(question)
+        percent = _RecordedAnswer.binary_percent.get(real_model)
+        if isinstance(question, BinaryQuestion) and percent is not None:
+            text = f"Replayed reasoning.\nProbability: {percent:g}%"
+        return TextTokenCostResponse(
+            data=text, prompt_tokens_used=0, completion_tokens_used=0,
+            total_tokens_used=0, model=self.model, cost=0.0,
+        )
+
+
+class ReplayChainLlm(ThrottledLlm, _RecordedAnswer):
+    """A credits-lineup slot in replay: the real ThrottledLlm backup logic, with
+    the model call swapped for a recorded reply (model name 'replay/<real>')."""
