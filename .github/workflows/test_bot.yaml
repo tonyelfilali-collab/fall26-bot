@@ -35,9 +35,13 @@ on:
         type: string
         default: ""
 
-# Shared with every workflow that forecasts, so they never run at the same time.
+# Lineups that call Gemini with the live key (gemini-free) share the group of
+# every workflow that uses it, one at a time. The others (replay, replay-credits,
+# replay-gemini, free, real-regression: no Gemini key) have their own group,
+# so a test can never cancel a waiting live run (GitHub keeps only one waiting
+# run per group and cancels the older one).
 concurrency:
-  group: forecast-bot
+  group: ${{ inputs.lineup == 'gemini-free' && 'forecast-bot' || 'test-bot-no-gemini' }}
   cancel-in-progress: false
 
 permissions:
@@ -90,6 +94,7 @@ jobs:
           # Official data for numeric questions (hard_data.py; FRED is free).
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           # Free Google AI Studio key (no billing), for the gemini-free lineup.
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Only the gemini-free lineup gets it (that lineup stays in the shared group).
+          GEMINI_API_KEY: ${{ inputs.lineup == 'gemini-free' && secrets.GEMINI_API_KEY || '' }}
           # Writes the Gemini daily quota ledger to the private fall26-data repo.
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
