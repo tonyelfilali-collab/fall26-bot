@@ -288,6 +288,8 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 
 ## Test bench (PLAN.md Step 5)
 
+**DROPPED (28 Sep 2026):** Metaculus shows the community prediction on the website (account artvandelay) but deliberately leaves it out of the API, so the bench has no reference to score against. Code kept, unused; don't try to work around it.
+
 `bench.py` + manual workflow **Test bench** (`evaluate.yml`), never publishes. Tests: `tests/test_bench.py`.
 - Picks open main-site questions with a visible community prediction and ≥30 forecasters: quick
   = 30 (18 binary, 3 numeric, 3 discrete, 6 multiple choice), full = 60. The list is saved in
