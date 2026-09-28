@@ -13,6 +13,9 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   No Perplexity, no paid APIs.
 - Until the credit key arrives, `OPENROUTER_API_KEY` is a $0 key: use only `:free` models,
   and only on the bot-testing-area (id 32977).
+- OpenRouter: $10 was bought only to raise the free limit. Never call a paid model. Never enable
+  top-up. Keep free-model use under 600 requests a day; if the key's usage is ever above $0
+  (Credit check workflow), stop everything and tell the architect.
 - When a task is done, report in 3-5 plain sentences what was done and paste the proof
   (links to Actions runs).
 
