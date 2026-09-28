@@ -238,9 +238,9 @@ When no Gemini Flash forecaster answered (`main.py` `_backup_forecasts`, `bot_co
   normal checks. Question log: `emergency: "flash-lite+nemotron"`.
 - **Earlier, only if every Flash model is out of quota** for the current quota day (429, or ledger
   at 0; `GeminiPool.flash_exhausted`; the day follows `gemini_budget.quota_day`, Pacific midnight):
-  Nemotron first; only if it gives nothing, up to 2 Flash-Lite forecasts from quota ABOVE the
-  reserve, and their answers are parsed above the reserve too. Log: `emergency:
-  "flash-exhausted: nemotron"` (or `..., then flash-lite`). A 503 is not exhaustion.
+  1 Nemotron + up to 2 Flash-Lite at the same time (median), Flash-Lite only from quota ABOVE
+  the reserve, and answers parsed above the reserve too. Log: `emergency:
+  "flash-exhausted: nemotron+flash-lite"`. A 503 is not exhaustion.
 - Nemotron: 240 s limit, 1 try, not in the Gemini ledger (OpenRouter free requests). Its failure
   never blocks Flash-Lite.
 - Test Bot `lineup=replay-gemini` (+ `exhaust_flash`): the real pool logic with recorded replies,

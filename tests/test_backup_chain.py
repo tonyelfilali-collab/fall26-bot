@@ -3,8 +3,8 @@
 - Closing within 45 min, no Flash forecast: Flash-Lite (up to 2, reserve
   allowed) + Nemotron (1), median of what answers.
 - Every Flash model out of quota (429 or ledger at 0): the backup chain right
-  away, Nemotron first, Flash-Lite only above its reserve. A 503 is not
-  exhaustion.
+  away, Nemotron (1) + Flash-Lite (up to 2) together, Flash-Lite only above its
+  reserve. A 503 is not exhaustion.
 Gemini calls go to the local dummy server; Nemotron is a recorded reply.
 """
 from __future__ import annotations
@@ -83,8 +83,21 @@ def test_ledger_at_zero_is_exhaustion_too(dummy, monkeypatch, nemotron):  # noqa
     used = {f"gemini/{m}": 20 for m in FLASH}
     report, record, _ = _run(dummy, monkeypatch, nemotron, 120, used=used, flash="ok")
     assert not isinstance(report, BaseException), report
-    assert record["emergency"] == "flash-exhausted: nemotron"
+    assert record["emergency"] == "flash-exhausted: nemotron+flash-lite"
     assert not [c for c in dummy.calls if c in FLASH]  # no Flash call at all
+
+
+def test_exhausted_nemotron_and_flash_lite_together(dummy, monkeypatch, nemotron):  # noqa: F811
+    # Architect (29 Sep): outside the window Nemotron AND Flash-Lite, median.
+    used = {m: 15 for m in GEMINI_PARSER_MODELS}  # 1 usable request left on each
+    report, record, pool = _run(dummy, monkeypatch, nemotron, 120, used=used, flash="daily_quota")
+    assert not isinstance(report, BaseException), report
+    assert record["emergency"] == "flash-exhausted: nemotron+flash-lite"
+    answered = _answered(record, "backup")
+    assert BACKUP_FORECAST_MODEL in answered
+    assert len([m for m in answered if "flash-lite" in m]) == 2
+    # Above the reserve only: no model went past its 16 usable requests.
+    assert all(pool.ledger.used[m] <= 16 for m in GEMINI_PARSER_MODELS)
 
 
 def test_exhausted_and_nemotron_down_uses_flash_lite_above_reserve_only(dummy, monkeypatch, nemotron):  # noqa: F811
@@ -92,7 +105,7 @@ def test_exhausted_and_nemotron_down_uses_flash_lite_above_reserve_only(dummy, m
     used = {**FLASH_LITE_AT_RESERVE, "gemini/gemini-3.5-flash-lite": 15}  # 1 usable left there
     report, record, pool = _run(dummy, monkeypatch, nemotron, 120, used=used, flash="daily_quota")
     assert not isinstance(report, BaseException), report
-    assert record["emergency"] == "flash-exhausted: nemotron, then flash-lite"
+    assert record["emergency"] == "flash-exhausted: nemotron+flash-lite"
     assert _answered(record, "backup") == ["gemini/gemini-3.5-flash-lite"]
     # Only the one usable request was spent; every model is now at its reserve.
     assert {m: pool.ledger.used[m] for m in GEMINI_PARSER_MODELS} == FLASH_LITE_AT_RESERVE
