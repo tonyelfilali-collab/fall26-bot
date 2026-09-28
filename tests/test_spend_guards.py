@@ -56,8 +56,11 @@ def test_real_cost_unknown_cost_and_failures_are_charged():
     current_question_key.set("7")
     est = spend.estimate_cost
     guard.start(ensemble.OPUS_55)
-    guard.finish(ensemble.OPUS_55, True, cost=0.12)  # the real cost
+    guard.finish(ensemble.OPUS_55, True, cost=0.12, output_tokens=5100)  # the real cost
     assert guard.question_spent("7") == pytest.approx(0.12)
+    assert guard.questions["7"]["calls"][0] == {
+        "model": ensemble.OPUS_55, "ok": True, "charged": 0.12, "cost_known": True, "output_tokens": 5100,
+    }
     guard.start(ensemble.OPUS_55)
     guard.finish(ensemble.OPUS_55, True, cost=0.0)  # cost unknown (LiteLLM says 0)
     guard.start(ensemble.OPUS_55)

@@ -153,7 +153,7 @@ class SpendGuard:
         self.paid_calls += 1
 
     def finish(self, model: str, succeeded: bool, cost: float | None = None, error: BaseException | None = None,
-               timed_out: bool = False) -> None:
+               timed_out: bool = False, output_tokens: int | None = None) -> None:
         """Charge one call: the real cost; the estimate when the cost is
         unknown or the call failed after it may have been billed; nothing when
         it was rejected before generating."""
@@ -180,6 +180,11 @@ class SpendGuard:
             entry = self.questions.setdefault(question, {"spent": 0.0})
             entry["spent"] = float(entry.get("spent", 0.0)) + charge
             entry["last"] = day
+            # Per call, for the switch-on review (measured output tokens per model).
+            entry.setdefault("calls", []).append({
+                "model": model.removeprefix("replay/"), "ok": succeeded, "charged": round(charge, 6),
+                "cost_known": bool(succeeded and cost), "output_tokens": output_tokens,
+            })
 
     # ------------------------------------------------------------ saving
 

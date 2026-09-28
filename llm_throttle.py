@@ -158,6 +158,7 @@ class ThrottledLlm(GeneralLlm):
                     cost=getattr(response, "cost", None) if succeeded else None,
                     error=failure,
                     timed_out=isinstance(failure, litellm.Timeout),
+                    output_tokens=getattr(response, "completion_tokens_used", None) if succeeded else None,
                 )
         if not succeeded:
             return await self._hand_over(prompt, error_name)
