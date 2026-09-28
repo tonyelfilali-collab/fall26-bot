@@ -63,7 +63,7 @@ class Tier:
     name: str
     binary_round1: tuple[str, ...]
     binary_round2: tuple[str, ...]
-    rough_cost: float  # dollars per question, PLAN.md section 3
+    rough_cost: float  # dollars per question: the tier's most expensive column of COST_TABLE
 
     @property
     def all_forecasters(self) -> tuple[str, ...]:
@@ -71,10 +71,23 @@ class Tier:
         return self.binary_round1 + self.binary_round2
 
 
+# Credits 4b (cost_table.py, Credits pre-flight run 36472957797, 28 Sep 2026):
+# dollars per question = real OpenRouter prices x prompt tokens measured from
+# our question logs (binary 7,143; numeric 7,476; discrete 4,991; multiple
+# choice 6,732; only 1-2 logged questions per type so far) + an ASSUMED 8,000
+# output tokens per forecast (high reasoning). Research and parsing are free
+# (Flash-Lite pool). Every Flash 3.6 slot counted as paid (it tries the free
+# AI Studio key first, 4c), so these are upper-side numbers.
+COST_TABLE: dict[str, dict[str, float]] = {
+    "full": {"binary": 0.32, "binary+r2": 1.01, "numeric": 1.02, "discrete": 0.97, "multiple_choice": 1.00},
+    "standard": {"binary": 0.32, "binary+r2": 0.39, "numeric": 0.39, "discrete": 0.37, "multiple_choice": 0.39},
+    "lean": {"binary": 0.22, "binary+r2": 0.26, "numeric": 0.26, "discrete": 0.25, "multiple_choice": 0.26},
+}
+
 TIERS: dict[str, Tier] = {
-    "full": Tier("full", (OPUS_55, GPT_SOL, FLASH_36), (FABLE_51, OPUS_55, FLASH_36), 1.75),
-    "standard": Tier("standard", (OPUS_55, GPT_SOL, FLASH_36), (FLASH_36, FLASH_36), 0.80),
-    "lean": Tier("lean", (OPUS_55, FLASH_36), (FLASH_36,), 0.40),
+    "full": Tier("full", (OPUS_55, GPT_SOL, FLASH_36), (FABLE_51, OPUS_55, FLASH_36), max(COST_TABLE["full"].values())),
+    "standard": Tier("standard", (OPUS_55, GPT_SOL, FLASH_36), (FLASH_36, FLASH_36), max(COST_TABLE["standard"].values())),
+    "lean": Tier("lean", (OPUS_55, FLASH_36), (FLASH_36,), max(COST_TABLE["lean"].values())),
 }
 TIER_ORDER = ("full", "standard", "lean")
 CREDIT_RESERVE = 0.15
@@ -91,7 +104,8 @@ def target_spend_per_question(remaining: float, limit: float, expected_questions
 
 
 def choose_tier(target: float) -> str:
-    """The richest tier whose rough cost fits the target spend per question."""
+    """The richest tier whose cost (its most expensive question type) fits the
+    target spend per question."""
     for name in TIER_ORDER:
         if target >= TIERS[name].rough_cost:
             return name
