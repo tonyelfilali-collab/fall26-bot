@@ -138,3 +138,14 @@ Merged (each followed by a green live run): #37 regression pack (A), #36 replay 
   the tournament cron). Needs a cron-job.org job for health.yml (06:00 UTC), like the tournament one.
 - Test bench: DROPPED (community prediction not in the API).
 - Waiting: #34 (unit check, Tier C) real Test Bot at 00:00 UTC, then the architect's answer.
+
+## Update 28 Sep 2026 (08:40–09:35 UTC)
+
+Merged (next live run green after each): #44 shadow variants for every type (B), #45 urgent
+MiniBench first (B), #46 round 2 limit below half quota (B).
+- MC floor-0.5% shadow is computed from each model's raw answer (the library lifts options under
+  ~0.99%, which likely mirrors the platform minimum, so 0.5% may not be submittable live).
+- Flash-Lite separate quotas: unknown; only gemini-3.5-flash-lite has ever been called (max 9 a day),
+  no 429 from any Flash-Lite model in any run.
+- Second free test provider: Mistral free plan recommended (no card, $10/month credit); waiting for
+  the architect.
