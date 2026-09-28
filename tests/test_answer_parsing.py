@@ -151,3 +151,15 @@ def test_numeric_forecast_without_a_parser_call(monkeypatch):
     )
     result = asyncio.run(bot._parse_numeric_safely(question, NINE, "instructions"))
     assert result.declared_percentiles  # built from the directly read percentiles
+
+
+@pytest.mark.parametrize("count", [2, 3, 6, 11, 15])
+def test_confident_multiple_choice_answer_is_read(count):
+    # 100% on one option, 0% on the rest: once crashed the reader at 10+ options.
+    options = [f"Team {i}" for i in range(count)]
+    text = "\n".join(f"{o}: {100 if i == 0 else 0}%" for i, o in enumerate(options))
+    result = parse_multiple_choice_answer(text, options)
+    probabilities = [o.probability for o in result.predicted_options]
+    assert sum(probabilities) == pytest.approx(1)
+    assert min(probabilities) >= 0.01 - 1e-9
+    assert probabilities[0] == pytest.approx(1 - 0.01 * (count - 1))
