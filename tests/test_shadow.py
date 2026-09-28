@@ -9,7 +9,6 @@ from forecasting_tools import BinaryQuestion, ReasonedPrediction
 
 import main
 import shadow
-import shadow_score
 
 
 def test_worked_example_zero_cost_shadows():
@@ -53,23 +52,6 @@ def test_referee_when_turned_on(monkeypatch):
 def test_two_line_reason():
     text = "Intro.\n\nFirst reason.\nSecond reason.\nProbability: 40%"
     assert shadow.two_line_reason(text) == "First reason. Second reason."
-
-
-def test_worked_example_log_score():
-    assert shadow_score.log_score(0.8, True) == pytest.approx(math.log(0.8))
-    assert shadow_score.log_score(0.8, False) == pytest.approx(math.log(0.2))
-    assert math.isfinite(shadow_score.log_score(1.0, False))
-
-
-def test_score_table():
-    rows = [
-        {"post_id": 1, "outcome": True, "live": 0.7, "shadow": {"mean": 0.8}},
-        {"post_id": 2, "outcome": False, "live": 0.3, "shadow": {"mean": 0.2}},
-    ]
-    table = shadow_score.score_table(rows)
-    # mean shadow did better on both: diff = mean(ln .8 - ln .7, ln .8 - ln .7) = +0.1335
-    assert "| live | 2 |" in table
-    assert f"{math.log(0.8) - math.log(0.7):+.4f}" in table
 
 
 class _Writer:

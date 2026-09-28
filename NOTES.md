@@ -252,10 +252,20 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   two-line reason, answers "Probability: ZZ%", is kept between the lowest and highest forecast;
   candidate = average of the referee and the median. Uses the planner's quick forecaster (Opus
   5.5 on credits).
-- **Scoring:** manual workflow **Shadow scores** reads the tournament question logs in fall26-data
-  (latest submitted log per question), looks up resolutions, and reports the mean log score per
-  variant and the mean difference from live on the same questions. PLAN.md: the referee goes live
-  only after ≥80 resolved binary questions and only if it beats the median.
+- **Scoring:** see Scoreboard below. PLAN.md: the referee goes live only after ≥80 resolved
+  binary questions and only if it beats the median.
+
+## Scoreboard
+
+`scoreboard.py` + workflow **Scoreboard** (Mondays 06:30 UTC + manual; tests
+`tests/test_scoreboard.py`; replaces the earlier "Shadow scores" workflow):
+- Reads every tournament question log in fall26-data (the latest submitted log per question),
+  looks up resolutions with the bot's token, and scores the live forecast: binary ln(p) /
+  ln(1−p); multiple choice ln(p of the option that happened); numeric/discrete ln(mass our CDF put
+  in the grid bucket the answer fell in, tails for below/above the range). Raw log scores (higher
+  = better), not Metaculus peer scores.
+- Shadow variants (binary) on the same questions, with the mean difference from live.
+- Counts and means overall and per type; saved to `fall26-data/scoreboard/<date>.md` and the job page.
 
 ## Market prices (PLAN.md Step 9), LOG-ONLY
 
