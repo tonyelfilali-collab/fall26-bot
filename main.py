@@ -56,6 +56,7 @@ from forecasting_tools.data_models.forecast_report import ResearchWithPrediction
 import ensemble
 from bot_config import (
     MARKET_MODE,
+    SHADOW_FORECAST_MODEL,
     REHEARSAL_CREDIT,
     CreditsPlanner,
     GeminiPool,
@@ -92,6 +93,7 @@ from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
 from shadow import (
     REFEREE_ENABLED,
+    combine_with_shadow,
     multiple_choice_shadows,
     numeric_shadows,
     referee_shadow,
@@ -301,6 +303,13 @@ QUICK_FORECAST_RETRY_WAIT_SECONDS = 30
 _planned_forecaster: contextvars.ContextVar = contextvars.ContextVar(
     "planned_forecaster", default=None
 )
+# True inside the shadow forecaster's own task (Build 1b): its answer is only
+# read directly (no parser call) and its reading is logged apart from live.
+_in_shadow: contextvars.ContextVar = contextvars.ContextVar("in_shadow", default=False)
+# The shadow forecaster (never submitted): its hard time limit, and its name
+# in the question log's "shadow" variants.
+SHADOW_FORECAST_TIMEOUT_SECONDS = 240
+SHADOW_VARIANT = "free-shadow"
 
 
 class FallBot2026(ForecastBot):
@@ -410,10 +419,15 @@ class FallBot2026(ForecastBot):
     only_model: str | None = None
     # Credits rehearsal: keep each question's record for the job summary.
     keep_records = False
+    # Build 1b: the shadow forecaster's LLM (never submitted), or None.
+    shadow_llm = None
 
     async def _aggregate_predictions(
         self, predictions: list[PredictionTypes], question: MetaculusQuestion
     ) -> PredictionTypes:
+        # Kept for the shadow forecaster's "live median with it added".
+        if not _in_shadow.get():
+            self.__dict__.setdefault("_live_predictions", {})[id(question)] = list(predictions)
         # Safety checks on the final forecast (forecast_safety.py, PLAN.md Step 4).
         if isinstance(question, BinaryQuestion):
             # Step 10: free shadow variants, saved but never submitted.
@@ -476,6 +490,9 @@ class FallBot2026(ForecastBot):
         return [p for p in predictions if not any(p is f for f in flagged)]
 
     def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
+        if purpose == "parser" and _in_shadow.get():
+            # The shadow forecaster never uses the live parser quota.
+            raise NoValidForecast("shadow forecaster: answer not readable directly")
         # A planned forecast uses the model chain chosen for it.
         if purpose == "default":
             planned = _planned_forecaster.get()
@@ -654,6 +671,9 @@ class FallBot2026(ForecastBot):
         only in the public log; a reply that couldn't be read directly is kept
         in the question log (private fall26-data), to fix the reader."""
         record = self._record_for(question)
+        if _in_shadow.get():
+            record.setdefault("shadow_model", {}).setdefault("reading", []).append(how)
+            return
         record.setdefault("reading", []).append(how)
         if how != "direct" and reply:
             record.setdefault("unread_replies", []).append(reply[-4000:])
@@ -679,6 +699,7 @@ class FallBot2026(ForecastBot):
                 f"Question {question.id_of_post}: no real forecast this run, "
                 "left for the next run"
             )
+            await self._finish_shadow_forecast(question, record)
             await self._save_record(question, record, started)
             raise
         submitted = await self._submit_if_still_open(question, report)
@@ -716,6 +737,7 @@ class FallBot2026(ForecastBot):
                 logger.warning(
                     f"Question {question.id_of_post}: market matching failed ({type(e).__name__})"
                 )
+        await self._finish_shadow_forecast(question, record)
         record.update(
             submitted=submitted,
             final_forecast=to_jsonable(report.prediction),
@@ -793,9 +815,72 @@ class FallBot2026(ForecastBot):
                     f"{_http_status_note(e)}, forecasting without it "
                     f"({describe_exception(e)})"
                 )
-                return "No research is available: the news search failed."
+                research = "No research is available: the news search failed."
+                self._start_shadow_forecast(question, research)
+                return research
             logger.info(f"Question {question.id_of_post}: research done")
+            self._start_shadow_forecast(question, research)
             return research
+
+    # ------------------------------------------------ shadow forecaster (Build 1b)
+
+    def _start_shadow_forecast(self, question: MetaculusQuestion, research: str) -> None:
+        """Keep the research for the shadow forecaster, which runs only AFTER
+        the live forecast is submitted (or has failed), so its time limit
+        never delays a real submission."""
+        if self.shadow_llm is None or _in_shadow.get():
+            return
+        self.__dict__.setdefault("_shadow_research", {}).setdefault(id(question), research)
+
+    async def _shadow_forecast(self, question: MetaculusQuestion, research: str) -> tuple:
+        _in_shadow.set(True)
+        _planned_forecaster.set(self.shadow_llm)
+        started = time.monotonic()
+        try:
+            # The per-type forecast directly: the library's _make_prediction
+            # needs the question's notepad, gone once the live forecast is done.
+            if isinstance(question, BinaryQuestion):
+                forecast = self._run_forecast_on_binary(question, research)
+            elif isinstance(question, MultipleChoiceQuestion):
+                forecast = self._run_forecast_on_multiple_choice(question, research)
+            elif isinstance(question, NumericQuestion):
+                forecast = self._run_forecast_on_numeric(question, research)
+            else:
+                raise ValueError(f"no shadow forecast for {type(question).__name__}")
+            prediction = await asyncio.wait_for(forecast, SHADOW_FORECAST_TIMEOUT_SECONDS)
+            status, value = "ok", prediction.prediction_value
+        except asyncio.TimeoutError:
+            status, value = "timeout", None
+        except Exception as e:
+            status, value = f"failed: {describe_exception(e)}"[:200], None
+        return status, value, round(time.monotonic() - started, 1)
+
+    async def _finish_shadow_forecast(self, question: MetaculusQuestion, record: dict) -> None:
+        """After the live forecast (submitted or not): run the shadow in its
+        own task (hard time limit), save it and 'live median with it added'.
+        A failure is only logged."""
+        research = self.__dict__.get("_shadow_research", {}).pop(id(question), None)
+        live = self.__dict__.get("_live_predictions", {}).pop(id(question), None)
+        if research is None:
+            return
+        try:
+            status, value, seconds = await asyncio.create_task(self._shadow_forecast(question, research))
+        except Exception as e:  # never raised by _shadow_forecast, but be safe
+            status, value, seconds = f"failed: {describe_exception(e)}"[:200], None, None
+        shadow = record.setdefault("shadow_model", {})
+        shadow.update(model=getattr(self.shadow_llm, "model", str(self.shadow_llm)), status=status, seconds=seconds)
+        stats = self.__dict__.setdefault("shadow_stats", {"asked": 0, "answered": 0})
+        stats["asked"] += 1
+        if status == "ok" and value is not None:
+            stats["answered"] += 1
+            variants = record.setdefault("shadow", {})
+            variants[SHADOW_VARIANT] = to_jsonable(value)
+            if live:
+                try:
+                    variants[f"live+{SHADOW_VARIANT}"] = to_jsonable(combine_with_shadow(question, [*live, value]))
+                except Exception as e:
+                    logger.warning(f"Question {question.id_of_post}: live+shadow could not be combined ({type(e).__name__})")
+        logger.info(f"Question {question.id_of_post}: shadow forecaster: {status.split(':')[0]}")
 
     async def _run_research_unguarded(self, question: MetaculusQuestion) -> str:
         research = ""
@@ -1616,6 +1701,17 @@ if __name__ == "__main__":
         # Step 6: pick this run's spending tier from the remaining credit.
         lineup.planner.seasonal_tier = choose_spending_tier()
     template_bot.only_model = args.only_model
+    # Build 1b: the free shadow forecaster (never submitted) on the live and
+    # the free test lineups; the replay model in replay (0 calls).
+    if lineup.name in ("gemini-free", "free"):
+        template_bot.shadow_llm = GeneralLlm(
+            model=SHADOW_FORECAST_MODEL,
+            temperature=None,
+            timeout=SHADOW_FORECAST_TIMEOUT_SECONDS,
+            allowed_tries=1,
+        )
+    elif lineup.name == "replay":
+        template_bot.shadow_llm = ReplayLlm()
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
     template_bot.submit_forecasts = publish_to_metaculus
@@ -1770,6 +1866,17 @@ if __name__ == "__main__":
             if summary_path:
                 with open(summary_path, "a", encoding="utf-8") as f:
                     f.write(table + "\n\n")
+    shadow_stats = template_bot.__dict__.get("shadow_stats")
+    if shadow_stats:
+        line = (
+            f"Shadow forecaster {getattr(template_bot.shadow_llm, 'model', '?')}: "
+            f"answered {shadow_stats['answered']} of {shadow_stats['asked']} (never submitted)"
+        )
+        print(line)
+        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(f"{line}\n\n")
     if template_bot.question_log.saved:
         print(f"Question JSON logs saved to fall26-data: {len(template_bot.question_log.saved)}")
     if lineup.planner is not None:

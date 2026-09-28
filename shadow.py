@@ -147,3 +147,19 @@ async def referee_shadow(
     if answer is None:
         return None
     return referee_candidate(answer, [p for p, _ in forecasts])
+
+
+def combine_with_shadow(question: Any, predictions: list[Any]) -> Any:
+    """'Live median with the shadow forecaster added': the live combine
+    (median and the Step 4/8 checks) over the live forecasts plus the shadow's."""
+    from forecasting_tools import BinaryQuestion, MultipleChoiceQuestion, NumericQuestion
+
+    from distributions import combine_numeric, median_multiple_choice
+
+    if isinstance(question, BinaryQuestion):
+        return adjust_binary(predictions)
+    if isinstance(question, MultipleChoiceQuestion):
+        return median_multiple_choice(predictions)
+    if isinstance(question, NumericQuestion):
+        return combine_numeric(predictions, question)
+    raise ValueError(f"no combine for {type(question).__name__}")

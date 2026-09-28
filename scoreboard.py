@@ -90,6 +90,29 @@ def live_score(record: dict, resolution: str) -> float | None:
     return forecast_score(record["question"].get("question_type"), record.get("final_forecast"), resolution)
 
 
+def shadow_answer_rate(records: list[dict]) -> str:
+    """The shadow forecaster's answer rate per type, over every attempt
+    (including runs where the live forecast failed): is it a usable backup?"""
+    counts: dict[str, list[int]] = {}
+    for record in records:
+        shadow = record.get("shadow_model")
+        if not shadow or "status" not in shadow:
+            continue
+        kind = (record.get("question") or {}).get("question_type", "?")
+        row = counts.setdefault(kind, [0, 0, 0])
+        row[0] += 1
+        row[1] += shadow["status"] == "ok"
+        row[2] += bool(record.get("submitted")) is False and shadow["status"] == "ok"
+    if not counts:
+        return "Shadow forecaster: no attempts logged yet."
+    lines = ["| Type | Shadow attempts | Answered | Answered when live had no forecast |", "|---|---|---|---|"]
+    for kind in (*TYPES, *sorted(k for k in counts if k not in TYPES)):
+        if kind in counts:
+            asked, answered, rescued = counts[kind]
+            lines.append(f"| {kind} | {asked} | {answered} ({answered / asked:.0%}) | {rescued} |")
+    return "\n".join(lines)
+
+
 def report_markdown(scored: list[dict]) -> str:
     """scored: {"type", "live": float, "shadow": {name: float}}"""
     lines = ["| Type | Resolved questions | Mean live log score |", "|---|---|---|"]
@@ -130,13 +153,17 @@ def _github(path: str, token: str, method: str = "GET", body: dict | None = None
     return response.json()
 
 
-def latest_submitted_records(token: str) -> list[dict]:
-    """One record per question: the latest submitted tournament log."""
+def all_tournament_records(token: str) -> list[dict]:
+    """Every tournament question log (every run's attempt)."""
     tree = _github("git/trees/HEAD?recursive=1", token)["tree"]
     paths = [t["path"] for t in tree if t["path"].startswith("questions/tournament/") and t["path"].endswith(".json")]
+    return [json.loads(base64.b64decode(_github(f"contents/{path}", token)["content"])) for path in paths]
+
+
+def latest_submitted_records(token: str, records: list[dict] | None = None) -> list[dict]:
+    """One record per question: the latest submitted tournament log."""
     latest: dict[Any, dict] = {}
-    for path in paths:
-        record = json.loads(base64.b64decode(_github(f"contents/{path}", token)["content"]))
+    for record in records if records is not None else all_tournament_records(token):
         post = record.get("question", {}).get("id_of_post")
         if record.get("submitted") and (post not in latest or record.get("started_at", "") > latest[post].get("started_at", "")):
             latest[post] = record
@@ -179,12 +206,14 @@ def main() -> None:
             cache[post] = getattr(question, "resolution_string", None)
         return cache[post]
 
-    records = latest_submitted_records(token)
+    every = all_tournament_records(token)
+    records = latest_submitted_records(token, every)
     scored = score_records(records, resolution_of)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     report = (
         f"## Scoreboard {stamp}\n\n{len(records)} forecast question(s) logged, "
-        f"{len(scored)} resolved and scored.\n\n{report_markdown(scored)}\n"
+        f"{len(scored)} resolved and scored.\n\n{report_markdown(scored)}\n\n"
+        f"**Shadow forecaster answer rate (never submitted):**\n\n{shadow_answer_rate(every)}\n"
     )
     print(report)
     summary = os.getenv("GITHUB_STEP_SUMMARY")
