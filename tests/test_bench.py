@@ -125,3 +125,19 @@ def test_the_live_bot_refuses_the_read_token():
     result = subprocess.run([sys.executable, "main.py", "--mode", "test_questions"], env=env, capture_output=True, text=True, timeout=120)
     assert result.returncode != 0
     assert "METACULUS_READ_TOKEN must not be given to the bot" in result.stderr
+
+
+def test_selection_keeps_the_community_prediction_from_the_list(monkeypatch):
+    # A plain post fetch leaves the prediction out, so the list's data is kept (no refetch).
+    with_cp = BinaryQuestion(question_text="x", id_of_post=1, api_json={"question": {"aggregations": {"recency_weighted": {"latest": {"centers": [0.4]}}}}})
+    without = BinaryQuestion(question_text="y", id_of_post=2, api_json={"question": {"aggregations": {}}})
+
+    class FakeClient:
+        async def get_questions_matching_filter(self, api_filter, **kwargs):
+            return [with_cp, without] if api_filter.allowed_types == ["binary"] else []
+
+        def get_question_by_post_id(self, post_id):
+            raise AssertionError("no refetch without with_cp")
+
+    chosen = bench.select_questions(FakeClient(), 10)
+    assert [q.id_of_post for q in chosen] == [1]

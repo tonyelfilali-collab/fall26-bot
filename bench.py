@@ -216,6 +216,21 @@ def question_filter(question_type: str) -> ApiFilter:
     )
 
 
+def fetch_with_cp(client: MetaculusClient, post_id: int) -> Any:
+    """One question, including its community prediction (with_cp=true)."""
+    import requests
+
+    response = requests.get(
+        f"{client.base_url}/posts/{post_id}/",
+        params={"with_cp": "true"},
+        **client._get_auth_headers(),  # type: ignore[arg-type]
+        timeout=30,
+    )
+    response.raise_for_status()
+    questions = client._post_json_to_questions_while_handling_groups(response.json(), "exclude")
+    return questions[0]
+
+
 def select_questions(client: MetaculusClient, size: int, seed: int = 0) -> list[Any]:
     chosen = []
     for question_type, count in question_counts(size).items():
@@ -225,9 +240,13 @@ def select_questions(client: MetaculusClient, size: int, seed: int = 0) -> list[
                 api_filter, num_questions=count * 2, randomly_sample=True, error_if_question_target_missed=False
             )
         )
-        # The list endpoint can leave out the aggregations: fetch each in full.
-        full = [client.get_question_by_post_id(q.id_of_post) for q in found]
-        with_cp = [q for q in full if not isinstance(q, list) and community_prediction(q) is not None]
+        # The list is requested with the community prediction (with_cp); keep
+        # its data (a plain post fetch leaves the prediction out).
+        with_cp = [q for q in found if community_prediction(q) is not None]
+        print(
+            f"Bench selection: {question_type}: {len(found)} found, "
+            f"{len(with_cp)} with a visible community prediction"
+        )
         chosen += with_cp[:count]
     return chosen
 
@@ -357,7 +376,7 @@ def main() -> None:
     client = MetaculusClient(token=read_token)
     saved = store.load(f"{batch}/questions.json")
     if saved:
-        questions = [client.get_question_by_post_id(p["post_id"]) for p in saved]
+        questions = [fetch_with_cp(client, p["post_id"]) for p in saved]
     else:
         questions = select_questions(client, size)
         if questions:  # never save an empty list (it would be reused)
