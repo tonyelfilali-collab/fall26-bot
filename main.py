@@ -1783,10 +1783,10 @@ if __name__ == "__main__":
         exhausted_ledger = lineup.planner.ledger
         for model in GEMINI_FORECAST_MODELS:
             exhausted_ledger.mark_used_up(model)
-        for model in GEMINI_PARSER_MODELS:
+        for bucket in dict.fromkeys(exhausted_ledger.bucket(m) for m in GEMINI_PARSER_MODELS):
             # Flash-Lite exactly at its reserve: usable quota 0, reserve full.
-            exhausted_ledger.used[model] = exhausted_ledger.used.get(model, 0) + exhausted_ledger.usable_left(model)
-        flash_lite_before = {m: exhausted_ledger.used[m] for m in GEMINI_PARSER_MODELS}
+            exhausted_ledger.used[bucket] = exhausted_ledger.used.get(bucket, 0) + exhausted_ledger.usable_left(bucket)
+            flash_lite_before[bucket] = exhausted_ledger.used[bucket]
         print("Forced: every Flash model used up today; Flash-Lite at its reserve")
     print(
         f"Model lineup: {lineup.name} "

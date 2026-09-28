@@ -207,3 +207,23 @@ def test_flash_exhausted_resets_at_the_quota_day(monkeypatch, saved_day, now, ex
     # Now the clock moves to `now`.
     monkeypatch.setattr(gemini_budget, "quota_day", lambda n=None: real_quota_day(n or now))
     assert pool.flash_exhausted() is exhausted
+
+
+def test_real_limits_flash_lite_at_reserve_nemotron_only(dummy, monkeypatch, nemotron):  # noqa: F811
+    # The live limits: Flash 20/day, Flash-Lite 400/day (reserve 80), preview in 3.1's bucket.
+    import bot_config
+    from gemini_budget import MemoryStore
+
+    used = {**{f"gemini/{m}": 20 for m in FLASH}, "gemini/gemini-3.5-flash-lite": 320, "gemini/gemini-3.1-flash-lite": 320}
+    pool = bot_config._gemini_pool(MemoryStore({"day": gemini_budget.quota_day(), "used": used}))
+    pool.nemotron = nemotron.factory
+    monkeypatch.setattr(main.asyncio, "sleep", _no_wait)
+    monkeypatch.setattr(main.FallBot2026, "_binary_prompt_to_forecast", lambda self, q, p: _answer(self, 0.3))
+    bot = _bot(pool, None)
+    close = datetime.now(timezone.utc) + timedelta(minutes=120)
+    [report] = asyncio.run(bot.forecast_questions([_question(close_time=close)], return_exceptions=True))
+    [(_, record)] = bot.question_log.records
+    assert not isinstance(report, BaseException), report
+    assert record["emergency"] == "flash-exhausted: nemotron"
+    assert pool.ledger.used == used  # no Gemini request at all
+    assert dummy.calls == []
