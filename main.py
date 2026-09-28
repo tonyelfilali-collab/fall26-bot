@@ -209,6 +209,31 @@ def rehearsal_table(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# A MiniBench question closing within this time is forecast before the
+# seasonal ones (seasonal otherwise goes first, for time and for quota).
+URGENT_MINIBENCH = timedelta(minutes=30)
+
+
+def queue_batches(
+    seasonal: list, minibench: list, now: datetime
+) -> list[tuple[bool, list]]:
+    """(is seasonal, questions) batches in forecasting order: MiniBench questions
+    closing within 30 minutes (soonest first), then seasonal, then the rest of
+    MiniBench."""
+
+    def closes_soon(q) -> bool:  # type: ignore[no-untyped-def]
+        close = getattr(q, "close_time", None)
+        if close is None:
+            return False
+        close = close if close.tzinfo else close.replace(tzinfo=timezone.utc)
+        return close - now <= URGENT_MINIBENCH
+
+    urgent = sorted((q for q in minibench if closes_soon(q)), key=lambda q: q.close_time)
+    rest = [q for q in minibench if not closes_soon(q)]
+    batches = [(False, urgent), (True, list(seasonal)), (False, rest)]
+    return [(flag, questions) for flag, questions in batches if questions]
+
+
 # A question with no forecast that closes within this time can't count on a
 # later run to retry it, so the run goes red.
 RETRY_WINDOW = timedelta(minutes=25)
@@ -1427,23 +1452,36 @@ if __name__ == "__main__":
     # summary printers below.
     client = MetaculusClient()
     if run_mode == "tournament":
-        # Each tournament is fetched and forecast on its own, so a failure in
-        # one (e.g. the question list not loading) doesn't stop the other.
-        # Seasonal first: it's worth more, and gets priority for the budget.
+        # Each tournament's list is fetched on its own, so a failure in one
+        # (e.g. the question list not loading) doesn't stop the other.
+        # Seasonal first: it's worth more, and gets priority for the budget;
+        # but a MiniBench question about to close goes before it.
         forecast_reports = []
         minibench_id = current_minibench_id()
+        open_by_tournament: dict = {}
         for tournament_id in (FALL_2026_TOURNAMENT_ID, minibench_id):
-            template_bot.forecasting_seasonal = tournament_id == FALL_2026_TOURNAMENT_ID
             try:
-                forecast_reports += asyncio.run(
-                    template_bot.forecast_on_tournament(
-                        tournament_id, return_exceptions=True
-                    )
+                open_by_tournament[tournament_id] = (
+                    template_bot.metaculus_client.get_all_open_questions_from_tournament(tournament_id)
                 )
             except Exception as e:
                 logger.error(
                     f"Tournament {tournament_id}: could not run, {describe_exception(e)}"
                 )
+                forecast_reports.append(e)
+        # Seasonal first, except MiniBench questions closing within 30 minutes.
+        for seasonal, questions in queue_batches(
+            open_by_tournament.get(FALL_2026_TOURNAMENT_ID, []),
+            open_by_tournament.get(minibench_id, []),
+            datetime.now(timezone.utc),
+        ):
+            template_bot.forecasting_seasonal = seasonal
+            try:
+                forecast_reports += asyncio.run(
+                    template_bot.forecast_questions(questions, return_exceptions=True)
+                )
+            except Exception as e:
+                logger.error(f"Forecasting could not run, {describe_exception(e)}")
                 forecast_reports.append(e)
     elif run_mode == "metaculus_cup":
         # The Metaculus Cup may be uninitialized near the start of a season
