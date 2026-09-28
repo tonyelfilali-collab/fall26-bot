@@ -8,8 +8,8 @@ Scoreboard: scores every resolved tournament question logged in fall26-data.
     answer fell in; below / above the range use the tail mass)
   Higher (closer to 0) is better. These are raw log scores, not Metaculus
   peer scores.
-- Shadow variants (binary only, PLAN.md Step 10): the same score on the same
-  questions, and the mean difference from live.
+- Shadow variants (every type, PLAN.md Step 10, shadow.py): the same score on
+  the same questions, and the mean difference from live, per type.
 Counts per type are shown. The report goes to fall26-data (scoreboard/) and
 the job page. Weekly workflow "Scoreboard" plus a manual button.
 """
@@ -71,40 +71,45 @@ def numeric_score(forecast: dict, resolution: str) -> float | None:
     return None
 
 
-def live_score(record: dict, resolution: str) -> float | None:
-    question_type = record["question"].get("question_type")
-    forecast = record.get("final_forecast")
+def forecast_score(question_type: str | None, forecast: Any, resolution: str) -> float | None:
+    """The log score of one forecast (live or shadow) in the saved JSON form."""
     if forecast is None:
         return None
     if question_type == "binary":
         if resolution.lower() not in ("yes", "no"):
             return None
         return binary_score(float(forecast), resolution.lower() == "yes")
-    if question_type == "multiple_choice":
+    if question_type == "multiple_choice" and isinstance(forecast, dict):
         return multiple_choice_score(forecast, resolution)
-    if question_type in ("numeric", "discrete"):
+    if question_type in ("numeric", "discrete") and isinstance(forecast, dict):
         return numeric_score(forecast, resolution)
     return None
 
 
+def live_score(record: dict, resolution: str) -> float | None:
+    return forecast_score(record["question"].get("question_type"), record.get("final_forecast"), resolution)
+
+
 def report_markdown(scored: list[dict]) -> str:
-    """scored: {"type", "live": float, "shadow": {name: float} (binary only)}"""
+    """scored: {"type", "live": float, "shadow": {name: float}}"""
     lines = ["| Type | Resolved questions | Mean live log score |", "|---|---|---|"]
     for t in ("all", *TYPES):
         rows = [r for r in scored if t == "all" or r["type"] == t]
         if rows:
             lines.append(f"| {t} | {len(rows)} | {statistics.fmean(r['live'] for r in rows):.4f} |")
-    binary = [r for r in scored if r["type"] == "binary"]
-    variants = sorted({name for r in binary for name in r.get("shadow", {})})
-    if variants:
-        lines += ["", "**Shadow variants (binary, same questions as live):**", "",
-                  "| Variant | Questions | Mean log score | Mean diff vs live |", "|---|---|---|---|"]
-        for name in variants:
-            pairs = [(r["live"], r["shadow"][name]) for r in binary if name in r.get("shadow", {})]
-            lines.append(
-                f"| {name} | {len(pairs)} | {statistics.fmean(s for _, s in pairs):.4f} | "
+    shadow_rows = []
+    for t in TYPES:
+        of_type = [r for r in scored if r["type"] == t]
+        for name in sorted({name for r in of_type for name in r.get("shadow", {})}):
+            pairs = [(r["live"], r["shadow"][name]) for r in of_type if name in r.get("shadow", {})]
+            shadow_rows.append(
+                f"| {t} | {name} | {len(pairs)} | {statistics.fmean(s for _, s in pairs):.4f} | "
                 f"{statistics.fmean(s - live for live, s in pairs):+.4f} |"
             )
+    if shadow_rows:
+        lines += ["", "**Shadow variants (same questions as live, never submitted):**", "",
+                  "| Type | Variant | Questions | Mean log score | Mean diff vs live |", "|---|---|---|---|---|",
+                  *shadow_rows]
     if not scored:
         lines.append("| (none resolved yet) | 0 | |")
     return "\n".join(lines)
@@ -148,9 +153,10 @@ def score_records(records: list[dict], resolution_of) -> list[dict]:  # type: ig
         if live is None:
             continue
         row = {"type": record["question"].get("question_type"), "live": live, "shadow": {}}
-        if row["type"] == "binary":
-            yes = resolution.lower() == "yes"
-            row["shadow"] = {name: binary_score(float(p), yes) for name, p in (record.get("shadow") or {}).items()}
+        for name, forecast in (record.get("shadow") or {}).items():
+            score = forecast_score(row["type"], forecast, resolution)
+            if score is not None:
+                row["shadow"][name] = score
         scored.append(row)
     return scored
 

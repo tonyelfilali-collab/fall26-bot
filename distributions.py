@@ -164,7 +164,10 @@ def _declared_cdf(distribution: NumericDistribution, question: Any) -> np.ndarra
 
 
 def combine_numeric(
-    distributions: list[NumericDistribution], question: Any, weight: float = UNIFORM_WEIGHT
+    distributions: list[NumericDistribution],
+    question: Any,
+    weight: float = UNIFORM_WEIGHT,
+    center: str = "median",
 ) -> NumericDistribution:
     """
     Pointwise median of the models' CDFs, then (1 - weight) x that + weight x
@@ -174,7 +177,8 @@ def combine_numeric(
     applied once more by the library when the forecast is submitted.
     """
     cdfs = np.array([_declared_cdf(d, question) for d in distributions])
-    median = np.median(cdfs, axis=0)
+    # "mean" is only used by a shadow variant (shadow.py); live is the median.
+    median = np.mean(cdfs, axis=0) if center == "mean" else np.median(cdfs, axis=0)
     mixed = (1 - weight) * median + weight * _grid(question)
     template = _template(question)
     values = [template._cdf_location_to_nominal_location(loc) for loc in _grid(question)]

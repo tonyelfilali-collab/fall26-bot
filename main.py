@@ -78,6 +78,7 @@ from deadlines import planned_forecast_timeout, quick_forecast_timeout
 from answer_parsing import (
     parse_binary_answer,
     parse_multiple_choice_answer,
+    read_multiple_choice_values,
     parse_percentile_answer,
 )
 from distributions import (
@@ -88,7 +89,14 @@ from distributions import (
 )
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
-from shadow import REFEREE_ENABLED, referee_shadow, two_line_reason, zero_cost_shadows
+from shadow import (
+    REFEREE_ENABLED,
+    multiple_choice_shadows,
+    numeric_shadows,
+    referee_shadow,
+    two_line_reason,
+    zero_cost_shadows,
+)
 from markets import match_question
 from markets import to_records as market_records
 from minibench import current_minibench_id
@@ -340,12 +348,29 @@ class FallBot2026(ForecastBot):
             # Median, stretch (off), [market blend], extreme check, clip 2-98%.
             return adjust_binary(predictions)  # type: ignore[arg-type]
         if isinstance(question, MultipleChoiceQuestion):
+            # Step 10: free shadow variants, saved but never submitted.
+            record = self._record_for(question)
+            raw = [
+                read_multiple_choice_values(f.get("raw_output") or "", question.options)
+                for f in record["forecasts"]
+                if f.get("status") == "ok"
+            ]
+            record["shadow"] = to_jsonable(
+                multiple_choice_shadows(
+                    predictions,  # type: ignore[arg-type]
+                    raw=[r for r in raw if r is not None] if None not in raw else None,
+                )
+            )
             # Step 8: median per option, renormalise, 1% floor, renormalise.
             return median_multiple_choice(predictions)  # type: ignore[arg-type]
         if isinstance(question, NumericQuestion):
             # Step 8: pointwise median of the models' CDFs, then 95% of it with
             # 5% uniform over the question's range; then the Step 4 checks.
             aggregated = combine_numeric(predictions, question)  # type: ignore[arg-type]
+            # Step 10: free shadow variants, saved but never submitted.
+            self._record_for(question)["shadow"] = to_jsonable(
+                numeric_shadows(predictions, question)
+            )
             problems = distribution_problems(aggregated, question)
             if problems:
                 raise NoValidForecast(
