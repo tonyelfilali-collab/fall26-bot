@@ -114,6 +114,10 @@ the filter above skips it. The first version of this command missed it and print
 - **Free-model 503s can turn a Test Bot red**: read the log; if it's an OpenRouter 503, rerun once.
 - Never ask Tony for secrets; he pastes them into GitHub himself. Pasted keys may carry a stray
   space/newline (FRED did): trim in code.
+- **The shared queue keeps only ONE waiting run** (concurrency group `forecast-bot`): queuing a
+  second run cancels the older waiting one (28 Sep: a test cancelled a test). Since #71, Test Bot
+  runs without the Gemini key have their own group; anything using the Gemini key (gemini-free
+  Test Bot, Model probe) still shares the live group: queue one at a time, only when nothing waits.
 - Metaculus leaderboard pages sit behind a Cloudflare check (403); don't get around it — ask Tony
   to open them in his browser.
 
