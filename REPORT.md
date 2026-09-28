@@ -162,3 +162,16 @@ MiniBench first (B), #46 round 2 limit below half quota (B).
   Flash forecasting model answered HTTP 503 (Google overloaded) on every retry; Flash-Lite still
   answered (research dossier written). Not quota, not our code. The bot retries every 10 minutes
   and never guesses. Architect asked whether Flash-Lite may be a last-resort forecaster.
+
+## Update 28 Sep 2026 (14:45–18:00 UTC) and handover
+
+- **First real question 45847** (discrete, closed 17:00): Gemini Flash answered 503 all afternoon,
+  then 429 daily quota after ~20 failed attempts each (0 successes). Emergency Flash-Lite fallback
+  (#59); 45847 was **submitted at 16:34** with 1 forecast from gemini-3.1-flash-lite (run 36451749479).
+- **Quota diagnosis:** Google counts failed attempts against the 20/day. Fix #60: the ledger
+  counts attempts, 2-failure skip per model per run, 4 attempts per model per question per day,
+  per-question retry backoff. Flash-Lite's real daily limit is unknown (38 attempts, no 429).
+- Merged: #61 Nemotron 3 Ultra shadow forecaster (after submission, never submitted), #62 official
+  data from FRED/CoinGecko (log only; 4/21 pack questions matched, all correct), #63 random-walk
+  baseline shadow. Next live run green after each. OpenRouter usage $0 (limit $1).
+- **Handover:** `CC_HANDOVER.md` has the state, rules, watcher commands and pending items.
