@@ -825,23 +825,29 @@ class FallBot2026(ForecastBot):
     # ------------------------------------------------ shadow forecaster (Build 1b)
 
     def _start_shadow_forecast(self, question: MetaculusQuestion, research: str) -> None:
-        """Start the shadow forecaster in its own task, on the same research.
-        It runs beside the live forecast and never delays or blocks it."""
+        """Keep the research for the shadow forecaster, which runs only AFTER
+        the live forecast is submitted (or has failed), so its time limit
+        never delays a real submission."""
         if self.shadow_llm is None or _in_shadow.get():
             return
-        tasks = self.__dict__.setdefault("_shadow_tasks", {})
-        if id(question) not in tasks:
-            tasks[id(question)] = asyncio.create_task(self._shadow_forecast(question, research))
+        self.__dict__.setdefault("_shadow_research", {}).setdefault(id(question), research)
 
     async def _shadow_forecast(self, question: MetaculusQuestion, research: str) -> tuple:
         _in_shadow.set(True)
         _planned_forecaster.set(self.shadow_llm)
         started = time.monotonic()
         try:
-            prediction = await asyncio.wait_for(
-                ForecastBot._make_prediction(self, question, research),
-                SHADOW_FORECAST_TIMEOUT_SECONDS,
-            )
+            # The per-type forecast directly: the library's _make_prediction
+            # needs the question's notepad, gone once the live forecast is done.
+            if isinstance(question, BinaryQuestion):
+                forecast = self._run_forecast_on_binary(question, research)
+            elif isinstance(question, MultipleChoiceQuestion):
+                forecast = self._run_forecast_on_multiple_choice(question, research)
+            elif isinstance(question, NumericQuestion):
+                forecast = self._run_forecast_on_numeric(question, research)
+            else:
+                raise ValueError(f"no shadow forecast for {type(question).__name__}")
+            prediction = await asyncio.wait_for(forecast, SHADOW_FORECAST_TIMEOUT_SECONDS)
             status, value = "ok", prediction.prediction_value
         except asyncio.TimeoutError:
             status, value = "timeout", None
@@ -850,15 +856,15 @@ class FallBot2026(ForecastBot):
         return status, value, round(time.monotonic() - started, 1)
 
     async def _finish_shadow_forecast(self, question: MetaculusQuestion, record: dict) -> None:
-        """After the live forecast (submitted or not): wait for the shadow (it
-        has its own hard time limit), save it and 'live median with it
-        added'. A failure is only logged."""
-        task = self.__dict__.get("_shadow_tasks", {}).pop(id(question), None)
+        """After the live forecast (submitted or not): run the shadow in its
+        own task (hard time limit), save it and 'live median with it added'.
+        A failure is only logged."""
+        research = self.__dict__.get("_shadow_research", {}).pop(id(question), None)
         live = self.__dict__.get("_live_predictions", {}).pop(id(question), None)
-        if task is None:
+        if research is None:
             return
         try:
-            status, value, seconds = await task
+            status, value, seconds = await asyncio.create_task(self._shadow_forecast(question, research))
         except Exception as e:  # never raised by _shadow_forecast, but be safe
             status, value, seconds = f"failed: {describe_exception(e)}"[:200], None, None
         shadow = record.setdefault("shadow_model", {})

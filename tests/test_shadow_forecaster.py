@@ -120,3 +120,24 @@ def test_scoreboard_answer_rate_and_variants():
     )
     report = scoreboard.report_markdown(scored)
     assert f"| binary | {main.SHADOW_VARIANT} | 1 |" in report and f"| binary | live+{main.SHADOW_VARIANT} | 1 |" in report
+
+
+def test_shadow_runs_only_after_the_live_submission(monkeypatch):
+    events = []
+
+    class _Recording(GeneralLlm):
+        def __init__(self):
+            super().__init__(model="openrouter/test/recording:free", temperature=None)
+
+        async def invoke(self, prompt, system_prompt=None):
+            events.append("shadow")
+            return replay.recorded_reply(replay.current_question.get())
+
+    async def submit(self, question, report):
+        events.append("submitted")
+        return True
+
+    monkeypatch.setattr(main.FallBot2026, "_submit_if_still_open", submit)
+    bot = _bot(_Recording())
+    asyncio.run(bot.forecast_questions(QUESTIONS[:1], return_exceptions=True))
+    assert events == ["submitted", "shadow"]
