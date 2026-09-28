@@ -259,7 +259,8 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 
 ## Market prices (PLAN.md Step 9), LOG-ONLY
 
-`markets.py` (tests: `tests/test_markets.py`); `bot_config.MARKET_MODE = "log-only"`:
+`markets.py` (tests: `tests/test_markets.py`). **`bot_config.MARKET_MODE = "off"` since 28 Sep**
+(architect: 0 of 20 candidates matched; saves Flash-Lite quota). The code stays; with "log-only":
 - For each **binary** question, **after** its forecast is submitted: keywords from the title →
   Polymarket (gamma public-search), Kalshi (v1 search + v2 market for rules and 24 h volume),
   Manifold (search-markets), all keyless. Up to 2 candidates per source, 5 in all.
