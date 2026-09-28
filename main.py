@@ -71,6 +71,8 @@ from forecast_safety import (
     distribution_problems,
     fix_reversed_percentiles,
     floor_multiple_choice,
+    off_by_10x,
+    wide_around,
     question_range,
     still_open_problem,
 )
@@ -759,6 +761,11 @@ class FallBot2026(ForecastBot):
             f"{len(result.dossier.split())} words"
         )
         self._record_for(question)["research_detail"] = {
+            "current_value": (
+                {"value": result.current_value.value, "unit": result.current_value.unit, "date": result.current_value.date}
+                if result.current_value
+                else None
+            ),
             "queries": result.queries,
             "asknews_calls": result.asknews_calls,
             "asknews_articles": result.asknews_articles,
@@ -1096,11 +1103,16 @@ class FallBot2026(ForecastBot):
         self, question: NumericQuestion, reasoning: str, parsing_instructions: str
     ) -> tuple[NumericDistribution, bool]:
         """
-        Parse the percentiles, put reversed ones right, and catch unit errors:
-        if every value is outside the question's range, re-parse once with a
-        warning about units; if still outside, this forecast is dropped.
+        Parse the percentiles, put reversed ones right, and catch unit errors
+        (Step 4): if every value is outside the question's range, or the
+        median is more than 10x / less than 0.1x the current value found in
+        research, re-parse once with a warning about units. If still wrong:
+        a wide distribution around the current value if research found one,
+        otherwise this forecast is dropped.
         """
         lower, upper = question_range(question)
+        current = self._record_for(question).get("research_detail", {}).get("current_value")
+        current_value = current["value"] if current else None
         instructions = parsing_instructions
         # First try reading the "Percentile P: value" lines directly (no model
         # call); the parser model if that fails or looks like a unit error.
@@ -1121,21 +1133,34 @@ class FallBot2026(ForecastBot):
                     num_validation_samples=self._structure_output_validation_samples,
                 )
             percentile_list = fix_reversed_percentiles(percentile_list)
-            if not all_outside_range(percentile_list, lower, upper):
+            outside = all_outside_range(percentile_list, lower, upper)
+            off = off_by_10x(percentile_list, current_value)
+            if not outside and not off:
                 break
             logger.warning(
-                f"Question {question.id_of_post}: every parsed value is outside the "
-                f"question's range (attempt {attempt + 1}); possible unit error"
+                f"Question {question.id_of_post}: "
+                + ("every parsed value is outside the question's range" if outside
+                   else "the median is over 10x away from the current value in research")
+                + f" (attempt {attempt + 1}); possible unit error"
             )
             instructions = parsing_instructions + clean_indents(
                 f"""
-                - IMPORTANT: a previous parse gave values that were all outside the question's
-                  range ({lower} to {upper} {question.unit_of_measure}). Check the units very
-                  carefully (thousands vs millions vs billions, percent vs fraction).
+                - IMPORTANT: a previous parse looked like a unit error. The question's range is
+                  {lower} to {upper} {question.unit_of_measure}"""
+                + (f"; the latest known value is {current_value} {question.unit_of_measure}" if current_value else "")
+                + """. Check the units very carefully (thousands vs millions vs billions, percent
+                  vs fraction).
                 """
             )
         else:
-            raise NoValidForecast("every parsed value is outside the question's range, twice")
+            if current_value is not None and current_value > 0:
+                logger.warning(
+                    f"Question {question.id_of_post}: still a unit error after re-parsing; "
+                    "using a wide distribution around the current value"
+                )
+                percentile_list = wide_around(current_value, STEP8_PERCENTILES, question)
+            else:
+                raise NoValidForecast("the parsed values look like a unit error, twice")
         # Step 8: this model's CDF via PCHIP through its percentiles.
         distribution = pchip_distribution(percentile_list, question)
         problems = distribution_problems(distribution, question)

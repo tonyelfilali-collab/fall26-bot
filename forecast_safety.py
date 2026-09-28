@@ -240,3 +240,57 @@ def dates_line(question: Any, now: datetime | None = None) -> str:
         f"{day(getattr(question, 'close_time', None))} and is scheduled to resolve on "
         f"{day(getattr(question, 'scheduled_resolution_time', None))}."
     )
+
+
+# ---------------------------------------------------------------- unit check vs the current value
+
+
+UNIT_RATIO_LIMIT = 10.0
+# Wide distribution around the current value: the 97.5th percentile is 3x the
+# current value and the 2.5th is a third of it (log-normal).
+_WIDE_FACTOR_AT_97_5 = 3.0
+
+
+def median_of(percentiles: list[Percentile]) -> float | None:
+    """The 50th percentile (interpolated between the nearest two if missing)."""
+    points = sorted(percentiles, key=lambda p: p.percentile)
+    for low, high in zip(points, points[1:]):
+        if low.percentile <= 0.5 <= high.percentile:
+            if high.percentile == low.percentile:
+                return low.value
+            t = (0.5 - low.percentile) / (high.percentile - low.percentile)
+            return low.value + t * (high.value - low.value)
+    return None
+
+
+def off_by_10x(percentiles: list[Percentile], current_value: float | None) -> bool:
+    """
+    True if the median is more than 10x or less than 0.1x the current value
+    from research (a likely unit error). Only for positive values, where the
+    ratio means something.
+    """
+    median = median_of(percentiles)
+    if current_value is None or median is None or current_value <= 0 or median <= 0:
+        return False
+    ratio = median / current_value
+    return ratio > UNIT_RATIO_LIMIT or ratio < 1 / UNIT_RATIO_LIMIT
+
+
+def wide_around(current_value: float, heights: tuple[float, ...], question: Any) -> list[Percentile]:
+    """
+    Percentiles of a wide log-normal centred on the current value (median =
+    current value; 97.5% = 3x, 2.5% = 1/3), kept inside the question's range.
+    """
+    from statistics import NormalDist
+
+    sigma = math.log(_WIDE_FACTOR_AT_97_5) / NormalDist().inv_cdf(0.975)
+    lower, upper = question_range(question)
+    span = upper - lower
+    values = []
+    for h in heights:
+        v = current_value * math.exp(NormalDist().inv_cdf(h) * sigma)
+        values.append(min(max(v, lower + 1e-6 * span), upper - 1e-6 * span))
+    # Keep them strictly increasing after clipping.
+    for i in range(1, len(values)):
+        values[i] = max(values[i], values[i - 1] + 1e-6 * span)
+    return [Percentile(percentile=h, value=v) for h, v in zip(heights, values)]
