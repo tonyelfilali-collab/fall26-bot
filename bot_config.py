@@ -74,8 +74,11 @@ GEMINI_FREE_REQUESTS_PER_MINUTE = 4
 # get no forecast at all.
 GEMINI_FREE_RESERVE = 0.2
 GEMINI_MAX_FORECASTS_PER_QUESTION = 3
-# Binary round 2 (Step 6): at most this many extra forecasts.
+# Binary round 2 (Step 6): at most this many extra forecasts; only 1 once
+# less than half of today's forecast quota (all forecasting models) is left.
 GEMINI_ROUND2_MAX = 2
+GEMINI_ROUND2_MAX_LOW = 1
+GEMINI_ROUND2_LOW_FRACTION = 0.5
 # Budget counts as "low" below this share of the pool's usable daily total;
 # then MiniBench questions get 1 forecast (seasonal ones still up to 3).
 GEMINI_LOW_BUDGET_FRACTION = 0.25
@@ -202,12 +205,23 @@ class GeminiPool:
     def save(self) -> None:
         self.ledger.save()
 
+    def forecast_quota_left_fraction(self) -> float:
+        """Today's forecast quota left (all forecasting models, reserve included)."""
+        left = sum(max(0, self.ledger.total_left(m)) for m in GEMINI_FORECAST_MODELS)
+        return left / (len(GEMINI_FORECAST_MODELS) * GEMINI_FREE_REQUESTS_PER_DAY)
+
     def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:
         """
         Binary round 2 (only called when round 1 disagrees or is extreme): up
-        to 2 more forecasts from models not used in round 1, from usable
-        budget only (never the reserve).
+        to 2 more forecasts (1 when less than half of today's forecast quota
+        is left) from models not used in round 1, from usable budget only
+        (never the reserve).
         """
+        most = (
+            GEMINI_ROUND2_MAX_LOW
+            if self.forecast_quota_left_fraction() < GEMINI_ROUND2_LOW_FRACTION
+            else GEMINI_ROUND2_MAX
+        )
         spare = [
             m
             for m in sorted(
@@ -215,7 +229,7 @@ class GeminiPool:
                 key=lambda m: (-self.ledger.usable_left(m), GEMINI_FORECAST_MODELS.index(m)),
             )
             if m not in used_models and self.ledger.usable_left(m) > 0
-        ][:GEMINI_ROUND2_MAX]
+        ][:most]
         for model in spare:
             self.ledger.book(model)
         return [self._chain([model], allow_reserve=False) for model in spare]
