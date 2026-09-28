@@ -99,7 +99,8 @@ Get = Callable[..., Any]  # requests.get-like
 
 
 def fetch_fred(series: str, today: date, get: Get = requests.get, api_key: str | None = None) -> dict:
-    key = api_key if api_key is not None else os.environ["FRED_API_KEY"]
+    # Pasted keys often carry a stray space or line break.
+    key = (api_key if api_key is not None else os.environ["FRED_API_KEY"]).strip()
     response = get(
         FRED_URL,
         params={
