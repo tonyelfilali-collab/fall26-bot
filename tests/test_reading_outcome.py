@@ -47,3 +47,5 @@ def test_parser_and_dropped(monkeypatch):
     with pytest.raises(NoValidForecast):
         asyncio.run(bot._parse_numeric_safely(numeric, "still nothing", ""))
     assert bot._record_for(numeric)["reading"] == ["parser", "dropped"]
+    # Replies that couldn't be read directly are kept (private log) to fix the reader.
+    assert bot._record_for(numeric)["unread_replies"] == ["no percentile lines here", "still nothing"]

@@ -100,6 +100,8 @@ from shadow import (
 from markets import match_question
 from markets import to_records as market_records
 from minibench import current_minibench_id
+from real_regression import load_questions as load_regression_questions
+from real_regression import reading_table
 from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
 from replay import current_question as replay_question
 from research import run_planned_research
@@ -208,6 +210,9 @@ def rehearsal_table(records: list[dict]) -> str:
         )
     return "\n".join(lines)
 
+
+# Real-regression: questions forecast at the same time.
+REGRESSION_BATCH = 4
 
 # A MiniBench question closing within this time is forecast before the
 # seasonal ones (seasonal otherwise goes first, for time and for quota).
@@ -549,11 +554,15 @@ class FallBot2026(ForecastBot):
             },
         )
 
-    def _note_reading(self, question: MetaculusQuestion, how: str) -> None:
+    def _note_reading(self, question: MetaculusQuestion, how: str, reply: str = "") -> None:
         """How a model's answer was read: 'direct' (no model call), 'parser'
         (the parser model was needed) or 'dropped' (couldn't be read). Counts
-        only, for the question log and the real-regression table."""
-        self._record_for(question).setdefault("reading", []).append(how)
+        only in the public log; a reply that couldn't be read directly is kept
+        in the question log (private fall26-data), to fix the reader."""
+        record = self._record_for(question)
+        record.setdefault("reading", []).append(how)
+        if how != "direct" and reply:
+            record.setdefault("unread_replies", []).append(reply[-4000:])
         logger.info(f"Question {question.id_of_post}: answer read: {how}")
 
     async def _run_individual_question(self, question: MetaculusQuestion) -> ForecastReport:
@@ -887,10 +896,10 @@ class FallBot2026(ForecastBot):
                     num_validation_samples=self._structure_output_validation_samples,
                 )
             except Exception:
-                self._note_reading(question, "dropped")
+                self._note_reading(question, "dropped", reasoning)
                 raise
             parsed = binary_prediction.prediction_in_decimal
-            self._note_reading(question, "parser")
+            self._note_reading(question, "parser", reasoning)
         else:
             self._note_reading(question, "direct")
         decimal_pred = max(0.01, min(0.99, parsed))
@@ -970,9 +979,9 @@ class FallBot2026(ForecastBot):
                     additional_instructions=parsing_instructions,
                 )
             except Exception:
-                self._note_reading(question, "dropped")
+                self._note_reading(question, "dropped", reasoning)
                 raise
-            self._note_reading(question, "parser")
+            self._note_reading(question, "parser", reasoning)
         else:
             self._note_reading(question, "direct")
 
@@ -1078,9 +1087,9 @@ class FallBot2026(ForecastBot):
                 question, reasoning, parsing_instructions
             )
         except Exception:
-            self._note_reading(question, "dropped")
+            self._note_reading(question, "dropped", reasoning)
             raise
-        self._note_reading(question, "parser" if used_parser else "direct")
+        self._note_reading(question, "parser" if used_parser else "direct", reasoning)
         return distribution
 
     async def _read_numeric(
@@ -1387,6 +1396,12 @@ if __name__ == "__main__":
         help="Make every question fail (to check a failed run shows red)",
     )
     parser.add_argument(
+        "--real-regression",
+        action="store_true",
+        help="Test mode, free lineup only: the regression-pack questions, research frozen, "
+        "never submitted; prints how the replies were read",
+    )
+    parser.add_argument(
         "--one-binary",
         action="store_true",
         help="Test mode: forecast only one binary question",
@@ -1422,6 +1437,11 @@ if __name__ == "__main__":
 
     # All model choices live in bot_config.py.
     lineup = get_lineup(args.lineup)
+    if args.real_regression:
+        if lineup.name != "free" or run_mode != "test_questions":
+            raise SystemExit("--real-regression only runs with --mode test_questions --lineup free.")
+        # Research frozen: 0 AskNews calls (its free quota is for the live bot).
+        lineup.llms["researcher"] = "replay"
     if lineup.test_only and run_mode != "test_questions":
         # OpenRouter ':free' models are for the bot-testing-area only (see CLAUDE.md).
         raise SystemExit(
@@ -1537,6 +1557,29 @@ if __name__ == "__main__":
         # Free models have small daily limits, so forecast only the first
         # few open questions of each type the tournament uses.
         template_bot.skip_previously_forecasted_questions = False
+    # Test mode, two kinds: real-regression (the regression pack) or the
+    # bot-testing-area.
+    if run_mode == "test_questions" and args.real_regression:
+        # Closed past questions, never submitted: dry run.
+        template_bot.submit_forecasts = False
+        template_bot.keep_records = True
+        regression_questions = load_regression_questions()
+        print(f"Real-regression: {len(regression_questions)} regression-pack questions, never submitted")
+        forecast_reports = []
+        # A few at a time, to stay under the free model's per-minute limit.
+        for start in range(0, len(regression_questions), REGRESSION_BATCH):
+            forecast_reports += asyncio.run(
+                template_bot.forecast_questions(
+                    regression_questions[start : start + REGRESSION_BATCH], return_exceptions=True
+                )
+            )
+        table = reading_table(template_bot.__dict__.get("kept_records", []), regression_questions)
+        print(table)
+        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write("## Real-model regression: how replies were read\n\n" + table + "\n\n")
+    elif run_mode == "test_questions":
         open_questions = client.get_all_open_questions_from_tournament(
             BOT_TESTING_AREA_ID
         )
@@ -1600,6 +1643,10 @@ if __name__ == "__main__":
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
+    if failures and args.real_regression:
+        # A report run: failures are what the table is for.
+        print(f"{failures} regression question(s) got no forecast (see the table)")
+        failures = 0
     if failures:
         # Red (non-zero exit) when a question may now be missed: in test mode
         # always; in live modes only if it closes before the next runs can
