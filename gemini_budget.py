@@ -2,7 +2,10 @@
 Daily request budget for the free Gemini key.
 
 The free tier allows a fixed number of requests per model per day (the day
-resets at midnight Pacific, 07:00 UTC in summer time). Runs are separate
+resets at midnight Pacific, 07:00 UTC in summer time): 20 for the Flash
+models, 500 for the Flash-Lite ones (AI Studio rate-limit page, 28 Sep 2026).
+Models that share one quota count against one "bucket" (3.1-flash-lite-preview
+books against 3.1-flash-lite's). Runs are separate
 GitHub Actions jobs, so the day's counts are kept in a small JSON file in the
 private fall26-data repo. The forecasting workflows share one concurrency
 group, so only one run updates it at a time.
@@ -115,6 +118,8 @@ class QuotaLedger:
     - usable: requests per model we plan with (daily limit minus the reserve)
     - reserve: the rest, used only when a question would otherwise get no
       forecast at all
+    - buckets: model -> the quota bucket it counts against (default: itself);
+      daily_limits are per bucket
     Models "booked" for a planned forecast are held in `pending` until the
     call starts, and calls in progress are held in `in_flight` until they end,
     so questions forecast at the same time don't double-book.
@@ -125,9 +130,11 @@ class QuotaLedger:
         store: MemoryStore | GitHubFileStore,
         daily_limits: dict[str, int],
         reserve_fraction: float,
+        buckets: dict[str, str] | None = None,
     ) -> None:
         self._store = store
         self.daily_limits = daily_limits
+        self.buckets = dict(buckets or {})
         self.reserve_fraction = reserve_fraction
         self.day = quota_day()
         self.used: dict[str, int] = {}
@@ -143,7 +150,10 @@ class QuotaLedger:
             logger.warning(f"Quota ledger could not be loaded ({type(e).__name__}); starting from 0")
             data = None
         if data and data.get("day") == self.day:
-            self.used = {k: int(v) for k, v in data.get("used", {}).items()}
+            for k, v in data.get("used", {}).items():
+                # (A ledger saved before buckets may list a shared model on its own.)
+                bucket = self.bucket(k)
+                self.used[bucket] = self.used.get(bucket, 0) + int(v)
             self.question_attempts = {k: int(v) for k, v in data.get("question_attempts", {}).items()}
 
     def _roll_over_if_new_day(self) -> None:
@@ -151,7 +161,12 @@ class QuotaLedger:
         if today != self.day:
             self.day, self.used, self.pending, self.question_attempts = today, {}, {}, {}
 
+    def bucket(self, model: str) -> str:
+        """The quota bucket `model` counts against."""
+        return self.buckets.get(model, model)
+
     def _taken(self, model: str) -> int:
+        model = self.bucket(model)
         return (
             self.used.get(model, 0)
             + self.pending.get(model, 0)
@@ -160,14 +175,15 @@ class QuotaLedger:
 
     def usable_left(self, model: str) -> int:
         self._roll_over_if_new_day()
-        usable = math.floor(self.daily_limits[model] * (1 - self.reserve_fraction))
+        usable = math.floor(self.daily_limits[self.bucket(model)] * (1 - self.reserve_fraction))
         return usable - self._taken(model)
 
     def total_left(self, model: str) -> int:
         self._roll_over_if_new_day()
-        return self.daily_limits[model] - self._taken(model)
+        return self.daily_limits[self.bucket(model)] - self._taken(model)
 
     def book(self, model: str) -> None:
+        model = self.bucket(model)
         self.pending[model] = self.pending.get(model, 0) + 1
 
     def _question_key(self, model: str) -> str | None:
@@ -190,14 +206,15 @@ class QuotaLedger:
         """Hold one request to `model` while it runs, if the budget and the
         retry limits allow it. A booking is released either way."""
         self._roll_over_if_new_day()
-        booked = booked and self.pending.get(model, 0) > 0
+        bucket = self.bucket(model)
+        booked = booked and self.pending.get(bucket, 0) > 0
         if booked:
-            self.pending[model] -= 1
+            self.pending[bucket] -= 1
         reason = self._refusal(model, booked, allow_reserve)
         if reason:
             self.last_refusal[model] = reason
             return False
-        self.in_flight[model] = self.in_flight.get(model, 0) + 1
+        self.in_flight[bucket] = self.in_flight.get(bucket, 0) + 1
         key = self._question_key(model)
         if key:
             self.question_attempts[key] = self.question_attempts.get(key, 0) + 1
@@ -206,14 +223,16 @@ class QuotaLedger:
     def finish(self, model: str, succeeded: bool) -> None:
         """A held request ended: every attempt counts against the quota
         (Google counts failed ones too); a failure also counts for this run."""
-        self.in_flight[model] = max(0, self.in_flight.get(model, 0) - 1)
+        bucket = self.bucket(model)
+        self.in_flight[bucket] = max(0, self.in_flight.get(bucket, 0) - 1)
         # (Capped: a 429 "daily quota" has already marked the model used up.)
-        self.used[model] = min(self.used.get(model, 0) + 1, self.daily_limits.get(model, math.inf))
+        self.used[bucket] = min(self.used.get(bucket, 0) + 1, self.daily_limits.get(bucket, math.inf))
         if not succeeded:
             self.run_failures[model] = self.run_failures.get(model, 0) + 1
 
     def mark_used_up(self, model: str) -> None:
-        self.used[model] = self.daily_limits[model]
+        bucket = self.bucket(model)
+        self.used[bucket] = self.daily_limits[bucket]
 
     def snapshot(self) -> dict:
         return {

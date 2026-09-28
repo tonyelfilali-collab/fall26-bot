@@ -119,9 +119,9 @@ the filter above skips it. The first version of this command missed it and print
 
 ## 6. Pending architect items (don't build without a prompt)
 
-- **Flash-Lite daily limit unknown:** today 3.1-flash-lite made 38 attempts (7 ok, 31 × 503) with
-  no 429, so its limit may be above 20 or failed attempts may not count there. The ledger
-  treats it as 20/day (safe, maybe too strict). Tony can check the AI Studio rate-limit page.
+- ~~Flash-Lite daily limit unknown~~ **Answered 28 Sep (AI Studio page): Flash-Lite is 500/day
+  and 15/minute per model, not 20** (3.1-flash-lite-preview shares 3.1-flash-lite's quota). The
+  ledger plans with 400/day (per-model limits PR).
 - **Nemotron promotion:** after ~2 weeks of shadow data (answer rate + scores in the weekly
   scoreboard), the architect decides whether it becomes the backup when Gemini is overloaded.
 - **Review table of the first 5 real questions** (watcher b).

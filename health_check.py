@@ -32,10 +32,9 @@ from bot_helpers import silence_noisy_dependencies
 silence_noisy_dependencies()
 
 from bot_config import (  # noqa: E402
-    GEMINI_FORECAST_MODELS,
-    GEMINI_FREE_REQUESTS_PER_DAY,
+    GEMINI_DAILY_LIMITS,
     GEMINI_LEDGER_PATH,
-    GEMINI_PARSER_MODELS,
+    GEMINI_QUOTA_BUCKETS,
 )
 from gemini_budget import GitHubFileStore, quota_day  # noqa: E402
 from question_log import DATA_REPO, LOG_FAILURE_ANNOTATION  # noqa: E402
@@ -118,12 +117,17 @@ def check_minibench_activity(recently_open: int, report: Report) -> None:
 
 
 def check_gemini_quota(ledger: dict | None, today: str, report: Report) -> None:
-    used = (ledger or {}).get("used", {}) if (ledger or {}).get("day") == today else {}
+    saved = (ledger or {}).get("used", {}) if (ledger or {}).get("day") == today else {}
+    # Per quota bucket (a model sharing another's quota counts against it).
+    used: dict[str, int] = {}
+    for model, count in saved.items():
+        bucket = GEMINI_QUOTA_BUCKETS.get(model, model)
+        used[bucket] = used.get(bucket, 0) + int(count)
     low = []
-    for model in (*GEMINI_FORECAST_MODELS, *GEMINI_PARSER_MODELS):
-        left = GEMINI_FREE_REQUESTS_PER_DAY - int(used.get(model, 0))
-        if left < MIN_QUOTA_LEFT * GEMINI_FREE_REQUESTS_PER_DAY:
-            low.append(f"{model.removeprefix('gemini/')} {max(left, 0)}/{GEMINI_FREE_REQUESTS_PER_DAY}")
+    for bucket, limit in GEMINI_DAILY_LIMITS.items():
+        left = limit - used.get(bucket, 0)
+        if left < MIN_QUOTA_LEFT * limit:
+            low.append(f"{bucket.removeprefix('gemini/')} {max(left, 0)}/{limit}")
     if low:
         report.warnings.append("Gemini quota below 20%: " + ", ".join(low))
     else:

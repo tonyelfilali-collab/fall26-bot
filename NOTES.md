@@ -144,7 +144,10 @@ https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36331438194):
   architect chose 2.5 Flash / Flash-Lite, but Google answers 404 "no longer available to new
   users" for both on this new project: Credit check run
   https://github.com/tonyelfilali-collab/fall26-bot/actions/runs/36336713455.)
-- **Daily budget per model:** 20 requests/day each; 20% is held in reserve, so 16 are usable.
+- **Daily budget per model (AI Studio page, 28 Sep):** Flash 20 requests/day each, 5/minute
+  (paced at 4); **Flash-Lite 500/day each, 15/minute** (the ledger plans with 400/day, paced at
+  12); `gemini-3.1-flash-lite-preview` has no row of its own and shares 3.1-flash-lite's quota
+  (`GEMINI_QUOTA_BUCKETS`). 20% of each is held in reserve (16 of 20, 320 of 400 usable).
   **Every attempt is counted, failed ones too** (28 Sep: Google counted ~20 failed 503 attempts
   per Flash model against the 20/day, then answered 429). A model is also used up when Google
   answers 429 RESOURCE_EXHAUSTED. A model that fails twice in a run is skipped for the rest of

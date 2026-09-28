@@ -47,8 +47,9 @@ FREE_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
 MARKET_MODE: Literal["off", "log-only"] = "off"
 
 # Google AI Studio directly (LiteLLM "gemini/" prefix, reads GEMINI_API_KEY).
-# Free tier (AI Studio rate-limit page, 27 Sep 2026): 5 requests/minute and
-# 20 requests/day, per model, per project. The day resets at midnight Pacific.
+# Free tier (AI Studio rate-limit page, 28 Sep 2026), per model, per project:
+# Flash 5 requests/minute and 20/day; Flash-Lite 15/minute and 500/day. The
+# day resets at midnight Pacific.
 # Forecasting pool: each question gets forecasts from different versions.
 GEMINI_FORECAST_MODELS = (
     "gemini/gemini-3.6-flash",
@@ -72,9 +73,25 @@ GEMINI_PARSER_MODELS = (
 # scoreboard), to judge it as a backup for when Gemini is overloaded.
 SHADOW_FORECAST_MODEL = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
 assert SHADOW_FORECAST_MODEL.endswith(":free")
+# Flash forecasters: 20 a day each (Google counts over-limit attempts too).
 GEMINI_FREE_REQUESTS_PER_DAY = 20
-# Each model's calls are paced under the 5/minute limit.
+# Flash-Lite: 500 a day each on the AI Studio page; we plan with 400 (margin).
+GEMINI_FLASH_LITE_REQUESTS_PER_DAY = 400
+# Models without their own row on the AI Studio page share another model's
+# quota: model -> the model whose daily count (and pace) it shares.
+GEMINI_QUOTA_BUCKETS = {"gemini/gemini-3.1-flash-lite-preview": "gemini/gemini-3.1-flash-lite"}
+# Daily limits per quota bucket.
+GEMINI_DAILY_LIMITS = {
+    **{m: GEMINI_FREE_REQUESTS_PER_DAY for m in GEMINI_FORECAST_MODELS},
+    **{
+        m: GEMINI_FLASH_LITE_REQUESTS_PER_DAY
+        for m in GEMINI_PARSER_MODELS
+        if m not in GEMINI_QUOTA_BUCKETS
+    },
+}
+# Each bucket's calls are paced under its per-minute limit (Flash 5, Flash-Lite 15).
 GEMINI_FREE_REQUESTS_PER_MINUTE = 4
+GEMINI_FLASH_LITE_REQUESTS_PER_MINUTE = 12
 # 20% of each model's day is held back for questions that would otherwise
 # get no forecast at all.
 GEMINI_FREE_RESERVE = 0.2
@@ -202,7 +219,7 @@ class GeminiPool:
         usable_left = sum(
             max(0, self.ledger.usable_left(m)) for m in GEMINI_FORECAST_MODELS
         )
-        usable_total = len(GEMINI_FORECAST_MODELS) * GEMINI_FREE_REQUESTS_PER_DAY * (
+        usable_total = sum(GEMINI_DAILY_LIMITS[m] for m in GEMINI_FORECAST_MODELS) * (
             1 - GEMINI_FREE_RESERVE
         )
         return usable_left < GEMINI_LOW_BUDGET_FRACTION * usable_total
@@ -213,7 +230,7 @@ class GeminiPool:
     def forecast_quota_left_fraction(self) -> float:
         """Today's forecast quota left (all forecasting models, reserve included)."""
         left = sum(max(0, self.ledger.total_left(m)) for m in GEMINI_FORECAST_MODELS)
-        return left / (len(GEMINI_FORECAST_MODELS) * GEMINI_FREE_REQUESTS_PER_DAY)
+        return left / sum(GEMINI_DAILY_LIMITS[m] for m in GEMINI_FORECAST_MODELS)
 
     def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:
         """
@@ -328,15 +345,26 @@ class GeminiPool:
         return llm
 
 
+def gemini_pacers() -> dict[str, RequestPacer]:
+    """One pacer per quota bucket; a model sharing a bucket shares its pacer."""
+    pacers = {m: RequestPacer(GEMINI_FREE_REQUESTS_PER_MINUTE) for m in GEMINI_FORECAST_MODELS}
+    pacers.update(
+        {m: RequestPacer(GEMINI_FLASH_LITE_REQUESTS_PER_MINUTE) for m in GEMINI_PARSER_MODELS if m not in GEMINI_QUOTA_BUCKETS}
+    )
+    for model, bucket in GEMINI_QUOTA_BUCKETS.items():
+        pacers[model] = pacers[bucket]
+    return pacers
+
+
 def _gemini_free_lineup() -> Lineup:
-    all_models = (*GEMINI_FORECAST_MODELS, *GEMINI_PARSER_MODELS)
     pool = GeminiPool(
         ledger=QuotaLedger(
             make_store(GEMINI_LEDGER_PATH),
-            daily_limits={m: GEMINI_FREE_REQUESTS_PER_DAY for m in all_models},
+            daily_limits=dict(GEMINI_DAILY_LIMITS),
             reserve_fraction=GEMINI_FREE_RESERVE,
+            buckets=GEMINI_QUOTA_BUCKETS,
         ),
-        pacers={m: RequestPacer(GEMINI_FREE_REQUESTS_PER_MINUTE) for m in all_models},
+        pacers=gemini_pacers(),
     )
     parser = pool.parser()
     return Lineup(
