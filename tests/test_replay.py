@@ -59,3 +59,13 @@ def test_replay_runs_the_pipeline_with_zero_model_calls():
     assert not any(isinstance(r, BaseException) for r in reports), reports
     assert replay.ReplayLlm.calls == 4  # one recorded reply per question, no model called
     assert reports[0].prediction == pytest.approx(0.37)
+
+
+def test_free_model_option_only_takes_free_models():
+    lineup = bot_config.get_lineup("free", free_model="openrouter/nvidia/nemotron-3-ultra-550b-a55b:free")
+    assert lineup.llm_model_names()[0] == "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+    for bad in ("openrouter/anthropic/claude-opus-5.5", "gemini/gemini-3.6-flash"):
+        with pytest.raises(ValueError):
+            bot_config.get_lineup("free", free_model=bad)
+    with pytest.raises(ValueError):
+        bot_config.get_lineup("gemini-free", free_model="openrouter/x:free")

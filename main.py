@@ -1444,6 +1444,11 @@ if __name__ == "__main__":
         help="Make every question fail (to check a failed run shows red)",
     )
     parser.add_argument(
+        "--free-model",
+        default=None,
+        help="Test mode, free lineup only: use this OpenRouter ':free' model instead",
+    )
+    parser.add_argument(
         "--real-regression",
         action="store_true",
         help="Test mode, free lineup only: the regression-pack questions, research frozen, "
@@ -1484,7 +1489,7 @@ if __name__ == "__main__":
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
     # All model choices live in bot_config.py.
-    lineup = get_lineup(args.lineup)
+    lineup = get_lineup(args.lineup, free_model=args.free_model)
     if args.real_regression:
         if lineup.name != "free" or run_mode != "test_questions":
             raise SystemExit("--real-regression only runs with --mode test_questions --lineup free.")

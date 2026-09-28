@@ -129,11 +129,11 @@ class Lineup:
         return names
 
 
-def _free_lineup() -> Lineup:
+def _free_lineup(model: str = FREE_MODEL) -> Lineup:
     # Free models have tight rate limits, so keep calls per question low:
     # 1 forecast + 1 parse, no research summary.
     free_llm = GeneralLlm(
-        model=FREE_MODEL,
+        model=model,
         temperature=0.3,
         timeout=180,
         allowed_tries=3,
@@ -480,9 +480,15 @@ _LINEUPS = {
 }
 
 
-def get_lineup(name: str | None = None) -> Lineup:
-    """The active lineup, or `name` if given (Test Bot passes "free")."""
-    lineup = _LINEUPS[name or ACTIVE_LINEUP]()
+def get_lineup(name: str | None = None, free_model: str | None = None) -> Lineup:
+    """The active lineup, or `name` if given (Test Bot passes "free").
+    free_model: test-only, another OpenRouter ':free' model for the free lineup."""
+    if free_model:
+        if name != "free" or not free_model.endswith(":free") or not is_free_model(free_model):
+            raise ValueError(f"free_model must be an OpenRouter ':free' model, with the free lineup: {free_model}")
+        lineup = _free_lineup(free_model)
+    else:
+        lineup = _LINEUPS[name or ACTIVE_LINEUP]()
     if lineup.free_only:
         paid = [name for name in lineup.llm_model_names() if not is_free_model(name)]
         if paid:
