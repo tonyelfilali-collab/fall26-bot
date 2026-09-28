@@ -549,6 +549,13 @@ class FallBot2026(ForecastBot):
             },
         )
 
+    def _note_reading(self, question: MetaculusQuestion, how: str) -> None:
+        """How a model's answer was read: 'direct' (no model call), 'parser'
+        (the parser model was needed) or 'dropped' (couldn't be read). Counts
+        only, for the question log and the real-regression table."""
+        self._record_for(question).setdefault("reading", []).append(how)
+        logger.info(f"Question {question.id_of_post}: answer read: {how}")
+
     async def _run_individual_question(self, question: MetaculusQuestion) -> ForecastReport:
         replay_question.set(question)  # replay mode answers from the question's shape
         started = datetime.now(timezone.utc)
@@ -872,13 +879,20 @@ class FallBot2026(ForecastBot):
         # Read "Probability: ZZ%" directly; the parser model only if that fails.
         parsed = parse_binary_answer(reasoning)
         if parsed is None:
-            binary_prediction: BinaryPrediction = await structure_output(
-                reasoning,
-                BinaryPrediction,
-                model=self.get_llm("parser", "llm"),
-                num_validation_samples=self._structure_output_validation_samples,
-            )
+            try:
+                binary_prediction: BinaryPrediction = await structure_output(
+                    reasoning,
+                    BinaryPrediction,
+                    model=self.get_llm("parser", "llm"),
+                    num_validation_samples=self._structure_output_validation_samples,
+                )
+            except Exception:
+                self._note_reading(question, "dropped")
+                raise
             parsed = binary_prediction.prediction_in_decimal
+            self._note_reading(question, "parser")
+        else:
+            self._note_reading(question, "direct")
         decimal_pred = max(0.01, min(0.99, parsed))
 
         logger.info(f"Question {question.id_of_post}: forecast made")
@@ -947,13 +961,20 @@ class FallBot2026(ForecastBot):
         # Read the option lines directly; the parser model only if that fails.
         predicted_option_list = parse_multiple_choice_answer(reasoning, question.options)
         if predicted_option_list is None:
-            predicted_option_list = await structure_output(
-                text_to_structure=reasoning,
-                output_type=PredictedOptionList,
-                model=self.get_llm("parser", "llm"),
-                num_validation_samples=self._structure_output_validation_samples,
-                additional_instructions=parsing_instructions,
-            )
+            try:
+                predicted_option_list = await structure_output(
+                    text_to_structure=reasoning,
+                    output_type=PredictedOptionList,
+                    model=self.get_llm("parser", "llm"),
+                    num_validation_samples=self._structure_output_validation_samples,
+                    additional_instructions=parsing_instructions,
+                )
+            except Exception:
+                self._note_reading(question, "dropped")
+                raise
+            self._note_reading(question, "parser")
+        else:
+            self._note_reading(question, "direct")
 
         logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(
@@ -1052,6 +1073,19 @@ class FallBot2026(ForecastBot):
     async def _parse_numeric_safely(
         self, question: NumericQuestion, reasoning: str, parsing_instructions: str
     ) -> NumericDistribution:
+        try:
+            distribution, used_parser = await self._read_numeric(
+                question, reasoning, parsing_instructions
+            )
+        except Exception:
+            self._note_reading(question, "dropped")
+            raise
+        self._note_reading(question, "parser" if used_parser else "direct")
+        return distribution
+
+    async def _read_numeric(
+        self, question: NumericQuestion, reasoning: str, parsing_instructions: str
+    ) -> tuple[NumericDistribution, bool]:
         """
         Parse the percentiles, put reversed ones right, and catch unit errors:
         if every value is outside the question's range, re-parse once with a
@@ -1064,10 +1098,12 @@ class FallBot2026(ForecastBot):
         direct = parse_percentile_answer(
             reasoning, STEP8_PERCENTILES, question.unit_of_measure
         )
+        used_parser = False
         for attempt in range(2):
             if attempt == 0 and direct is not None:
                 percentile_list = direct
             else:
+                used_parser = True
                 percentile_list = await structure_output(
                     reasoning,
                     list[Percentile],
@@ -1098,7 +1134,7 @@ class FallBot2026(ForecastBot):
             raise NoValidForecast(
                 f"distribution broke the platform rules ({'; '.join(problems)})"
             )
-        return distribution
+        return distribution, used_parser
 
     ##################################### DATE QUESTIONS #####################################
 
