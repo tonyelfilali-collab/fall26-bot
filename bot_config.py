@@ -288,6 +288,23 @@ class GeminiPool:
         assert llm is not None
         return llm
 
+    def emergency_forecasters(self) -> list[ThrottledLlm]:
+        """
+        Emergency only (main.py: closing within 45 min, no Flash forecast):
+        up to 2 forecasts from the Flash-Lite models, each starting on a
+        different one with the others as backups, reserve allowed.
+        """
+        ready = [m for m in GEMINI_PARSER_MODELS if self.ledger.total_left(m) > 0]
+        chains = []
+        for first in ready[:2]:
+            order = [first, *[m for m in GEMINI_PARSER_MODELS if m != first]]
+            llm: ThrottledLlm | None = None
+            for model in reversed(order):
+                llm = self._forecaster(model, backup=llm, allow_reserve=True)
+            assert llm is not None
+            chains.append(llm)
+        return chains
+
     def parser(self) -> ThrottledLlm:
         llm: ThrottledLlm | None = None
         for model in reversed(GEMINI_PARSER_MODELS):

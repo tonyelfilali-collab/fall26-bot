@@ -253,6 +253,8 @@ def closes_within(close_time: datetime, window: timedelta) -> bool:
 # The quick forecast (nothing else finished) tries this many passes through
 # the Gemini models, this far apart.
 QUICK_FORECAST_PASSES = 3
+# Emergency Flash-Lite forecasts only for a question closing within this time.
+EMERGENCY_WINDOW = timedelta(minutes=45)
 QUICK_FORECAST_RETRY_WAIT_SECONDS = 30
 
 # The forecaster chain for the forecast running in the current asyncio task.
@@ -549,6 +551,34 @@ class FallBot2026(ForecastBot):
                 )
             )
             errors = errors + quick_errors
+        # Emergency (architect, 28 Sep): the question closes within 45 minutes
+        # and no Flash forecaster answered (overloaded or out of quota): up to
+        # 2 forecasts from the Flash-Lite models, same code path, then the
+        # normal combine and checks. Outside that window nothing changes.
+        emergency = getattr(self.planner, "emergency_forecasters", None)
+        if (
+            not valid_predictions
+            and emergency is not None
+            and question.close_time is not None
+            and closes_within(question.close_time, EMERGENCY_WINDOW)
+            and quick_forecast_timeout(question.close_time) != 0
+        ):
+            forecasters = emergency()
+            if forecasters:
+                record["emergency"] = "flash-lite"
+                logger.warning(
+                    f"Question {question.id_of_post}: closes within 45 min with no Flash "
+                    f"forecast; emergency: {len(forecasters)} Flash-Lite forecast(s)"
+                )
+                valid_predictions, emergency_errors, exception_group = (
+                    await self._gather_results_and_exceptions(
+                        [
+                            forecast_with(f, "emergency", quick_forecast_timeout(question.close_time))
+                            for f in forecasters
+                        ]
+                    )
+                )
+                errors = errors + emergency_errors
         await asyncio.to_thread(self.planner.save)
         if len(valid_predictions) == 0:
             if exception_group is None:
