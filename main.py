@@ -109,6 +109,7 @@ from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
 from replay import current_question as replay_question
 from research import run_planned_research
 from gemini_budget import current_question_key
+from hard_data import hard_data_for
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
@@ -685,6 +686,10 @@ class FallBot2026(ForecastBot):
         current_question_key.set(str(question.id_of_post))
         started = datetime.now(timezone.utc)
         record = self._record_for(question)
+        # Build 2a: official data (FRED / CoinGecko) for a clearly matching
+        # numeric question, fetched beside the forecast and only saved in the
+        # question log (nothing reaches the forecasters yet).
+        hard_data_task = asyncio.create_task(asyncio.to_thread(hard_data_for, question))
         try:
             report = await super()._run_individual_question(question)
         except Exception as e:
@@ -699,6 +704,7 @@ class FallBot2026(ForecastBot):
                 f"Question {question.id_of_post}: no real forecast this run, "
                 "left for the next run"
             )
+            await self._attach_hard_data(question, record, hard_data_task)
             await self._finish_shadow_forecast(question, record)
             await self._save_record(question, record, started)
             raise
@@ -737,6 +743,7 @@ class FallBot2026(ForecastBot):
                 logger.warning(
                     f"Question {question.id_of_post}: market matching failed ({type(e).__name__})"
                 )
+        await self._attach_hard_data(question, record, hard_data_task)
         await self._finish_shadow_forecast(question, record)
         record.update(
             submitted=submitted,
@@ -746,6 +753,20 @@ class FallBot2026(ForecastBot):
         )
         await self._save_record(question, record, started)
         return report
+
+    async def _attach_hard_data(self, question: MetaculusQuestion, record: dict, task) -> None:  # type: ignore[no-untyped-def]
+        try:
+            found = await task
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: hard data failed ({type(e).__name__})")
+            return
+        if found is None:
+            return
+        record["hard_data"] = found
+        logger.info(
+            f"Question {question.id_of_post}: hard data {found['source']} {found['series']}: "
+            + ("fetched" if "latest" in found else f"fetch failed ({found.get('error')})")
+        )
 
     async def _submit_if_still_open(
         self, question: MetaculusQuestion, report: ForecastReport
