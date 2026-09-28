@@ -28,7 +28,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   not a client ID + secret), `GEMINI_API_KEY` (Google AI Studio free tier, no billing).
 - All model choices are in `bot_config.py` (`ACTIVE_LINEUP`). Only models passing
   `bot_config.is_free_model` may be used until the Metaculus credit key arrives.
-- The free Gemini key allows 20 requests/day per model, and every attempt counts. Don't rerun
+- The free Gemini key allows 20 requests/day per Flash model (Flash-Lite: 500/day), and every attempt counts. Don't rerun
   Test Bot on Gemini casually; use `poetry run pytest` (dummy server) and the Test Bot
   "one binary" option. Daily counts are in `quota/gemini_free.json` in fall26-data.
 - Tests: `poetry run pytest -q` (dummy servers, no real calls). The Unit tests workflow runs them
