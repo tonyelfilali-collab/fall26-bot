@@ -53,7 +53,15 @@ from forecasting_tools import (
 
 from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
 
-from bot_config import MARKET_MODE, CreditsPlanner, GeminiPool, get_lineup
+import ensemble
+from bot_config import (
+    MARKET_MODE,
+    REHEARSAL_CREDIT,
+    CreditsPlanner,
+    GeminiPool,
+    ReplayCreditsPlanner,
+    get_lineup,
+)
 from ensemble import round2_needed
 from forecast_safety import (
     NoValidForecast,
@@ -83,7 +91,7 @@ from llm_throttle import answered_models
 from shadow import REFEREE_ENABLED, referee_shadow, two_line_reason, zero_cost_shadows
 from markets import match_question
 from markets import to_records as market_records
-from replay import REPLAY_RESEARCH, ReplayLlm
+from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
 from replay import current_question as replay_question
 from research import run_planned_research
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
@@ -162,6 +170,33 @@ def choose_spending_tier() -> str:
             logger.warning("Spending tier could not be saved")
     logger.info(f"Spending tier: {tier} (target ${target:.2f} per question)")
     return tier
+
+
+def rehearsal_table(records: list[dict]) -> str:
+    """Credits rehearsal summary: per question, the model slots used (planned
+    -> answered, a backup shows as a different answered model), the tier and
+    whether round 2 ran. Model names only: no forecast values (public logs)."""
+
+    def short(model: str | None) -> str:
+        return (model or "none").removeprefix("replay/").split("/")[-1]
+
+    lines = [
+        "| Question | Type | Tournament | Tier | Round 2 | Slots (kind: planned -> answered) | Submitted |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for record in records:
+        question = record.get("question") or {}
+        slots = "; ".join(
+            f"{f.get('kind')}: {short(f.get('planned_model'))} -> "
+            + (", ".join(short(m) for m in f.get("answered_models") or []) or "failed")
+            for f in record.get("forecasts", [])
+        )
+        lines.append(
+            f"| {question.get('id_of_post')} | {question.get('question_type', '?')} "
+            f"| {'seasonal' if record.get('seasonal') else 'MiniBench'} | {record.get('tier', '?')} "
+            f"| {'yes' if record.get('round2') else 'no'} | {slots} | {'yes' if record.get('submitted') else 'no'} |"
+        )
+    return "\n".join(lines)
 
 
 # A question with no forecast that closes within this time can't count on a
@@ -290,6 +325,8 @@ class FallBot2026(ForecastBot):
     forecasting_seasonal = True
     # Test switch: forecast with only this Gemini model.
     only_model: str | None = None
+    # Credits rehearsal: keep each question's record for the job summary.
+    keep_records = False
 
     async def _aggregate_predictions(
         self, predictions: list[PredictionTypes], question: MetaculusQuestion
@@ -342,6 +379,9 @@ class FallBot2026(ForecastBot):
             only_model=self.only_model,
             binary=is_binary,
         )
+        if hasattr(self.planner, "tier_name"):
+            record["tier"] = self.planner.tier_name(self.forecasting_seasonal)
+        record["round2"] = False
         logger.info(
             f"Question {question.id_of_post}: {len(forecasters)} forecast(s) planned "
             f"({', '.join(f.model for f in forecasters) or 'none: no quota left'})"
@@ -397,6 +437,7 @@ class FallBot2026(ForecastBot):
                 f"Question {question.id_of_post}: round 1 disagrees or is extreme, "
                 f"round 2 with {len(extra)} more forecast(s)"
             )
+            record["round2"] = bool(extra)
             if extra:
                 more, more_errors, _ = await self._gather_results_and_exceptions(
                     [
@@ -553,6 +594,8 @@ class FallBot2026(ForecastBot):
     async def _save_record(self, question, record: dict, started: datetime) -> None:  # type: ignore[no-untyped-def]
         # Saved after submission; a failure here never affects the forecast.
         self.__dict__.get("_question_records", {}).pop(id(question), None)
+        if self.keep_records:
+            self.__dict__.setdefault("kept_records", []).append(record)
         if self.question_log is None:
             return
         record["finished_at"] = utc_now()
@@ -1262,7 +1305,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--lineup",
-        choices=["free", "gemini-free", "credits", "replay"],
+        choices=["free", "gemini-free", "credits", "replay", "replay-credits"],
         default=None,
         help="Model lineup (default: ACTIVE_LINEUP in bot_config.py). Test Bot uses 'free'.",
     )
@@ -1275,6 +1318,12 @@ if __name__ == "__main__":
         "--only-model",
         default=None,
         help="Forecast with only this Gemini model (e.g. gemini/gemini-3.8-flash)",
+    )
+    parser.add_argument(
+        "--fail-model",
+        default=None,
+        help="replay-credits only: this model (e.g. openrouter/anthropic/claude-opus-5.5) "
+        "fails every call, so its backup chain runs",
     )
     args = parser.parse_args()
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
@@ -1291,6 +1340,11 @@ if __name__ == "__main__":
             f"The {lineup.name} lineup may only run in test_questions mode, not {run_mode}. "
             "Change ACTIVE_LINEUP in bot_config.py."
         )
+    if args.fail_model:
+        if lineup.name != "replay-credits":
+            raise SystemExit("--fail-model only works with the replay-credits lineup.")
+        _RecordedAnswer.failing_model = args.fail_model
+        print(f"Deliberate outage: {args.fail_model} fails every call")
     print(
         f"Model lineup: {lineup.name} "
         f"({', '.join(dict.fromkeys(lineup.llm_model_names()))})"
@@ -1316,7 +1370,16 @@ if __name__ == "__main__":
     )
     template_bot.break_on_purpose = args.break_on_purpose
     template_bot.planner = lineup.planner
-    if isinstance(lineup.planner, CreditsPlanner):
+    if isinstance(lineup.planner, ReplayCreditsPlanner):
+        # Rehearsal: the real tier choice on a made-up credit (no credit
+        # lookup, no saved tier, no GitHub issue).
+        lineup.planner.seasonal_tier = ensemble.choose_tier(
+            ensemble.target_spend_per_question(
+                REHEARSAL_CREDIT, REHEARSAL_CREDIT, ensemble.expected_remaining_questions()
+            )
+        )
+        template_bot.keep_records = True
+    elif isinstance(lineup.planner, CreditsPlanner):
         # Step 6: pick this run's spending tier from the remaining credit.
         lineup.planner.seasonal_tier = choose_spending_tier()
     template_bot.only_model = args.only_model
@@ -1385,8 +1448,19 @@ if __name__ == "__main__":
         forecast_reports = asyncio.run(
             template_bot.forecast_questions(test_questions, return_exceptions=True)
         )
+        if lineup.name == "replay-credits":
+            # MiniBench runs one tier lower: forecast the binary question
+            # again as if it were a MiniBench question.
+            template_bot.forecasting_seasonal = False
+            forecast_reports += asyncio.run(
+                template_bot.forecast_questions(
+                    [q for q in test_questions if q.question_type == "binary"][:1],
+                    return_exceptions=True,
+                )
+            )
+            template_bot.forecasting_seasonal = True
 
-    if lineup.name == "replay":
+    if lineup.name.startswith("replay"):
         line = (
             f"Model calls: 0 (replay: {ReplayLlm.calls} recorded replies served; "
             "0 AskNews calls, research frozen)"
@@ -1396,6 +1470,12 @@ if __name__ == "__main__":
         if summary_path:
             with open(summary_path, "a", encoding="utf-8") as f:
                 f.write(f"**{line}**\n\n")
+        if template_bot.keep_records:
+            table = rehearsal_table(template_bot.__dict__.get("kept_records", []))
+            print(table)
+            if summary_path:
+                with open(summary_path, "a", encoding="utf-8") as f:
+                    f.write(table + "\n\n")
     if template_bot.question_log.saved:
         print(f"Question JSON logs saved to fall26-data: {len(template_bot.question_log.saved)}")
     if lineup.planner is not None:

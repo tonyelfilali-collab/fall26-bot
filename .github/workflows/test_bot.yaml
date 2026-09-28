@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       lineup:
-        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate)."
+        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls."
         type: choice
-        options: [free, replay, gemini-free]
+        options: [free, replay, replay-credits, gemini-free]
         default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
@@ -24,6 +24,10 @@ on:
         default: false
       only_model:
         description: "Forecast with only this Gemini model, e.g. gemini/gemini-3.8-flash (blank = normal plan)"
+        type: string
+        default: ""
+      fail_model:
+        description: "replay-credits only: this model fails every call, so its backup runs (e.g. openrouter/anthropic/claude-opus-5.5)"
         type: string
         default: ""
 
@@ -60,6 +64,7 @@ jobs:
           if [ "$ONE_BINARY" = "true" ]; then args+=(--one-binary); fi
           if [ "$FAIL_PLANNED" = "true" ]; then args+=(--fail-planned-forecasts); fi
           if [ -n "$ONLY_MODEL" ]; then args+=(--only-model "$ONLY_MODEL"); fi
+          if [ -n "$FAIL_MODEL" ]; then args+=(--fail-model "$FAIL_MODEL"); fi
           poetry run python main.py "${args[@]}"
         env:
           LINEUP: ${{ inputs.lineup }}
@@ -67,6 +72,7 @@ jobs:
           ONE_BINARY: ${{ inputs.one_binary }}
           FAIL_PLANNED: ${{ inputs.fail_planned_forecasts }}
           ONLY_MODEL: ${{ inputs.only_model }}
+          FAIL_MODEL: ${{ inputs.fail_model }}
           # Only the secrets the bot uses (see NOTES.md). No paid services.
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
