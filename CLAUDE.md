@@ -30,8 +30,17 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   "one binary" option. Daily counts are in `quota/gemini_free.json` in fall26-data.
 - Tests: `poetry run pytest -q` (dummy servers, no real calls). The Unit tests workflow runs them
   on every PR.
-- Merging: Claude Code merges code PRs only after Tony relays "the architect says merge".
-  Notes-only PRs (NOTES.md, PLAN.md, progress log) may be merged straight away.
+- Merging: Claude Code merges PRs itself (Tony no longer merges or relays merges), by tier:
+  - **Tier A** (no forecast-path code: scoring, health, bench, notes, workflows the tournament
+    run doesn't use): unit tests green → merge. Notes-only PRs merge straight away.
+  - **Tier B** (forecast plumbing, no prompt or model change): unit tests + replay Test Bot
+    (`lineup=replay`) green on all 4 types → merge.
+  - **Tier C** (prompts, models, answer text reading, dossier): unit tests + real free-model
+    Test Bot green on all 4 types → report to the architect; merge ONLY after
+    "the architect says merge". Run these Test Bots just after 00:00 UTC (OpenRouter reset).
+  - Always: state the tier in the PR description; check the next live cron run after each
+    merge; revert at once if it's red; stop an item after 2 failures; add a progress-log row.
+  - Never merge more than one forecast-path PR between two live runs.
 - Master switch: repository variable `BOT_ENABLED`. Real-question workflows exit at once unless
   it is `true`. Emergency stop = set it to `false`.
 - Logs are public: never log research, reasoning or forecast values. Use the `fall26` logger
