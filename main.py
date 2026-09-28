@@ -66,7 +66,17 @@ from forecast_safety import (
     still_open_problem,
 )
 from deadlines import planned_forecast_timeout, quick_forecast_timeout
-from distributions import combine_numeric, median_multiple_choice, pchip_distribution
+from answer_parsing import (
+    parse_binary_answer,
+    parse_multiple_choice_answer,
+    parse_percentile_answer,
+)
+from distributions import (
+    STEP8_PERCENTILES,
+    combine_numeric,
+    median_multiple_choice,
+    pchip_distribution,
+)
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
 from research import run_planned_research
@@ -718,13 +728,17 @@ class FallBot2026(ForecastBot):
         prompt: str,
     ) -> ReasonedPrediction[float]:
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        binary_prediction: BinaryPrediction = await structure_output(
-            reasoning,
-            BinaryPrediction,
-            model=self.get_llm("parser", "llm"),
-            num_validation_samples=self._structure_output_validation_samples,
-        )
-        decimal_pred = max(0.01, min(0.99, binary_prediction.prediction_in_decimal))
+        # Read "Probability: ZZ%" directly; the parser model only if that fails.
+        parsed = parse_binary_answer(reasoning)
+        if parsed is None:
+            binary_prediction: BinaryPrediction = await structure_output(
+                reasoning,
+                BinaryPrediction,
+                model=self.get_llm("parser", "llm"),
+                num_validation_samples=self._structure_output_validation_samples,
+            )
+            parsed = binary_prediction.prediction_in_decimal
+        decimal_pred = max(0.01, min(0.99, parsed))
 
         logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning)
@@ -789,13 +803,16 @@ class FallBot2026(ForecastBot):
             """
         )
         reasoning = await self.get_llm("default", "llm").invoke(prompt)
-        predicted_option_list: PredictedOptionList = await structure_output(
-            text_to_structure=reasoning,
-            output_type=PredictedOptionList,
-            model=self.get_llm("parser", "llm"),
-            num_validation_samples=self._structure_output_validation_samples,
-            additional_instructions=parsing_instructions,
-        )
+        # Read the option lines directly; the parser model only if that fails.
+        predicted_option_list = parse_multiple_choice_answer(reasoning, question.options)
+        if predicted_option_list is None:
+            predicted_option_list = await structure_output(
+                text_to_structure=reasoning,
+                output_type=PredictedOptionList,
+                model=self.get_llm("parser", "llm"),
+                num_validation_samples=self._structure_output_validation_samples,
+                additional_instructions=parsing_instructions,
+            )
 
         logger.info(f"Question {question.id_of_post}: forecast made")
         return ReasonedPrediction(
@@ -901,14 +918,22 @@ class FallBot2026(ForecastBot):
         """
         lower, upper = question_range(question)
         instructions = parsing_instructions
+        # First try reading the "Percentile P: value" lines directly (no model
+        # call); the parser model if that fails or looks like a unit error.
+        direct = parse_percentile_answer(
+            reasoning, STEP8_PERCENTILES, question.unit_of_measure
+        )
         for attempt in range(2):
-            percentile_list: list[Percentile] = await structure_output(
-                reasoning,
-                list[Percentile],
-                model=self.get_llm("parser", "llm"),
-                additional_instructions=instructions,
-                num_validation_samples=self._structure_output_validation_samples,
-            )
+            if attempt == 0 and direct is not None:
+                percentile_list = direct
+            else:
+                percentile_list = await structure_output(
+                    reasoning,
+                    list[Percentile],
+                    model=self.get_llm("parser", "llm"),
+                    additional_instructions=instructions,
+                    num_validation_samples=self._structure_output_validation_samples,
+                )
             percentile_list = fix_reversed_percentiles(percentile_list)
             if not all_outside_range(percentile_list, lower, upper):
                 break

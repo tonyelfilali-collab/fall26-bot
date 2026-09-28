@@ -241,6 +241,16 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - **Public log:** only `Question N: articles found: X (AskNews a, free news f)`, never article text.
 - Tests: `tests/test_free_news.py` (no network).
 
+## Reading answers without a model call (item 4a)
+
+`answer_parsing.py` (tests: `tests/test_answer_parsing.py`): the prompts ask for a fixed last-lines
+format, so the bot first reads it directly: "Probability: ZZ%" (last one wins), one
+"Option: p" line per option (all options, percent or decimal, sum ≈ 1), and all nine
+"Percentile P: value" lines (a value may be followed only by the question's unit; "1.2 million"
+etc. go to the parser model for unit handling). Only if that fails is the parser model called,
+as before. This saves a parser call per forecast: up to 3 per question on the scarce free Gemini
+parser quota, and half of each free-model Test Bot run (OpenRouter ~50/day).
+
 ## Smart ensemble (PLAN.md Step 6), credits-ready
 
 `ensemble.py` + `bot_config.CreditsPlanner` (tests: `tests/test_ensemble.py`):
