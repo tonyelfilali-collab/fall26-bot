@@ -117,3 +117,24 @@ every one as a different event. The keyword search mostly finds loosely related 
 - Step 4: the "10× the current value" unit check (needs a structured current value from research).
 - Step 9: blending, and multiple-choice mapping.
 - Step 6: a separate fast-path model set on credits (the quick forecast uses Opus 5.5 → Opus 5).
+
+## Update 28 Sep 2026 (06:00–08:30 UTC)
+
+Merged (each followed by a green live run): #37 regression pack (A), #36 replay Test Bot (B),
+#38 MC confident-answer fix (B), #39 notes/merge tiers, #40 credits rehearsal `replay-credits` (B),
+#42 health missed-check fix (A), #41 MiniBench rollover (B).
+
+- Credits rehearsal (#40): green, 0 model calls; standard tier seasonal, lean MiniBench, binary
+  round 2 ran. Forced failure of Opus 5.5: backup Opus 5 answered every slot, all submitted.
+  Runs 36391448898, 36391621349.
+- MiniBench (#41): was the fixed slug `minibench` (round 33125, closes 9 Oct). Now: slug if running,
+  else the remembered round, else a paced scan of the next 60 tournament ids (MiniBench rounds are
+  unlisted: the API tournament list doesn't show them), at most hourly. Health warns after 3 days
+  with no open MiniBench question. Tournament info run 36393104727.
+- Health check bug (#42): every question closed in the last 24 h was reported "missed", because
+  the library ignores `is_previously_forecasted_by_user=False`. Seasonal 45516 was reported missed
+  but was forecast and submitted (27 Sep 18:02 UTC).
+- **Health check has never run on its schedule** (GitHub schedules don't fire in this repo, same as
+  the tournament cron). Needs a cron-job.org job for health.yml (06:00 UTC), like the tournament one.
+- Test bench: DROPPED (community prediction not in the API).
+- Waiting: #34 (unit check, Tier C) real Test Bot at 00:00 UTC, then the architect's answer.
