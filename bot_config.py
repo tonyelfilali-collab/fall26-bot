@@ -585,7 +585,7 @@ def _replay_lineup() -> Lineup:
 # Credits rehearsal: each slot's recorded binary answer (percent), chosen so
 # round 1 disagrees (37 / 62 / 30) and round 2 runs.
 REHEARSAL_BINARY_PERCENT = {
-    ensemble.OPUS_55: 37, ensemble.GPT_SOL: 62, ensemble.FLASH_36: 30, ensemble.FABLE_51: 45,
+    ensemble.OPUS_55: 37, ensemble.GPT_SOL: 62, ensemble.FLASH_36: 30,
     ensemble.OPUS_5: 40, ensemble.GPT_55: 55, ensemble.GEMINI_31_PRO: 33,
     CREDITS_FREE_FIRST[ensemble.FLASH_36]: 30,  # the same slot on the free key
 }

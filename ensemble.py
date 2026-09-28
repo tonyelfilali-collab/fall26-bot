@@ -48,10 +48,12 @@ GPT_SOL = "openrouter/openai/gpt-5.6-sol"
 GPT_55 = "openrouter/openai/gpt-5.5"
 FLASH_36 = "openrouter/google/gemini-3.6-flash"
 GEMINI_31_PRO = "openrouter/google/gemini-3.1-pro-preview"
+# Not in any tier or backup chain (architect, 29 Sep); only its price is
+# still checked by the pre-flight, for reference.
+PRICE_CHECK_ONLY = (FABLE_51,)
 
 # When a model errors, refuses or times out, the next one is tried.
 BACKUPS: dict[str, list[str]] = {
-    FABLE_51: [OPUS_55, OPUS_5],
     OPUS_55: [OPUS_5],
     GPT_SOL: [GPT_55],
     FLASH_36: [GEMINI_31_PRO],
@@ -101,7 +103,9 @@ COST_TABLE: dict[str, dict[str, float]] = {
 }
 
 TIERS: dict[str, Tier] = {
-    "full": Tier("full", (OPUS_55, GPT_SOL, FLASH_36), (FABLE_51, OPUS_55, FLASH_36), max(COST_TABLE["full"].values())),
+    # Round 2 adds one more forecast per family (architect, 29 Sep: Fable 5.1
+    # removed, 16.1 vs Opus 5's 15.8 on the leaderboard at 2.5x the price).
+    "full": Tier("full", (OPUS_55, GPT_SOL, FLASH_36), (OPUS_55, GPT_SOL, FLASH_36), max(COST_TABLE["full"].values())),
     "standard": Tier("standard", (OPUS_55, GPT_SOL, FLASH_36), (FLASH_36, FLASH_36), max(COST_TABLE["standard"].values())),
     "lean": Tier("lean", (OPUS_55, FLASH_36), (FLASH_36,), max(COST_TABLE["lean"].values())),
 }

@@ -31,6 +31,7 @@ def credits_model_ids() -> list[str]:
         ids += [*tier.binary_round1, *tier.binary_round2]
     for primary, backups in ensemble.BACKUPS.items():
         ids += [primary, *backups]
+    ids += list(ensemble.PRICE_CHECK_ONLY)  # price reference only, not used
     return list(dict.fromkeys(ids))
 
 
@@ -81,7 +82,8 @@ def table(rows: list[dict]) -> str:
     ]
     for r in rows:
         lines.append(
-            f"| {r['id']}{' (free, in use now)' if r['free_model'] else ''} | {'yes' if r['exists'] else '**NO**'} "
+            f"| {r['id']}{' (free, in use now)' if r['free_model'] else ''}"
+            f"{' (price reference only, not in the lineup)' if 'openrouter/' + r['id'] in ensemble.PRICE_CHECK_ONLY else ''} | {'yes' if r['exists'] else '**NO**'} "
             f"| {'yes' if r['reasoning'] else 'no'} | {money(r['prompt_per_m'])} | {money(r['completion_per_m'])} "
             f"| {r['context'] or '?'} |"
         )
