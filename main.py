@@ -110,6 +110,7 @@ from replay import current_question as replay_question
 from research import run_planned_research
 from gemini_budget import current_question_key
 from hard_data import hard_data_for
+from stat_baseline import random_walk_baseline
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
@@ -763,6 +764,17 @@ class FallBot2026(ForecastBot):
         if found is None:
             return
         record["hard_data"] = found
+        # Build 2b: the zero-call random-walk baseline, a shadow only.
+        if "latest" in found and isinstance(question, NumericQuestion):
+            try:
+                baseline = random_walk_baseline(question, found)
+            except Exception as e:
+                baseline = None
+                logger.warning(f"Question {question.id_of_post}: random-walk baseline failed ({type(e).__name__})")
+            if baseline is not None:
+                distribution, detail = baseline
+                record.setdefault("shadow", {})["random-walk"] = to_jsonable(distribution)
+                found["baseline"] = detail
         logger.info(
             f"Question {question.id_of_post}: hard data {found['source']} {found['series']}: "
             + ("fetched" if "latest" in found else f"fetch failed ({found.get('error')})")
