@@ -1,0 +1,51 @@
+name: Model probe
+
+# Manual only, test-only (architect, 29 Sep): tries other free Gemini-key
+# models. Never submits a forecast; at most 12 Gemini generate calls; reads
+# the bot-testing-area only. The public log shows statuses and counts; the
+# raw answers go to the private fall26-data repo (probes/<date>/).
+on:
+  workflow_dispatch:
+    inputs:
+      part:
+        description: "a: Search grounding on 2.5 Flash-Lite and 2.5 Flash (2 calls). b: gemini-3-flash on the 4 test questions (4 calls). c: gemma-4-31b, 1 binary question with a ~6k dossier (1 call). all: a+b+c (7 calls)."
+        type: choice
+        options: [all, a, b, c]
+        default: all
+
+# Shared with every workflow that calls Gemini, so they never run at the same time.
+concurrency:
+  group: forecast-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Run probe
+        run: poetry run python probe.py --part "$PART"
+        env:
+          PART: ${{ inputs.part }}
+          # Reads the bot-testing-area questions only.
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          # Free Google AI Studio key (no billing).
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Saves the raw answers to the private fall26-data repo.
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
