@@ -22,6 +22,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
       - name: Ask OpenRouter for this key's limit and usage
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -47,6 +52,22 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             cat table.md
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Build 2a: the free official data APIs (FRED with FRED_API_KEY, CoinGecko
+      # public). Prints only the series, latest date and value (public data).
+      - name: Check the free data APIs
+        if: always()
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          python -m pip install --quiet requests
+          {
+            echo "## Data APIs"
+            echo ""
+            echo "| Source | Series | Latest date | Latest value | History |"
+            echo "|---|---|---|---|---|"
+            PYTHONPATH=. python -c "import hard_data; hard_data.check_apis()"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # Plan B: the free Google AI Studio key. Lists the Gemini models it can
