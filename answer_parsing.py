@@ -52,15 +52,14 @@ def parse_multiple_choice_answer(text: str, options: list[str]) -> PredictedOpti
 
 def read_multiple_choice_values(text: str, options: list[str]) -> list[float] | None:
     """The answer's probabilities as written, summing to 1, before any floor
-    (parse_multiple_choice_answer's rules). None if they can't be read."""
-    values: list[float] = []
-    for option in options:
-        pattern = rf"^\W*(?:Option[_ ]?)?{re.escape(option)}\W*[:=-]\s*({_NUMBER})\s*(%?)\s*$"
-        found = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
-        if not found:
-            return None
-        number, percent = found[-1]
-        values.append(_to_float(number) / (100 if percent else 1))
+    (parse_multiple_choice_answer's rules). None if they can't be read.
+    Options are found by name, or else by the prompt's own letter labels
+    ("Option_A: 5%" ... in the order the options were listed)."""
+    values = _values_by_name(text, options)
+    if values is None:
+        values = _values_by_letter(text, len(options))
+    if values is None:
+        return None
     total = sum(values)
     if total > 1.5:  # written as percentages without the % sign
         values = [v / 100 for v in values]
@@ -68,6 +67,36 @@ def read_multiple_choice_values(text: str, options: list[str]) -> list[float] | 
     if not 0.9 <= total <= 1.1 or any(v < 0 for v in values):
         return None
     return [v / total for v in values]
+
+
+def _as_probability(number: str, percent: str) -> float:
+    return _to_float(number) / (100 if percent else 1)
+
+
+def _values_by_name(text: str, options: list[str]) -> list[float] | None:
+    values: list[float] = []
+    for option in options:
+        pattern = rf"^\W*(?:Option[_ ]?)?{re.escape(option)}\W*[:=-]\s*({_NUMBER})\s*(%?)\s*$"
+        found = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if not found:
+            return None
+        values.append(_as_probability(*found[-1]))
+    return values
+
+
+def _values_by_letter(text: str, count: int) -> list[float] | None:
+    """'Option_A: 5%' lines (the prompt's template), one per option, A = the
+    first option listed. The last line for each letter wins."""
+    if not 0 < count <= 26:
+        return None
+    pattern = rf"^\W*Option[_ ]?([A-Z])\W*[:=-]\s*({_NUMBER})\s*(%?)\s*$"
+    by_letter: dict[str, float] = {}
+    for letter, number, percent in re.findall(pattern, text, re.MULTILINE):
+        by_letter[letter] = _as_probability(number, percent)
+    letters = [chr(ord("A") + i) for i in range(count)]
+    if set(by_letter) != set(letters):
+        return None
+    return [by_letter[letter] for letter in letters]
 
 
 def parse_percentile_answer(text: str, expected: tuple[float, ...], unit: str | None = None) -> list[Percentile] | None:

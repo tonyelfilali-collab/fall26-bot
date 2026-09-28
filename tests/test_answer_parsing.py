@@ -163,3 +163,32 @@ def test_confident_multiple_choice_answer_is_read(count):
     assert sum(probabilities) == pytest.approx(1)
     assert min(probabilities) >= 0.01 - 1e-9
     assert probabilities[0] == pytest.approx(1 - 0.01 * (count - 1))
+
+
+def test_multiple_choice_letter_labels_from_the_prompt_template():
+    # Real free-model reply (regression pack, question 40762): the prompt's own
+    # "Option_A: Probability_A" template, letters in the listed order.
+    options = ["USA only", "UK only", "both", "neither"]
+    text = "Final probabilities:  \nOption_A: 5%  \nOption_B: 5%  \nOption_C: 5%  \nOption_D: 85%"
+    result = parse_multiple_choice_answer(text, options)
+    assert [o.option_name for o in result.predicted_options] == options
+    assert [o.probability for o in result.predicted_options] == pytest.approx([0.05, 0.05, 0.05, 0.85])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Option_A: 50%\nOption_B: 50%",  # a letter missing
+        "Option_A: 30%\nOption_B: 30%\nOption_C: 20%\nOption_D: 20%",  # more letters than options
+        "A: 40%\nB: 30%\nC: 30%",  # letters without the "Option" label
+    ],
+)
+def test_multiple_choice_letter_labels_must_match_the_options_exactly(text):
+    assert parse_multiple_choice_answer(text, ["w", "x", "y"]) is None
+
+
+def test_names_still_win_over_letters():
+    options = ["Alpha", "Beta"]
+    text = "Option_A: 90%\nOption_B: 10%\nAlpha: 20%\nBeta: 80%"
+    result = parse_multiple_choice_answer(text, options)
+    assert [o.probability for o in result.predicted_options] == pytest.approx([0.2, 0.8])
