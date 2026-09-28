@@ -91,6 +91,7 @@ from llm_throttle import answered_models
 from shadow import REFEREE_ENABLED, referee_shadow, two_line_reason, zero_cost_shadows
 from markets import match_question
 from markets import to_records as market_records
+from minibench import current_minibench_id
 from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
 from replay import current_question as replay_question
 from research import run_planned_research
@@ -106,8 +107,9 @@ logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 # MetaculusClient.CURRENT_* constants, so a library update can't silently
 # move the bot to another tournament.
 FALL_2026_TOURNAMENT_ID = "fall-futureeval-2026"  # id 33121
-# The Fall 2026 MiniBench. "minibench" is the rolling slug the library also
-# uses for the current MiniBench round; confirm it in an Actions run.
+# The Fall 2026 MiniBench: the 'minibench' slug, which the library also uses.
+# MiniBench runs in rounds; each live run looks up the current round
+# (minibench.current_minibench_id) and falls back to this slug.
 FALL_2026_MINIBENCH_ID = "minibench"
 BOT_TESTING_AREA_ID = 32977  # https://www.metaculus.com/tournament/bot-testing-area/
 # Question types the Fall tournament uses, and how many of each to forecast
@@ -1404,7 +1406,8 @@ if __name__ == "__main__":
         # one (e.g. the question list not loading) doesn't stop the other.
         # Seasonal first: it's worth more, and gets priority for the budget.
         forecast_reports = []
-        for tournament_id in (FALL_2026_TOURNAMENT_ID, FALL_2026_MINIBENCH_ID):
+        minibench_id = current_minibench_id()
+        for tournament_id in (FALL_2026_TOURNAMENT_ID, minibench_id):
             template_bot.forecasting_seasonal = tournament_id == FALL_2026_TOURNAMENT_ID
             try:
                 forecast_reports += asyncio.run(

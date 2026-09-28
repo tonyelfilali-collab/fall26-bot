@@ -18,7 +18,8 @@ silence_noisy_dependencies()
 
 from forecasting_tools import MetaculusClient  # noqa: E402
 
-from main import FALL_2026_MINIBENCH_ID, FALL_2026_TOURNAMENT_ID  # noqa: E402
+from main import FALL_2026_TOURNAMENT_ID  # noqa: E402
+from minibench import current_minibench  # noqa: E402
 
 API = "https://www.metaculus.com/api"
 MAX_QUESTIONS_SHOWN = 10
@@ -67,9 +68,11 @@ def open_question_lines(slug_or_id: str | int) -> list[str]:
 
 def main() -> None:
     sections: list[str] = []
+    minibench_id, how = current_minibench()
+    sections += [f"**Current MiniBench round: {minibench_id}** (found by {how})", ""]
     for label, slug_or_id in (
         ("Seasonal tournament", FALL_2026_TOURNAMENT_ID),
-        ("MiniBench", FALL_2026_MINIBENCH_ID),
+        ("MiniBench", minibench_id),
     ):
         sections += [f"## {label} (`{slug_or_id}`)", ""]
         sections += tournament_facts(slug_or_id)
