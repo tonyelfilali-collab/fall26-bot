@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       lineup:
-        description: "Model lineup. 'free' (default) never touches the live Gemini quota."
+        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate)."
         type: choice
-        options: [free, gemini-free]
+        options: [free, replay, gemini-free]
         default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
