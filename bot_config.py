@@ -23,8 +23,9 @@ from forecasting_tools import GeneralLlm
 import ensemble
 from gemini_budget import QuotaLedger, make_store
 from llm_throttle import RequestPacer, ThrottledLlm
+from replay import REPLAY_MODEL, ReplayLlm
 
-ACTIVE_LINEUP: Literal["free", "gemini-free", "credits"] = "gemini-free"
+ACTIVE_LINEUP: Literal["free", "gemini-free", "credits", "replay"] = "gemini-free"
 
 # PLAN.md Step 7 (research.py): planner -> AskNews (at most 3 calls per
 # question, ASKNEWS_API_KEY) or free news -> dossier -> gap-fill. The planner
@@ -89,6 +90,8 @@ def is_free_model(model: str) -> bool:
     Gemini through the Google AI Studio key (free tier, no billing on it).
     Every other model, including every paid OpenRouter model, is False.
     """
+    if model == REPLAY_MODEL:
+        return True  # recorded replies, no model at all
     if model.startswith("openrouter/"):
         return model.endswith(":free")
     return model.startswith("gemini/")
@@ -395,10 +398,26 @@ def _credits_lineup() -> Lineup:
     )
 
 
+def _replay_lineup() -> Lineup:
+    """Test Bot's replay mode: recorded replies, frozen research, 0 model calls."""
+    replay = ReplayLlm()
+    return Lineup(
+        name="replay",
+        llms={"default": replay, "parser": replay, "summarizer": replay, "researcher": "replay"},
+        research_reports_per_question=1,
+        predictions_per_research_report=1,
+        parser_validation_samples=1,
+        summarize_research=False,
+        free_only=True,
+        test_only=True,
+    )
+
+
 _LINEUPS = {
     "free": _free_lineup,
     "gemini-free": _gemini_free_lineup,
     "credits": _credits_lineup,
+    "replay": _replay_lineup,
 }
 
 

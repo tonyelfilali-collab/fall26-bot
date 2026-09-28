@@ -83,6 +83,8 @@ from llm_throttle import answered_models
 from shadow import REFEREE_ENABLED, referee_shadow, two_line_reason, zero_cost_shadows
 from markets import match_question
 from markets import to_records as market_records
+from replay import REPLAY_RESEARCH, ReplayLlm
+from replay import current_question as replay_question
 from research import run_planned_research
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
@@ -455,6 +457,7 @@ class FallBot2026(ForecastBot):
         )
 
     async def _run_individual_question(self, question: MetaculusQuestion) -> ForecastReport:
+        replay_question.set(question)  # replay mode answers from the question's shape
         started = datetime.now(timezone.utc)
         record = self._record_for(question)
         try:
@@ -595,6 +598,8 @@ class FallBot2026(ForecastBot):
 
         if isinstance(researcher, GeneralLlm):
             research = await researcher.invoke(prompt)
+        elif researcher == "replay":
+            research = REPLAY_RESEARCH  # frozen: no searches
         elif researcher == "planned-research":
             research = await self._planned_research(question)
         elif researcher == "asknews/news-summaries":
@@ -1257,7 +1262,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--lineup",
-        choices=["free", "gemini-free", "credits"],
+        choices=["free", "gemini-free", "credits", "replay"],
         default=None,
         help="Model lineup (default: ACTIVE_LINEUP in bot_config.py). Test Bot uses 'free'.",
     )
@@ -1381,6 +1386,16 @@ if __name__ == "__main__":
             template_bot.forecast_questions(test_questions, return_exceptions=True)
         )
 
+    if lineup.name == "replay":
+        line = (
+            f"Model calls: 0 (replay: {ReplayLlm.calls} recorded replies served; "
+            "0 AskNews calls, research frozen)"
+        )
+        print(line)
+        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(f"**{line}**\n\n")
     if template_bot.question_log.saved:
         print(f"Question JSON logs saved to fall26-data: {len(template_bot.question_log.saved)}")
     if lineup.planner is not None:
