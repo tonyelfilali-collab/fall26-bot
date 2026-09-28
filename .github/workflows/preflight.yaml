@@ -1,7 +1,8 @@
 name: Credits pre-flight
 
 # Manual only. Checks every OpenRouter model id of the credits lineup against
-# OpenRouter's PUBLIC model list: exists, takes `reasoning`, prices. No key,
+# OpenRouter's PUBLIC model list: exists, takes `reasoning`, prices; then the
+# real cost table (4b) from those prices and our question logs. No OpenRouter key,
 # no model call, nothing spent. Red if an id doesn't exist.
 on:
   workflow_dispatch:
@@ -29,3 +30,8 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Check model ids and prices
         run: poetry run python preflight.py
+      - name: Real cost table (prices x prompt tokens measured from question logs)
+        run: poetry run python cost_table.py
+        env:
+          # Reads the question logs in the private fall26-data repo (counts only in the log).
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
