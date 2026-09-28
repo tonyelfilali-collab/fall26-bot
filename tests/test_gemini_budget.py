@@ -265,7 +265,7 @@ def test_binary_question_gets_three_forecasts_and_the_median(dummy, monkeypatch)
     pool = make_pool()
     llms = {"default": pool.unplanned_forecaster(), "parser": pool.parser(), "summarizer": pool.parser(), "researcher": "no_research"}
     bot = main.FallBot2026(llms=llms, publish_reports_to_metaculus=False, enable_summarize_research=False)
-    bot.gemini_pool = pool
+    bot.planner = pool
     answers = iter(["Probability: 20%", "Probability: 40%", "Probability: 90%"])
     monkeypatch.setattr(
         main.FallBot2026,
@@ -322,7 +322,7 @@ def test_question_with_a_single_forecast_is_submitted(dummy, monkeypatch):
         predictions_per_research_report=3,
         required_successful_predictions=0,
     )
-    bot.gemini_pool = pool
+    bot.planner = pool
     bot.only_model = "gemini/gemini-3.8-flash"
     monkeypatch.setattr(
         main.FallBot2026,
