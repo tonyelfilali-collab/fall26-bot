@@ -241,6 +241,24 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
 - **Public log:** only `Question N: articles found: X (AskNews a, free news f)`, never article text.
 - Tests: `tests/test_free_news.py` (no network).
 
+## Test bench (PLAN.md Step 5)
+
+`bench.py` + manual workflow **Test bench** (`evaluate.yml`), never publishes. Tests: `tests/test_bench.py`.
+- Picks open main-site questions with a visible community prediction and ≥30 forecasters: quick
+  = 30 (18 binary, 3 numeric, 3 discrete, 6 multiple choice), full = 60. The list is saved in
+  `fall26-data/bench/<size>/questions.json` and reused.
+- Research is gathered once per question (AskNews + free news, no model calls) and frozen in
+  `bench/<size>/research/`, so every config sees identical research.
+- Each config runs the bot's own forecasting code with research frozen; each result is cached in
+  `bench/<size>/results/<label>/`, so a stopped run (e.g. at the OpenRouter free limit) resumes.
+- Score: KL(community ‖ ours), lower is better: binary directly; multiple choice over options;
+  numeric/discrete over the CDF's buckets (plus below/above the range). Report: mean KL per type;
+  for A vs B the paired mean difference (B − A) with a bootstrap 90% CI (2,000 resamples,
+  fixed seed), plus cost. Saved in `bench/<size>/reports/` and the run summary.
+- Configs: `free` or `credits`; **`gemini-free` is refused** (never the live Gemini quota). The
+  noise level = the same config twice under two labels.
+- Its own concurrency group, so it never holds up the live bot.
+
 ## Reading answers without a model call (item 4a)
 
 `answer_parsing.py` (tests: `tests/test_answer_parsing.py`): the prompts ask for a fixed last-lines

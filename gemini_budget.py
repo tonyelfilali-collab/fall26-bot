@@ -19,6 +19,7 @@ import logging
 import math
 import os
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
@@ -68,9 +69,15 @@ class GitHubFileStore:
         self._sha = body["sha"]
         return json.loads(base64.b64decode(body["content"]))
 
-    def save(self, data: dict) -> None:
+    def save(self, data: Any, message: str | None = None) -> None:
+        if message is None:
+            message = (
+                f"Gemini quota ledger {data.get('day')}"
+                if isinstance(data, dict)
+                else f"Update {self._url.split('/contents/')[-1]}"
+            )
         payload = {
-            "message": f"Gemini quota ledger {data.get('day')}",
+            "message": message,
             "content": base64.b64encode(
                 json.dumps(data, indent=2, sort_keys=True).encode()
             ).decode(),
