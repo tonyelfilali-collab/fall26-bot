@@ -287,6 +287,30 @@ etc. go to the parser model for unit handling). Only if that fails is the parser
 as before. This saves a parser call per forecast: up to 3 per question on the scarce free Gemini
 parser quota, and half of each free-model Test Bot run (OpenRouter ~50/day).
 
+## Smart ensemble (PLAN.md Step 6), credits-ready
+
+`ensemble.py` + `bot_config.CreditsPlanner` (tests: `tests/test_ensemble.py`):
+- **Round-2 rule (binary):** round 2 runs only if round 1's spread is over 15 points or its
+  median is below 10% / above 90%. The final answer is the median of all forecasts, then the
+  Step 4 steps. Numeric and multiple choice: everyone at once.
+- **gemini-free (live):** round 1 = up to 3 different Gemini models (as before); round 2 = up to
+  2 more from models not used in round 1, usable budget only (never the reserve).
+- **credits (OFF, `ACTIVE_LINEUP` = "gemini-free"):** the PLAN.md section 3 lineup. Round 1
+  Opus 5.5, GPT-5.6 Sol, Gemini 3.6 Flash; round 2 Fable 5.1, Opus 5.5, Gemini 3.6 Flash; numeric
+  and MC all 6. Backups: Fable 5.1 → Opus 5.5 → Opus 5; Opus 5.5 → Opus 5; GPT-5.6 Sol → GPT-5.5;
+  Gemini 3.6 Flash → Gemini 3.1 Pro (preview). High reasoning, 600 s, 3 tries. Parser, summarizer
+  and research planner: Gemini 3.6 Flash.
+- **Spending tiers (credits):** target = (remaining − 15% of limit) / expected remaining questions
+  (days to 6 Jan 2027 × 12/day, to retune). Full if ≥ $1.75, Standard if ≥ $0.80, else Lean.
+  MiniBench one tier below. Chosen once per run from `/api/v1/key`; the last tier is kept in
+  `fall26-data/status/spending_tier.json`; a change opens a GitHub issue (GitHub emails Tony).
+- Not done: the fast path's own model set (the quick forecast uses Opus 5.5 → Opus 5 on credits).
+- **OpenRouter free limit:** the free tier allows about **50 requests a day** across all `:free`
+  models (resets 00:00 UTC). A Step 6 Test Bot run on 27 Sep hit it (RateLimitError), so the
+  testing-only `free` lineup now researches with AskNews + free news (no model calls), leaving 2
+  free calls per test question (forecast + parse). Step 7's planner/dossier passed its own Test
+  Bot run (PR #22).
+
 ## Research (PLAN.md Step 7)
 
 `research.py` (tests: `tests/test_research.py`), researcher `planned-research` in `bot_config`:

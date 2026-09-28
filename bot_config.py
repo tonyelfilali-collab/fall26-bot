@@ -7,21 +7,24 @@ Three lineups:
 - "gemini-free" (active now, PLAN.md "Plan B"): Gemini 3.6 Flash on the free
   Google AI Studio key (GEMINI_API_KEY, no billing), paced to stay inside the
   free rate limits. Allowed on real questions once BOT_ENABLED is true.
-- "credit" (prepared, off): the lineup for the Metaculus credit key.
+- "credits" (prepared, OFF until the architect says so): the full PLAN.md
+  section 3 lineup for the Metaculus credit key, with spending tiers
+  (ensemble.py, CreditsPlanner).
 
 To switch lineups, change ACTIVE_LINEUP.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from forecasting_tools import GeneralLlm
 
+import ensemble
 from gemini_budget import QuotaLedger, make_store
 from llm_throttle import RequestPacer, ThrottledLlm
 
-ACTIVE_LINEUP: Literal["free", "gemini-free", "credit"] = "gemini-free"
+ACTIVE_LINEUP: Literal["free", "gemini-free", "credits"] = "gemini-free"
 
 # PLAN.md Step 7 (research.py): planner -> AskNews (at most 3 calls per
 # question, ASKNEWS_API_KEY) or free news -> dossier -> gap-fill. The planner
@@ -69,14 +72,14 @@ GEMINI_FREE_REQUESTS_PER_MINUTE = 4
 # get no forecast at all.
 GEMINI_FREE_RESERVE = 0.2
 GEMINI_MAX_FORECASTS_PER_QUESTION = 3
+# Binary round 2 (Step 6): at most this many extra forecasts.
+GEMINI_ROUND2_MAX = 2
 # Budget counts as "low" below this share of the pool's usable daily total;
 # then MiniBench questions get 1 forecast (seasonal ones still up to 3).
 GEMINI_LOW_BUDGET_FRACTION = 0.25
 # The day's counts live in the private fall26-data repo.
 GEMINI_LEDGER_PATH = "quota/gemini_free.json"
 
-CREDIT_FORECASTER_MODEL = "openrouter/anthropic/claude-opus-5.5"
-CREDIT_HELPER_MODEL = "openrouter/google/gemini-3.6-flash"
 
 
 def is_free_model(model: str) -> bool:
@@ -105,8 +108,9 @@ class Lineup:
     free_only: bool
     # Only allowed in test_questions mode (the bot-testing-area).
     test_only: bool
-    # Free Gemini lineup: plans each question's forecasters within the daily budget.
-    gemini_pool: GeminiPool | None = None
+    # Plans each question's forecasters (rounds, budget): GeminiPool for
+    # gemini-free, CreditsPlanner for credits. None = the library's default.
+    planner: GeminiPool | CreditsPlanner | None = None
 
     def llm_model_names(self) -> list[str]:
         """Model names of the LLMs and their backups (AskNews is not an LLM)."""
@@ -133,7 +137,9 @@ def _free_lineup() -> Lineup:
             "default": free_llm,
             "parser": free_llm,
             "summarizer": free_llm,
-            "researcher": RESEARCHER,
+            # AskNews + free news, no model calls: the OpenRouter free tier
+            # allows ~50 requests a day, which Test Bot runs share.
+            "researcher": "asknews/news-summaries",
         },
         research_reports_per_question=1,
         predictions_per_research_report=1,
@@ -189,7 +195,28 @@ class GeminiPool:
         )
         return usable_left < GEMINI_LOW_BUDGET_FRACTION * usable_total
 
-    def plan(self, seasonal: bool, only_model: str | None = None) -> list[ThrottledLlm]:
+    def save(self) -> None:
+        self.ledger.save()
+
+    def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:
+        """
+        Binary round 2 (only called when round 1 disagrees or is extreme): up
+        to 2 more forecasts from models not used in round 1, from usable
+        budget only (never the reserve).
+        """
+        spare = [
+            m
+            for m in sorted(
+                GEMINI_FORECAST_MODELS,
+                key=lambda m: (-self.ledger.usable_left(m), GEMINI_FORECAST_MODELS.index(m)),
+            )
+            if m not in used_models and self.ledger.usable_left(m) > 0
+        ][:GEMINI_ROUND2_MAX]
+        for model in spare:
+            self.ledger.book(model)
+        return [self._chain([model], allow_reserve=False) for model in spare]
+
+    def plan(self, seasonal: bool, only_model: str | None = None, binary: bool = True) -> list[ThrottledLlm]:
         """
         One forecaster chain per forecast for a question: up to 3 different
         models with usable budget (MiniBench: 1 when the budget is low). If no
@@ -288,45 +315,89 @@ def _gemini_free_lineup() -> Lineup:
         summarize_research=False,
         free_only=True,
         test_only=False,
-        gemini_pool=pool,
+        planner=pool,
     )
 
 
-def _credit_lineup() -> Lineup:
-    forecaster = GeneralLlm(
-        model=CREDIT_FORECASTER_MODEL,
-        temperature=None,  # reasoning models: leave temperature unset
-        timeout=600,
-        allowed_tries=3,
-        extra_body=HIGH_REASONING,
-    )
+@dataclass
+class CreditsPlanner:
+    """
+    The PLAN.md section 3 lineup on the Metaculus credit key (OFF until the
+    architect says so). The spending tier (ensemble.py) is chosen once per
+    run; MiniBench runs one tier below. Every forecaster: high reasoning,
+    600 s timeout, 3 tries, then its backups (ensemble.BACKUPS).
+    """
+
+    seasonal_tier: str = "standard"
+    pacer: RequestPacer = field(default_factory=lambda: RequestPacer(600))
+
+    def _tier(self, seasonal: bool) -> ensemble.Tier:
+        name = self.seasonal_tier if seasonal else ensemble.tier_below(self.seasonal_tier)
+        return ensemble.TIERS[name]
+
+    def _chain(self, model: str) -> ThrottledLlm:
+        llm: ThrottledLlm | None = None
+        for name in reversed([model, *ensemble.BACKUPS.get(model, [])]):
+            llm = ThrottledLlm(
+                model=name,
+                pacer=self.pacer,
+                backup=llm,
+                temperature=None,
+                timeout=600,
+                allowed_tries=3,
+                extra_body=HIGH_REASONING,
+            )
+        assert llm is not None
+        return llm
+
+    def plan(self, seasonal: bool, only_model: str | None = None, binary: bool = True) -> list[ThrottledLlm]:
+        tier = self._tier(seasonal)
+        models = tier.binary_round1 if binary else tier.all_forecasters
+        return [self._chain(m) for m in ([only_model] if only_model else models)]
+
+    def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:
+        return [self._chain(m) for m in self._tier(seasonal).binary_round2]
+
+    def quick_forecaster(self) -> ThrottledLlm:
+        return self._chain(ensemble.OPUS_55)
+
+    def any_quota_left(self) -> bool:
+        return True
+
+    def save(self) -> None:
+        return None
+
+
+def _credits_lineup() -> Lineup:
     helper = GeneralLlm(
-        model=CREDIT_HELPER_MODEL,
+        model=ensemble.FLASH_36,
         temperature=None,
         timeout=180,
         allowed_tries=3,
     )
+    planner = CreditsPlanner()
     return Lineup(
-        name="credit",
+        name="credits",
         llms={
-            "default": forecaster,
+            "default": planner.quick_forecaster(),
             "parser": helper,
             "summarizer": helper,
             "researcher": RESEARCHER,
         },
         research_reports_per_question=1,
-        predictions_per_research_report=5,
+        predictions_per_research_report=len(ensemble.TIERS["full"].all_forecasters),
         parser_validation_samples=2,
         summarize_research=True,
         free_only=False,
         test_only=False,
+        planner=planner,
     )
 
 
 _LINEUPS = {
     "free": _free_lineup,
     "gemini-free": _gemini_free_lineup,
-    "credit": _credit_lineup,
+    "credits": _credits_lineup,
 }
 
 
