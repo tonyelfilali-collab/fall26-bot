@@ -13,6 +13,8 @@ import re
 
 from forecasting_tools import Percentile, PredictedOption, PredictedOptionList
 
+from forecast_safety import floor_probabilities
+
 _NUMBER = r"[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
 
 
@@ -49,9 +51,12 @@ def parse_multiple_choice_answer(text: str, options: list[str]) -> PredictedOpti
         total = sum(values)
     if not 0.9 <= total <= 1.1 or any(v < 0 for v in values):
         return None
+    # Every option at least 1% here, on plain numbers: the library's own
+    # clamp rejects a confident answer (100% / 0%s) on a 10+ option question.
     return PredictedOptionList(
         predicted_options=[
-            PredictedOption(option_name=o, probability=v / total) for o, v in zip(options, values)
+            PredictedOption(option_name=o, probability=p)
+            for o, p in zip(options, floor_probabilities(values))
         ]
     )
 
