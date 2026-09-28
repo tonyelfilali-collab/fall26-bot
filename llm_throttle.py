@@ -135,6 +135,8 @@ class ThrottledLlm(GeneralLlm):
 
     async def _hand_over(self, prompt, reason: str):  # type: ignore[no-untyped-def]
         if self._backup is None:
+            # Logged too, so every attempt's outcome can be counted from the logs.
+            logger.warning(f"{self.model}: {reason}, no backup model left")
             raise NoQuotaLeft(f"{self.model}: {reason}, and no backup model left")
         logger.warning(f"{self.model}: {reason}, trying {self._backup.model}")
         return await self._backup._mockable_direct_call_to_model(prompt)
