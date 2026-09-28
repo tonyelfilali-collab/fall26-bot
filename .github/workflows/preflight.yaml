@@ -1,0 +1,31 @@
+name: Credits pre-flight
+
+# Manual only. Checks every OpenRouter model id of the credits lineup against
+# OpenRouter's PUBLIC model list: exists, takes `reasoning`, prices. No key,
+# no model call, nothing spent. Red if an id doesn't exist.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Check model ids and prices
+        run: poetry run python preflight.py
