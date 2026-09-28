@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       size:
-        description: "quick = 30 questions, full = 60"
+        description: "mini = 10 questions, quick = 30, full = 60"
         type: choice
-        options: [quick, full]
-        default: quick
+        options: [mini, quick, full]
+        default: mini
       config_a:
         description: "Config A"
         type: choice
@@ -71,7 +71,9 @@ jobs:
           LABEL_A: ${{ inputs.label_a }}
           CONFIG_B: ${{ inputs.config_b }}
           LABEL_B: ${{ inputs.label_b }}
-          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          # Tony's read-only token, ONLY here, to read community predictions
+          # (the bot account can't see them). The bot itself never gets it.
+          METACULUS_READ_TOKEN: ${{ secrets.METACULUS_READ_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}

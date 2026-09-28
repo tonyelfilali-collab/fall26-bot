@@ -51,7 +51,7 @@ from forecasting_tools import (  # noqa: E402
 from gemini_budget import GitHubFileStore, MemoryStore  # noqa: E402
 from question_log import DATA_REPO, to_jsonable  # noqa: E402
 
-SIZES = {"quick": 30, "full": 60}
+SIZES = {"mini": 10, "quick": 30, "full": 60}
 TYPE_SHARES = {"binary": 0.6, "numeric": 0.1, "discrete": 0.1, "multiple_choice": 0.2}
 MIN_FORECASTERS = 30
 EPS = 1e-6
@@ -184,9 +184,20 @@ class Scored:
 
 
 def question_counts(size: int) -> dict[str, int]:
-    counts = {t: round(size * share) for t, share in TYPE_SHARES.items()}
+    counts = {t: max(1, round(size * share)) for t, share in TYPE_SHARES.items()}
     counts["binary"] += size - sum(counts.values())
     return counts
+
+
+def blind(question: Any) -> Any:
+    """
+    A copy of the question for the bot with the community prediction removed:
+    the bot must never see it (it's read with Tony's token only for scoring).
+    """
+    update: dict[str, Any] = {"api_json": {}}
+    if isinstance(question, BinaryQuestion):
+        update["community_prediction_at_access_time"] = None
+    return question.model_copy(update=update)
 
 
 def question_filter(question_type: str) -> ApiFilter:
@@ -273,7 +284,7 @@ def run_config(config: str, label: str, questions: list[Any], store: BenchStore,
         path = f"{batch}/results/{label}/{q.id_of_post}.json"
         result = store.load(path)
         if result is None:
-            [report] = asyncio.run(bot.forecast_questions([q], return_exceptions=True))
+            [report] = asyncio.run(bot.forecast_questions([blind(q)], return_exceptions=True))
             if isinstance(report, BaseException):
                 print(f"Question {q.id_of_post}: no forecast ({type(report).__name__})")
                 continue
@@ -338,15 +349,23 @@ def main() -> None:
     store = BenchStore(token=os.getenv("DATA_REPO_TOKEN"))
     batch = args.size
     size = SIZES[args.size]
-    client = MetaculusClient()
+    # Community predictions are read with Tony's read-only token (the bot
+    # account can't see them). It's used only here, never by the live bot.
+    read_token = os.getenv("METACULUS_READ_TOKEN")
+    if not read_token:
+        sys.exit("METACULUS_READ_TOKEN is not set: the bench can't see community predictions.")
+    client = MetaculusClient(token=read_token)
     saved = store.load(f"{batch}/questions.json")
     if saved:
         questions = [client.get_question_by_post_id(p["post_id"]) for p in saved]
     else:
         questions = select_questions(client, size)
-        store.save(f"{batch}/questions.json", [{"post_id": q.id_of_post, "type": q.question_type} for q in questions])
+        if questions:  # never save an empty list (it would be reused)
+            store.save(f"{batch}/questions.json", [{"post_id": q.id_of_post, "type": q.question_type} for q in questions])
     questions = [q for q in questions if community_prediction(q) is not None]
-    print(f"Bench {batch}: {len(questions)} questions")
+    print(f"Bench {batch}: {len(questions)} questions with a visible community prediction")
+    if not questions:
+        sys.exit("No questions with a visible community prediction.")
 
     label_a = args.label_a or args.config_a
     a = run_config(args.config_a, label_a, questions, store, batch)
