@@ -106,7 +106,7 @@ from shadow import (
 )
 from markets import match_question
 from markets import to_records as market_records
-from minibench import current_minibench_id
+from minibench import current_minibench_id, minibench_active
 from real_regression import load_questions as load_regression_questions
 from real_regression import reading_table
 from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
@@ -2164,6 +2164,10 @@ if __name__ == "__main__":
                     f"Tournament {tournament_id}: could not run, {describe_exception(e)}"
                 )
                 forecast_reports.append(e)
+        # Build 4b: a MiniBench round is active -> expect 25 questions a day.
+        if isinstance(template_bot.planner, GeminiPool):
+            template_bot.planner.minibench_active = minibench_active(len(open_by_tournament.get(minibench_id, [])))
+            print(f"MiniBench round active (for the spare-quota rule): {template_bot.planner.minibench_active}")
         # Retry backoff for questions that failed in earlier runs.
         from gemini_budget import make_store
 

@@ -140,3 +140,26 @@ def current_minibench_id(fetch: Fetch = _metaculus_get, now: datetime | None = N
     tournament_id, how = current_minibench(fetch, now, store)
     logger.info(f"MiniBench: tournament {tournament_id}, found by {how}")
     return tournament_id
+
+
+# Build 4b (architect, 29 Sep): while a MiniBench round is active (a question
+# open now, or one seen open in the last 24 hours), the spare-quota rule
+# expects 25 questions a day (the last round: 60 in about 3 days).
+ACTIVE_FOR = timedelta(hours=24)
+
+
+def minibench_active(open_now: int, now: datetime | None = None, store=None) -> bool:
+    """Notes when a MiniBench question was last seen open (status/minibench.json)
+    and says whether the round counts as active. Never raises."""
+    now = now or datetime.now(timezone.utc)
+    store = store if store is not None else _default_store()
+    try:
+        saved = store.load() or {}
+    except Exception:
+        saved = {}
+    if open_now > 0:
+        _update(store, saved, last_open_seen=now.isoformat())
+        return True
+    last = _time(saved.get("last_open_seen"))
+    return last is not None and now - last <= ACTIVE_FOR
+

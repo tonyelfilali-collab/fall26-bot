@@ -80,3 +80,35 @@ def test_questions_per_day_from_log_paths():
     now = datetime(2026, 9, 29, 9, tzinfo=timezone.utc)
     assert question_log.questions_per_day("t", now=now, get=get) == pytest.approx(2 / 7)
     assert question_log.questions_per_day(None) is None
+
+
+def test_minibench_round_active_means_25_a_day():
+    from zoneinfo import ZoneInfo
+
+    pool = make_pool(extra_forecasts=True)
+    pool.questions_per_day = 1.0
+    noon = datetime(2026, 10, 5, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    assert pool.expected_questions_left_today(noon) == pytest.approx(4 * 0.5 + 2)
+    pool.minibench_active = True
+    assert pool.expected_questions_left_today(noon) == pytest.approx(25 * 0.5 + 2)
+
+
+def test_minibench_active_open_now_or_seen_in_24h():
+    from datetime import timedelta
+
+    import minibench
+    from gemini_budget import MemoryStore
+
+    store = MemoryStore({})
+    now = datetime(2026, 10, 5, 10, tzinfo=timezone.utc)
+    assert minibench.minibench_active(0, now, store) is False
+    assert minibench.minibench_active(2, now, store) is True  # open now: remembered
+    assert minibench.minibench_active(0, now + timedelta(hours=23), store) is True
+    assert minibench.minibench_active(0, now + timedelta(hours=25), store) is False
+
+
+def test_minibench_active_limits_extra_forecasts():
+    pool = _pool(expected=25 * 0.5 + 2)  # an active round at noon: 14.5 expected -> 58 needed
+    assert len(pool.plan(seasonal=True, binary=True)) == 5  # 64 - 5 = 59 >= 58
+    pool = _pool({m: 1 for m in GEMINI_FORECAST_MODELS}, expected=25 * 0.5 + 2)  # 60 usable
+    assert len(pool.plan(seasonal=True, binary=True)) == 3
