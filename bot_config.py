@@ -450,10 +450,15 @@ class CreditsPlanner:
     architect says so). The spending tier (ensemble.py) is chosen once per
     run; MiniBench runs one tier below. Every forecaster: high reasoning,
     600 s timeout, 3 tries, then its backups (ensemble.BACKUPS).
+    Free first (4c): a slot in FREE_FIRST tries the free AI Studio key first
+    (its daily ledger) and goes to OpenRouter only when that can't answer
+    (429, 503, timeout, or no free quota left).
     """
 
     seasonal_tier: str = "standard"
     pacer: RequestPacer = field(default_factory=lambda: RequestPacer(600))
+    # The free Gemini pool (AI Studio key, daily ledger). None = OpenRouter only.
+    gemini: GeminiPool | None = None
 
     def _tier(self, seasonal: bool) -> ensemble.Tier:
         return ensemble.TIERS[self.tier_name(seasonal)]
@@ -462,18 +467,25 @@ class CreditsPlanner:
         """This run's tier; MiniBench one below the seasonal tournament."""
         return self.seasonal_tier if seasonal else ensemble.tier_below(self.seasonal_tier)
 
+    def _paid(self, name: str, backup: ThrottledLlm | None) -> ThrottledLlm:
+        return ThrottledLlm(
+            model=name,
+            pacer=self.pacer,
+            backup=backup,
+            temperature=None,
+            timeout=600,
+            allowed_tries=3,
+            extra_body=HIGH_REASONING,
+        )
+
     def _chain(self, model: str) -> ThrottledLlm:
         llm: ThrottledLlm | None = None
         for name in reversed([model, *ensemble.BACKUPS.get(model, [])]):
-            llm = ThrottledLlm(
-                model=name,
-                pacer=self.pacer,
-                backup=llm,
-                temperature=None,
-                timeout=600,
-                allowed_tries=3,
-                extra_body=HIGH_REASONING,
-            )
+            llm = self._paid(name, llm)
+        free = CREDITS_FREE_FIRST.get(model)
+        if free is not None and self.gemini is not None:
+            # The free AI Studio key first; the paid chain behind it.
+            llm = self.gemini._forecaster(free, backup=llm, allow_reserve=True)
         assert llm is not None
         return llm
 
@@ -492,17 +504,26 @@ class CreditsPlanner:
         return True
 
     def save(self) -> None:
-        return None
+        if self.gemini is not None:
+            self.gemini.save()
+
+
+# Credits 4c: slots that try the free AI Studio key first (OpenRouter id -> Gemini id).
+CREDITS_FREE_FIRST = {ensemble.FLASH_36: "gemini/gemini-3.6-flash"}
+
+
+def _credits_gemini_pool(store, llm_class: type = ThrottledLlm) -> GeminiPool:  # type: ignore[no-untyped-def]
+    """The free Gemini pool the credits lineup uses first (same ledger and
+    limits as gemini-free)."""
+    return _gemini_pool(store, llm_class=llm_class)
 
 
 def _credits_lineup() -> Lineup:
-    helper = GeneralLlm(
-        model=ensemble.FLASH_36,
-        temperature=None,
-        timeout=180,
-        allowed_tries=3,
-    )
-    planner = CreditsPlanner()
+    # Free first (4c): planner, dossier, parser and summarizer run on the free
+    # Flash-Lite pool, never OpenRouter.
+    pool = _credits_gemini_pool(make_store(GEMINI_LEDGER_PATH))
+    helper = pool.parser()
+    planner = CreditsPlanner(gemini=pool)
     return Lineup(
         name="credits",
         llms={
@@ -541,6 +562,7 @@ def _replay_lineup() -> Lineup:
 REHEARSAL_BINARY_PERCENT = {
     ensemble.OPUS_55: 37, ensemble.GPT_SOL: 62, ensemble.FLASH_36: 30, ensemble.FABLE_51: 45,
     ensemble.OPUS_5: 40, ensemble.GPT_55: 55, ensemble.GEMINI_31_PRO: 33,
+    CREDITS_FREE_FIRST[ensemble.FLASH_36]: 30,  # the same slot on the free key
 }
 # Rehearsal credit (dollars, remaining = limit) for the tier choice: $700
 # (minus the 15% reserve) over ~100 days x 12 questions is about $0.50 a
@@ -552,22 +574,24 @@ REHEARSAL_CREDIT = 700.0
 class ReplayCreditsPlanner(CreditsPlanner):
     """The credits planner (tiers, rounds, backups) with every slot a replay."""
 
-    def _chain(self, model: str) -> ThrottledLlm:
-        llm: ThrottledLlm | None = None
-        for name in reversed([model, *ensemble.BACKUPS.get(model, [])]):
-            llm = ReplayChainLlm(model=f"replay/{name}", pacer=self.pacer, backup=llm, temperature=None, allowed_tries=1)
-        assert llm is not None
-        return llm
+    def _paid(self, name: str, backup: ThrottledLlm | None) -> ThrottledLlm:
+        return ReplayChainLlm(model=f"replay/{name}", pacer=self.pacer, backup=backup, temperature=None, allowed_tries=1)
 
 
 def _replay_credits_lineup() -> Lineup:
-    """Test Bot's credits rehearsal: the credits lineup logic, 0 model calls."""
+    """Test Bot's credits rehearsal: the credits lineup logic, 0 model calls.
+    The free Gemini pool is recorded replies too, with its ledger in memory."""
+    from gemini_budget import MemoryStore
+
     _RecordedAnswer.binary_percent = REHEARSAL_BINARY_PERCENT
-    planner = ReplayCreditsPlanner()
-    replay = ReplayLlm()
+    pool = _credits_gemini_pool(MemoryStore(), llm_class=ReplayChainLlm)
+    # Recorded replies need no pacing (the real Gemini pace is 4-12 a minute).
+    pool.pacers = {m: RequestPacer(6000) for m in pool.pacers}
+    planner = ReplayCreditsPlanner(gemini=pool)
+    parser = pool.parser()
     return Lineup(
         name="replay-credits",
-        llms={"default": planner.quick_forecaster(), "parser": replay, "summarizer": replay, "researcher": "replay"},
+        llms={"default": planner.quick_forecaster(), "parser": parser, "summarizer": parser, "researcher": "replay"},
         research_reports_per_question=1,
         predictions_per_research_report=len(ensemble.TIERS["full"].all_forecasters),
         parser_validation_samples=1,

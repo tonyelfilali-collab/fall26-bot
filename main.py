@@ -200,7 +200,8 @@ def rehearsal_table(records: list[dict]) -> str:
     whether round 2 ran. Model names only: no forecast values (public logs)."""
 
     def short(model: str | None) -> str:
-        return (model or "none").removeprefix("replay/").split("/")[-1]
+        name = (model or "none").removeprefix("replay/")
+        return name.split("/")[-1] + (" (free key)" if name.startswith("gemini/") else "")
 
     lines = [
         "| Question | Type | Tournament | Tier | Round 2 | Slots (kind: planned -> answered) | Submitted |",
