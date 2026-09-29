@@ -83,7 +83,8 @@ CURRENT VALUE from the dossier (`research_detail.current_value`) and whether the
 flagged/dropped a model**, plus `hard_data` and the shadows. Flag anything odd.
 
 **c) Timed jobs:** none pending. (The 00:00 UTC Tier C Test Bot was done; #34 merged.)
-cron-job.org runs the tournament every 10 min; Tony is adding a cron-job.org job for
+cron-job.org runs the tournament every 10 min. Since 29 Sep the first tournament run after
+06:00 UTC starts `health.yml` itself (`health_dispatch.py`), so no second cron job is needed. (Old note: a cron-job.org job for
 `health.yml` at 06:00 UTC — when he says "health cron added", confirm the first triggered run
 (`gh run list -R … -w health.yml`).
 
