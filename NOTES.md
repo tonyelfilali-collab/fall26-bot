@@ -314,6 +314,8 @@ day left, + 2. The 7-day average comes from the question-log paths in fall26-dat
 (`question_log.questions_per_day`, each live run). Distinct models first, then repeats (most usable
 quota first); extras never use the reserve. Question log `extra_forecasts` = {enabled, count, reason};
 the public log shows count and reason (quota counts only).
+While a MiniBench round is active (a question open now, or seen open in the last 24 h, kept as
+`last_open_seen` in `status/minibench.json`), the expected count uses 25 a day (Build 4b).
 
 ## Disagreement follow-up search (Build 5, 29 Sep 2026)
 

@@ -121,6 +121,9 @@ EXTRA_FORECASTS_MAX_OTHER = 6
 EXTRA_FORECASTS_QUOTA_FACTOR = 4
 EXTRA_FORECASTS_MIN_PER_DAY = 4
 EXTRA_FORECASTS_MARGIN = 2
+# While a MiniBench round is active (a question open now or seen open in the
+# last 24 h), expect this many questions a day instead (architect, 29 Sep).
+EXTRA_FORECASTS_MINIBENCH_PER_DAY = 25
 # Binary round 2 (Step 6): at most this many extra forecasts; only 1 once
 # less than half of today's forecast quota (all forecasting models) is left.
 GEMINI_ROUND2_MAX = 2
@@ -220,6 +223,7 @@ class GeminiPool:
     # Build 4: distinct questions per day over the last 7 days (main.py sets it
     # each run; None = unknown, the minimum is used), and the switch.
     questions_per_day: float | None = None
+    minibench_active: bool = False
     extra_forecasts: bool = EXTRA_FORECASTS_ENABLED
     # Why the last plan() chose its number of forecasts (for the question log).
     last_plan: dict = field(default_factory=dict)
@@ -336,11 +340,13 @@ class GeminiPool:
 
     def expected_questions_left_today(self, now: datetime | None = None) -> float:
         """max(7-day average per day, 4) x the share of the Pacific quota day
-        left, + 2."""
+        left, + 2; 25 a day instead while a MiniBench round is active."""
         now = (now or datetime.now(timezone.utc)).astimezone(_PACIFIC)
         midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         share_left = (midnight - now).total_seconds() / 86400
         per_day = max(self.questions_per_day or 0.0, EXTRA_FORECASTS_MIN_PER_DAY)
+        if self.minibench_active:
+            per_day = max(per_day, EXTRA_FORECASTS_MINIBENCH_PER_DAY)
         return per_day * share_left + EXTRA_FORECASTS_MARGIN
 
     def _spare_quota_count(self, binary: bool, default: int) -> int:
