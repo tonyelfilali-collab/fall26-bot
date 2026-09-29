@@ -315,6 +315,18 @@ day left, + 2. The 7-day average comes from the question-log paths in fall26-dat
 quota first); extras never use the reserve. Question log `extra_forecasts` = {enabled, count, reason};
 the public log shows count and reason (quota counts only).
 
+## Disagreement follow-up search (Build 5, 29 Sep 2026)
+
+`followup.FOLLOWUP_ENABLED` (default ON). After round 1, if the forecasts disagree (binary: spread
+over 15 points; numeric/discrete: medians differ by over 25% of the range; multiple choice: the top
+option differs) and the question doesn't close within 25 min: the parser model (Flash-Lite) reads each
+model's two-line reason and writes up to 2 queries; AskNews while a call is left under the
+3-per-question cap (from `research_detail.asknews_calls`), otherwise free news. A "Follow-up findings"
+section (at most 1,500 tokens) is added and the dossier trimmed so the whole stays within ~6k tokens.
+Round 2 uses it: binary round 2 as before; numeric / multiple choice get a round 2 (Gemini pool,
+`round2`: up to 2 more models, usable quota only) only after a follow-up search. Question log
+`followup` = {enabled, triggered, trigger, queries, counts}. Replay: frozen section, no search.
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:
