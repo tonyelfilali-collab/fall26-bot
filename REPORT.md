@@ -175,3 +175,28 @@ MiniBench first (B), #46 round 2 limit below half quota (B).
   data from FRED/CoinGecko (log only; 4/21 pack questions matched, all correct), #63 random-walk
   baseline shadow. Next live run green after each. OpenRouter usage $0 (limit $1).
 - **Handover:** `CC_HANDOVER.md` has the state, rules, watcher commands and pending items.
+
+## Update 28–29 Sep 2026 (18:00–01:10 UTC), architect session 3
+
+Every PR below was merged by its tier's gates; the next live run after each was green and the
+Credit check stayed at $0 (limit $1). No revert needed.
+
+| PR | What | Tier | Gate runs | Live run after |
+|---|---|---|---|---|
+| #69 | Per-model Gemini limits (Flash-Lite 400/day, 12/min; preview shares 3.1's bucket) | B | replay 36467022200 | 36468231832 |
+| #70 | Model probe (test-only) | A | probe 36468432007 | – |
+| #71 | No-Gemini Test Bots get their own queue; data-repo save retry | B | replay 36471717846 | 36472915458 |
+| #72 | Credits 4a pre-flight | A | preflight 36472633695 | – |
+| #73 | Credits 4b real cost table | B | replay-credits 36473804170 | 36475210302 |
+| #67 | Nemotron backup chain (Nemotron ×2 first, Flash-Lite only if it gives nothing) | C (pre-approved) | replay 36470977732, forced exhaustion 36504745553, real 36501212269 | 36501914704 |
+| #68 | Official data line in the dossier; exact match feeds the unit check | C (pre-approved) | replay 36502153817, real 36502300528 | 36502751311 |
+| #74 | Credits 4c free first | B | replay-credits 36503009094 | 36503583722 |
+| #81 | Credits 4d fail-closed spend guards (replaces #75) | B | replay-credits 36503861121 + runaway 36504059309, retry-run 36504247834, unknown-cost 36504371284, missing-ledger 36504501438, key-mismatch 36504626571 | 36505172775 |
+| #78 | Consistency shadow for sibling questions | B | replay 36505395203 | 36505962251 |
+| #79 | Credits: Fable 5.1 removed | C (OFF lineup) | replay-credits 36506179609 | 36506768736 |
+
+- Probe (#70): Gemini 2.5 Flash / Flash-Lite answer 404 "no longer available to new users" → no
+  Search grounding on this key. gemini-3-flash answered 1 of 4 (3 × 503), gemma-4-31b 503; both dropped.
+- Cost per question (4b, measured prompts + ASSUMED 8k output, after Fable removal): full $0.64,
+  standard $0.39, lean $0.26. Only 1–2 logged questions per type so far.
+- Credits lineup is still OFF. Switch-on checklist: PLAN.md section 6b.
