@@ -18,6 +18,8 @@ permissions:
   contents: read
   # Step 6: a spending-tier change opens an issue (GitHub emails Tony).
   issues: write
+  # Starts health.yml once a day (health_dispatch.py).
+  actions: write
 
 jobs:
   forecast_job:
@@ -74,6 +76,15 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
       # Tell healthchecks.io the bot is alive (/fail if this run failed). If
       # no ping arrives for a while, healthchecks.io emails Tony.
+      # The daily health check (architect, 29 Sep): the first run after 06:00
+      # UTC starts health.yml if it hasn't run yet that UTC day. After the
+      # forecast, never fails the job.
+      - name: Start the daily health check if due
+        if: always() && steps.gate.outputs.enabled == 'true'
+        continue-on-error: true
+        run: poetry run python health_dispatch.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Ping healthchecks.io
         if: always() && steps.gate.outputs.enabled == 'true'
         env:
