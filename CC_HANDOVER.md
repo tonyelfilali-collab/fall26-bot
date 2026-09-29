@@ -3,6 +3,8 @@
 **Local folder (since 29 Sep 2026): `~/code/fall26-bot`** (outside iCloud; iCloud made " 2" copies of
 files, even inside `.git`). Open Claude Code there: `cd ~/code/fall26-bot` then `claude`. The old
 folder `~/Desktop/metaculus` is no longer used (Tony moves or deletes it himself).
+Local Python must be **3.11** (same as Actions): `poetry env use python3.11` then `poetry install`. On
+Python 3.14 about 51 tests fail (an old library in the lock file).
 
 **Newest state:** see NOTES.md "What's live" (every switch, its value and PR) and the progress log at
 the bottom of PLAN.md. Feature building is paused (architect, 29 Sep) until credits arrive, resolved
