@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       lineup:
-        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls."
+        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls. 'burst-rehearsal': 3 simulated days of MiniBench bursts, 0 model calls."
         type: choice
-        options: [free, replay, replay-credits, replay-gemini, real-regression, gemini-free]
+        options: [free, replay, replay-credits, replay-gemini, burst-rehearsal, real-regression, gemini-free]
         default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
@@ -76,6 +76,10 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Run bot
         run: |
+          if [ "$LINEUP" = "burst-rehearsal" ]; then
+            poetry run python burst_rehearsal.py
+            exit $?
+          fi
           if [ "$LINEUP" = "real-regression" ]; then
             args=(--mode test_questions --lineup free --real-regression)
           else
