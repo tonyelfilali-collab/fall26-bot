@@ -118,7 +118,7 @@ from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from spend import SpendGuard, guard_tier, unknown_cost_alert, utc_day
 from stat_baseline import random_walk_baseline
-from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
+from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
 # Only this logger's messages reach the public Actions log in full; see
@@ -629,9 +629,14 @@ class FallBot2026(ForecastBot):
         if hasattr(self.planner, "tier_name"):
             record["tier"] = self.planner.tier_name(self.forecasting_seasonal)
         record["round2"] = False
+        plan_note = ""
+        if isinstance(self.planner, GeminiPool):
+            # Build 4: how many forecasts and why (the Scoreboard can split by it).
+            record["extra_forecasts"] = dict(self.planner.last_plan)
+            plan_note = f"; {self.planner.last_plan.get('reason')}"
         logger.info(
             f"Question {question.id_of_post}: {len(forecasters)} forecast(s) planned "
-            f"({', '.join(f.model for f in forecasters) or 'none: no quota left'})"
+            f"({', '.join(f.model for f in forecasters) or 'none: no quota left'}){plan_note}"
         )
 
         async def forecast_with(forecaster, kind: str, timeout: float | None, above_reserve: bool = False):  # type: ignore[no-untyped-def]
@@ -2066,6 +2071,10 @@ if __name__ == "__main__":
     template_bot.consistency_index = ForecastIndex(
         _make_store(INDEX_PATH) if run_mode == "tournament" else _MemoryStore({})
     )
+    if isinstance(lineup.planner, GeminiPool) and run_mode == "tournament":
+        # Build 4: the 7-day average of live questions per day (None = unknown).
+        lineup.planner.questions_per_day = questions_per_day(os.getenv("DATA_REPO_TOKEN"))
+        print(f"Live questions per day (7-day average): {lineup.planner.questions_per_day}")
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
     template_bot.submit_forecasts = publish_to_metaculus

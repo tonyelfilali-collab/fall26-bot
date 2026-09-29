@@ -88,14 +88,15 @@ def dummy(monkeypatch):
     server.server.shutdown()
 
 
-def make_pool(used: dict[str, int] | None = None) -> GeminiPool:
+def make_pool(used: dict[str, int] | None = None, extra_forecasts: bool = False) -> GeminiPool:
     ledger = QuotaLedger(
         MemoryStore({"day": gemini_budget.quota_day(), "used": used or {}}),
         daily_limits={m: 20 for m in ALL_MODELS},
         reserve_fraction=0.2,
     )
-    # Fast pacing for tests.
-    return GeminiPool(ledger=ledger, pacers={m: RequestPacer(6000) for m in ALL_MODELS})
+    # Fast pacing for tests. The base planner (3 forecasts) unless a test
+    # turns on build 4's extra forecasts (tests/test_extra_forecasts.py).
+    return GeminiPool(ledger=ledger, pacers={m: RequestPacer(6000) for m in ALL_MODELS}, extra_forecasts=extra_forecasts)
 
 
 # ---------------------------------------------------------------- ledger

@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -114,3 +114,28 @@ class QuestionLogWriter:
             return False
         self.saved.append(path)
         return True
+
+
+def questions_per_day(token: str | None, days: int = 7, now: datetime | None = None, get=requests.get) -> float | None:  # type: ignore[no-untyped-def]
+    """Distinct live tournament questions we logged per day over the last
+    `days` days (from the question-log paths in fall26-data), or None."""
+    if not token:
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        response = get(
+            f"https://api.github.com/repos/{DATA_REPO}/git/trees/HEAD?recursive=1",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        first_day = (now - timedelta(days=days)).date().isoformat()
+        posts = set()
+        for item in response.json().get("tree", []):
+            parts = item.get("path", "").split("/")
+            if len(parts) == 4 and parts[:2] == ["questions", "tournament"] and parts[2] > first_day:
+                posts.add(parts[3].split("_")[0])
+        return len(posts) / days
+    except Exception:
+        return None
+
