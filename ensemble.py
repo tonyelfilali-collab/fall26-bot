@@ -48,10 +48,12 @@ GPT_SOL = "openrouter/openai/gpt-5.6-sol"
 GPT_55 = "openrouter/openai/gpt-5.5"
 FLASH_36 = "openrouter/google/gemini-3.6-flash"
 GEMINI_31_PRO = "openrouter/google/gemini-3.1-pro-preview"
+# Not in any tier or backup chain (architect, 29 Sep); only its price is
+# still checked by the pre-flight, for reference.
+PRICE_CHECK_ONLY = (FABLE_51,)
 
 # When a model errors, refuses or times out, the next one is tried.
 BACKUPS: dict[str, list[str]] = {
-    FABLE_51: [OPUS_55, OPUS_5],
     OPUS_55: [OPUS_5],
     GPT_SOL: [GPT_55],
     FLASH_36: [GEMINI_31_PRO],
@@ -87,7 +89,8 @@ MODEL_PRICES: dict[str, tuple[float, float]] = {
 UNKNOWN_MODEL_PRICE = (10.00, 50.00)
 MODEL_PRICES = {f"openrouter/{k}": v for k, v in MODEL_PRICES.items()}
 
-# Credits 4b (cost_table.py, Credits pre-flight run 36472957797, 28 Sep 2026):
+# Credits 4b (cost_table.py, Credits pre-flight runs 36472957797 and, after
+# Fable 5.1 was removed, 36481725679, 28 Sep 2026):
 # dollars per question = real OpenRouter prices x prompt tokens measured from
 # our question logs (binary 7,143; numeric 7,476; discrete 4,991; multiple
 # choice 6,732; only 1-2 logged questions per type so far) + an ASSUMED 8,000
@@ -95,13 +98,15 @@ MODEL_PRICES = {f"openrouter/{k}": v for k, v in MODEL_PRICES.items()}
 # (Flash-Lite pool). Every Flash 3.6 slot counted as paid (it tries the free
 # AI Studio key first, 4c), so these are upper-side numbers.
 COST_TABLE: dict[str, dict[str, float]] = {
-    "full": {"binary": 0.32, "binary+r2": 1.01, "numeric": 1.02, "discrete": 0.97, "multiple_choice": 1.00},
+    "full": {"binary": 0.32, "binary+r2": 0.64, "numeric": 0.64, "discrete": 0.61, "multiple_choice": 0.63},
     "standard": {"binary": 0.32, "binary+r2": 0.39, "numeric": 0.39, "discrete": 0.37, "multiple_choice": 0.39},
     "lean": {"binary": 0.22, "binary+r2": 0.26, "numeric": 0.26, "discrete": 0.25, "multiple_choice": 0.26},
 }
 
 TIERS: dict[str, Tier] = {
-    "full": Tier("full", (OPUS_55, GPT_SOL, FLASH_36), (FABLE_51, OPUS_55, FLASH_36), max(COST_TABLE["full"].values())),
+    # Round 2 adds one more forecast per family (architect, 29 Sep: Fable 5.1
+    # removed, 16.1 vs Opus 5's 15.8 on the leaderboard at 2.5x the price).
+    "full": Tier("full", (OPUS_55, GPT_SOL, FLASH_36), (OPUS_55, GPT_SOL, FLASH_36), max(COST_TABLE["full"].values())),
     "standard": Tier("standard", (OPUS_55, GPT_SOL, FLASH_36), (FLASH_36, FLASH_36), max(COST_TABLE["standard"].values())),
     "lean": Tier("lean", (OPUS_55, FLASH_36), (FLASH_36,), max(COST_TABLE["lean"].values())),
 }

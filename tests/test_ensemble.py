@@ -46,7 +46,7 @@ def test_worked_example_target_spend():
 
 @pytest.mark.parametrize(
     "target, tier",
-    [(2.00, "full"), (1.02, "full"), (1.01, "standard"), (0.39, "standard"), (0.38, "lean"), (0.10, "lean")],
+    [(2.00, "full"), (0.64, "full"), (0.63, "standard"), (0.39, "standard"), (0.38, "lean"), (0.10, "lean")],
 )
 def test_choose_tier(target, tier):
     assert ensemble.choose_tier(target) == tier
@@ -67,14 +67,18 @@ def test_expected_remaining_questions():
 def test_tier_lineups_match_the_plan():
     full = ensemble.TIERS["full"]
     assert full.binary_round1 == (ensemble.OPUS_55, ensemble.GPT_SOL, ensemble.FLASH_36)
-    assert full.binary_round2 == (ensemble.FABLE_51, ensemble.OPUS_55, ensemble.FLASH_36)
+    # Fable 5.1 removed (architect, 29 Sep): one more forecast per family.
+    assert full.binary_round2 == (ensemble.OPUS_55, ensemble.GPT_SOL, ensemble.FLASH_36)
+    assert sorted(full.all_forecasters) == sorted([ensemble.OPUS_55, ensemble.GPT_SOL, ensemble.FLASH_36] * 2)
+    assert all(ensemble.FABLE_51 not in t.all_forecasters for t in ensemble.TIERS.values())
     assert len(full.all_forecasters) == 6  # numeric / multiple choice: all 6
     assert ensemble.TIERS["standard"].all_forecasters.count(ensemble.FLASH_36) == 3
     assert ensemble.TIERS["lean"].all_forecasters == (ensemble.OPUS_55, ensemble.FLASH_36, ensemble.FLASH_36)
 
 
 def test_backups_match_the_plan():
-    assert ensemble.BACKUPS[ensemble.FABLE_51] == [ensemble.OPUS_55, ensemble.OPUS_5]
+    assert ensemble.FABLE_51 not in ensemble.BACKUPS
+    assert all(ensemble.FABLE_51 not in chain for chain in ensemble.BACKUPS.values())
     assert ensemble.BACKUPS[ensemble.GPT_SOL] == [ensemble.GPT_55]
     assert ensemble.BACKUPS[ensemble.FLASH_36] == [ensemble.GEMINI_31_PRO]
 
