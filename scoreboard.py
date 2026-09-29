@@ -188,6 +188,18 @@ def score_records(records: list[dict], resolution_of) -> list[dict]:  # type: ig
     return scored
 
 
+def lab_section(token: str) -> str:
+    """The replay lab's paired results so far (lab/results.json), or a note."""
+    try:
+        rows = json.loads(base64.b64decode(_github("contents/lab/results.json", token)["content"]))
+    except Exception:
+        return "\n**Replay lab:** no results yet.\n"
+    import lab
+
+    results = [lab.LabResult(r["post"], r["type"], r["experiment"], r.get("diff"), r.get("note", "")) for r in rows]
+    return "\n" + lab.report(results) + "\n"
+
+
 def main() -> None:
     from bot_helpers import silence_noisy_dependencies
 
@@ -215,6 +227,7 @@ def main() -> None:
         f"{len(scored)} resolved and scored.\n\n{report_markdown(scored)}\n\n"
         f"**Shadow forecaster answer rate (never submitted):**\n\n{shadow_answer_rate(every)}\n"
     )
+    report += lab_section(token)
     print(report)
     summary = os.getenv("GITHUB_STEP_SUMMARY")
     if summary:

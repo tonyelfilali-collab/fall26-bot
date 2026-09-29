@@ -864,6 +864,7 @@ class FallBot2026(ForecastBot):
             f"{len(detail.get('queries', []))} query(ies), AskNews {detail.get('asknews_articles', 0)}, "
             f"free news {detail.get('free_articles', 0)} article(s)"
         )
+        self._save_section(question, "followup", findings)
         return with_followup(research, findings), True
 
     # ------------------------------------------------ never re-buy (credits 4d)
@@ -1138,9 +1139,17 @@ class FallBot2026(ForecastBot):
                 self._start_shadow_forecast(question, research)
                 return research
             logger.info(f"Question {question.id_of_post}: research done")
+            if "base" not in self._record_for(question).get("dossier_sections", {}):
+                self._save_section(question, "base", research)
             research = await self._with_official_data(question, research)
             self._start_shadow_forecast(question, research)
             return research
+
+    def _save_section(self, question: MetaculusQuestion, name: str, text: str) -> None:
+        """Replay lab: one dossier part (base research, follow-up findings,
+        Wikipedia, official data) saved in the question log with its time."""
+        if text:
+            self._record_for(question).setdefault("dossier_sections", {})[name] = {"text": text, "at": utc_now()}
 
     async def _with_official_data(self, question: MetaculusQuestion, research: str) -> str:
         """
@@ -1163,6 +1172,7 @@ class FallBot2026(ForecastBot):
             return research
         record = self._record_for(question)
         record["official_data"] = {"line": line.text, "exact": line.exact}
+        self._save_section(question, "official_data", line.text)
         if line.exact:
             record["official_current_value"] = line.latest
         logger.info(
@@ -1303,6 +1313,9 @@ class FallBot2026(ForecastBot):
             "dossier_written": result.dossier_written,
             "wikipedia": result.wikipedia,
         }
+        # Replay lab: each part of the dossier, frozen with its time.
+        self._save_section(question, "base", result.base_dossier)
+        self._save_section(question, "wikipedia", result.wikipedia_section)
         return result.dossier
 
     # AskNews finding fewer articles than this gets topped up with free news.

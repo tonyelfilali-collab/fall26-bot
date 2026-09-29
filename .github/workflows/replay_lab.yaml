@@ -1,0 +1,51 @@
+name: Replay lab
+
+# Test-only: re-runs variant configurations on the frozen dossiers of RESOLVED
+# live questions and scores them against the live forecast (lab.py). Never
+# submits. Gemini only in the last 3 hours of the Pacific quota day, only from
+# spare non-reserve quota, never while MiniBench is busy; Nemotron (:free) at
+# most 300 calls a day. Started once a day by the tournament run
+# (health_dispatch.py), or by hand. `synthetic`: an end-to-end run on a
+# synthetic resolved question (no real calls).
+on:
+  workflow_dispatch:
+    inputs:
+      synthetic:
+        description: "End-to-end run on a synthetic resolved question (recorded replies, no real calls)"
+        type: boolean
+        default: false
+
+# It uses the Gemini key and the live quota ledger: one at a time with live runs.
+concurrency:
+  group: forecast-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Run the replay lab
+        run: poetry run python lab.py $([ "$SYNTHETIC" = "true" ] && echo --synthetic)
+        env:
+          SYNTHETIC: ${{ inputs.synthetic }}
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}

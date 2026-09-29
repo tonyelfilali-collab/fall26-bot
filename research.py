@@ -67,6 +67,9 @@ class ResearchResult:
     dossier_written: bool = False
     current_value: CurrentValue | None = None
     wikipedia: list[str] = field(default_factory=list)  # page titles used
+    # Replay lab: the dossier's parts, so a variant can drop one.
+    base_dossier: str = ""
+    wikipedia_section: str = ""
 
     @property
     def articles(self) -> int:
@@ -337,6 +340,7 @@ async def run_planned_research(
         except Exception as e:
             logger.warning(f"Question {question.id_of_post}: Wikipedia background failed ({type(e).__name__})")
     dossier = remove_market_prices(dossier)
+    result.base_dossier, result.wikipedia_section = dossier, section
     if section:
         room = int(MAX_DOSSIER_TOKENS * WORDS_PER_TOKEN) - len(section.split()) - 1
         words = dossier.split()
