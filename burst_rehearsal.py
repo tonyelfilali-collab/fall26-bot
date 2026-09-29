@@ -185,12 +185,11 @@ def run(seed: int = SEED, days: int = DAYS) -> tuple[list[SimQuestion], Stats]:
             seasonal = [built[q.post] for q in tried if q.seasonal]
             minibench = [built[q.post] for q in tried if not q.seasonal]
             failed: set = set()
-            for is_seasonal, batch in main.queue_batches(seasonal, minibench, now_r):
-                bot.forecasting_seasonal = is_seasonal
-                reports = asyncio.run(bot.forecast_questions(batch, return_exceptions=True))
-                for question, report in zip(batch, reports):
-                    if isinstance(report, BaseException):
-                        failed.add(question.id_of_post)
+            queued, bot.seasonal_by_post = main.run_queue(seasonal, minibench)
+            reports = asyncio.run(bot.forecast_questions(queued, return_exceptions=True))
+            for question, report in zip(queued, reports):
+                if isinstance(report, BaseException):
+                    failed.add(question.id_of_post)
             for record in bot.__dict__.get("kept_records", []):
                 q = by_post[record["question"]["id_of_post"]]
                 ok = [f for f in record["forecasts"] if f.get("status") == "ok"]

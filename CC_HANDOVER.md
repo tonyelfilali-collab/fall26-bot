@@ -40,7 +40,8 @@ instructions; explain in plain, short language.
     the current value are dropped, all kept if every model is flagged). **Never a pure guess**:
     no real forecast = nothing submitted, retried later.
   - MiniBench (#41): `minibench` slug if running, else remembered round, else a paced id scan.
-    Queue (#45): MiniBench closing within 30 min first, then seasonal, then the rest.
+    Run timing (run_timing.py): one queue, researched soonest-closing first; research 4 min, forecasting
+    stages 12 min, no new question after 40 min; shadows at the end of the run (NOTES.md "Run timing").
 - **Shadows (saved in the question log, never submitted, scored by `scoreboard.yml`):**
   binary stretch-1.2/1.5, mean, geo-mean-odds, trimmed-mean; MC mean; numeric mean-cdf,
   uniform-2%; **Nemotron shadow forecaster** (#61, `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`,

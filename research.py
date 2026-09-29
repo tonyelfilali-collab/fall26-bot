@@ -70,6 +70,8 @@ class ResearchResult:
     # Replay lab: the dossier's parts, so a variant can drop one.
     base_dossier: str = ""
     wikipedia_section: str = ""
+    # The research time limit was reached in this stage (None = it wasn't).
+    time_limit_hit: str | None = None
 
     @property
     def articles(self) -> int:
@@ -240,6 +242,10 @@ async def asknews_search(query: str) -> list[Any]:
 # ---------------------------------------------------------------- the whole step
 
 
+class ResearchTimeUp(Exception):
+    """The research time limit was reached: what was gathered is used."""
+
+
 async def run_planned_research(
     question: Any,
     dates: str,
@@ -247,21 +253,42 @@ async def run_planned_research(
     search_asknews: Callable[[str], Awaitable[list[Any]]] = asknews_search,
     search_free: Callable[[str], list[Any]] = collect_free_news,
     fetch_background: Callable[[list[str]], tuple[str, list[str]]] | None = None,
+    deadline: float | None = None,
 ) -> ResearchResult:
+    """deadline: event-loop time (loop.time()) when research must stop; the
+    dossier is then built from what was gathered (result.time_limit_hit)."""
     text = question.question_text
     criteria = question.resolution_criteria or ""
+    loop = asyncio.get_running_loop()
 
-    # 1. Plan.
-    try:
-        plan = parse_plan(await invoke_helper(planner_prompt(text, criteria, dates)), text)
-    except Exception as e:
-        logger.warning(f"Question {question.id_of_post}: research planner failed ({type(e).__name__})")
-        plan = ResearchPlan(queries=[text])
+    async def within(awaitable: Awaitable[Any]) -> Any:
+        if deadline is None:
+            return await awaitable
+        left = deadline - loop.time()
+        if left <= 0:
+            if asyncio.iscoroutine(awaitable):
+                awaitable.close()
+            raise ResearchTimeUp
+        try:
+            return await asyncio.wait_for(awaitable, left)
+        except asyncio.TimeoutError:
+            if loop.time() >= deadline:
+                raise ResearchTimeUp from None
+            raise
 
-    result = ResearchResult(dossier="", queries=plan.queries)
+    result = ResearchResult(dossier="", queries=[text])
     asknews_blocks: list[str] = []
     free_articles: list[Any] = []
     asknews_down = False
+    plan = ResearchPlan(queries=[text])
+    dossier: str | None = None  # the written dossier (None = not written)
+    extra_search = ""
+    section = ""
+
+    def articles_text() -> str:
+        return "\n\n".join(
+            part for part in ("\n".join(asknews_blocks), format_articles(_dedupe(free_articles))) if part
+        ) or "No recent news articles were found."
 
     async def asknews(query: str) -> None:
         nonlocal asknews_down
@@ -269,7 +296,9 @@ async def run_planned_research(
             return
         result.asknews_calls += 1
         try:
-            found = await search_asknews(query)
+            found = await within(search_asknews(query))
+        except ResearchTimeUp:
+            raise
         except Exception as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
             if status is None and e.__cause__ is not None:
@@ -284,70 +313,91 @@ async def run_planned_research(
         if found:
             asknews_blocks.append(_format_asknews(found))
 
-    # 2. Search: keep one AskNews call back for the gap-fill.
-    for query in plan.queries[: MAX_ASKNEWS_CALLS - 1]:
-        await asknews(query)
-    if len(plan.queries) == MAX_QUERIES and result.asknews_articles < MIN_ARTICLES:
-        await asknews(plan.queries[-1])
-    if asknews_down or result.asknews_articles < MIN_ARTICLES:
-        for query in plan.queries:
-            free_articles += await asyncio.to_thread(search_free, query)
-        free_articles = _dedupe(free_articles)
-        result.free_articles = len(free_articles)
-
-    articles_text = "\n\n".join(
-        part for part in ("\n".join(asknews_blocks), format_articles(free_articles)) if part
-    ) or "No recent news articles were found."
-
-    # 3. Dossier.
-    missing = None
+    stage = "plan"
     try:
-        unit = getattr(question, "unit_of_measure", None)
-        if getattr(question, "question_type", None) in ("numeric", "discrete"):
-            unit = unit or "(the question's unit)"
-        else:
-            unit = None
-        dossier_text = await invoke_helper(dossier_prompt(text, criteria, dates, plan.key_facts, articles_text, unit))
-        dossier, missing = split_missing(dossier_text)
-        result.dossier_written = bool(dossier.strip())
-    except Exception as e:
-        logger.warning(f"Question {question.id_of_post}: dossier writer failed ({type(e).__name__})")
-        dossier = ""
-    if not result.dossier_written:
-        dossier = articles_text
-
-    # 4. Gap-fill: one extra search for a missing key fact.
-    if missing:
-        before = result.asknews_articles
-        await asknews(missing)
-        extra = asknews_blocks[-1] if result.asknews_articles > before else ""
-        if not extra:
-            found = await asyncio.to_thread(search_free, missing)
-            result.free_articles += len(found)
-            extra = format_articles(found)
-        if extra:
-            result.gap_filled = True
-            dossier += f"\n\n## Extra search: {missing}\n{extra}"
-
-    # 5. Build 6a: Wikipedia background for the planner's entities (a
-    # failure only means no background); the dossier is cut to make room.
-    section = ""
-    if plan.entities:
+        # 1. Plan.
         try:
-            from wikipedia import background
-
-            section, result.wikipedia = await asyncio.to_thread(fetch_background or background, plan.entities)
+            plan = parse_plan(await within(invoke_helper(planner_prompt(text, criteria, dates))), text)
+        except ResearchTimeUp:
+            raise
         except Exception as e:
-            logger.warning(f"Question {question.id_of_post}: Wikipedia background failed ({type(e).__name__})")
-    dossier = remove_market_prices(dossier)
-    result.base_dossier, result.wikipedia_section = dossier, section
+            logger.warning(f"Question {question.id_of_post}: research planner failed ({type(e).__name__})")
+        result.queries = plan.queries
+
+        # 2. Search: keep one AskNews call back for the gap-fill.
+        stage = "search"
+        for query in plan.queries[: MAX_ASKNEWS_CALLS - 1]:
+            await asknews(query)
+        if len(plan.queries) == MAX_QUERIES and result.asknews_articles < MIN_ARTICLES:
+            await asknews(plan.queries[-1])
+        if asknews_down or result.asknews_articles < MIN_ARTICLES:
+            for query in plan.queries:
+                free_articles += await within(asyncio.to_thread(search_free, query))
+
+        # 3. Dossier.
+        stage = "dossier"
+        missing = None
+        try:
+            unit = getattr(question, "unit_of_measure", None)
+            if getattr(question, "question_type", None) in ("numeric", "discrete"):
+                unit = unit or "(the question's unit)"
+            else:
+                unit = None
+            dossier_text = await within(
+                invoke_helper(dossier_prompt(text, criteria, dates, plan.key_facts, articles_text(), unit))
+            )
+            written, missing = split_missing(dossier_text)
+            if written.strip():
+                dossier = written
+        except ResearchTimeUp:
+            raise
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: dossier writer failed ({type(e).__name__})")
+
+        # 4. Gap-fill: one extra search for a missing key fact.
+        stage = "gap-fill"
+        if missing:
+            before = result.asknews_articles
+            await asknews(missing)
+            extra = asknews_blocks[-1] if result.asknews_articles > before else ""
+            if not extra:
+                found = await within(asyncio.to_thread(search_free, missing))
+                result.free_articles += len(found)
+                extra = format_articles(found)
+            if extra:
+                result.gap_filled = True
+                extra_search = f"\n\n## Extra search: {missing}\n{extra}"
+
+        # 5. Build 6a: Wikipedia background for the planner's entities (a
+        # failure only means no background); the dossier is cut to make room.
+        stage = "wikipedia"
+        if plan.entities:
+            try:
+                from wikipedia import background
+
+                section, result.wikipedia = await within(
+                    asyncio.to_thread(fetch_background or background, plan.entities)
+                )
+            except ResearchTimeUp:
+                raise
+            except Exception as e:
+                logger.warning(f"Question {question.id_of_post}: Wikipedia background failed ({type(e).__name__})")
+    except ResearchTimeUp:
+        result.time_limit_hit = stage
+
+    # Build the dossier from what was gathered.
+    result.free_articles += len(_dedupe(free_articles))
+    result.dossier_written = dossier is not None
+    body = (dossier if dossier is not None else articles_text()) + extra_search
+    body = remove_market_prices(body)
+    result.base_dossier, result.wikipedia_section = body, section
     if section:
         room = int(MAX_DOSSIER_TOKENS * WORDS_PER_TOKEN) - len(section.split()) - 1
-        words = dossier.split()
-        body = dossier if len(words) <= room else " ".join(words[:room]) + " [...]"
-        result.dossier = f"{body}\n\n{section}"
+        words = body.split()
+        cut = body if len(words) <= room else " ".join(words[:room]) + " [...]"
+        result.dossier = f"{cut}\n\n{section}"
     else:
-        result.dossier = cap_tokens(dossier)
+        result.dossier = cap_tokens(body)
     result.current_value = parse_current_value(result.dossier)
     return result
 
