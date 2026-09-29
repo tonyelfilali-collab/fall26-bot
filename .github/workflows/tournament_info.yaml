@@ -4,6 +4,11 @@ name: Tournament info
 # and when their open questions open and close. Forecasts nothing, spends nothing.
 on:
   workflow_dispatch:
+    inputs:
+      audit:
+        description: "List every question of each tournament (any state) and whether we forecast it"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +32,7 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
       - name: Show tournament info
-        run: poetry run python tournament_info.py
+        run: poetry run python tournament_info.py $([ "$AUDIT" = "true" ] && echo --audit)
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          AUDIT: ${{ inputs.audit }}

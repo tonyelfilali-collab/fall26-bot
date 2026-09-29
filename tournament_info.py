@@ -2,13 +2,17 @@
 Read-only facts about our target tournaments, for the "Tournament info"
 workflow: each tournament's id, slug and dates, and the open/close times of
 its currently open questions. Forecasts nothing, spends nothing.
+--audit: every question of each tournament (any state), its open/close
+times, and whether our bot forecast it: to rule out a silent miss.
 
-    poetry run python tournament_info.py
+    poetry run python tournament_info.py [--audit]
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 
 import requests
 
@@ -16,7 +20,7 @@ from bot_helpers import silence_noisy_dependencies
 
 silence_noisy_dependencies()
 
-from forecasting_tools import MetaculusClient  # noqa: E402
+from forecasting_tools import ApiFilter, MetaculusClient  # noqa: E402
 
 from main import FALL_2026_TOURNAMENT_ID  # noqa: E402
 from minibench import current_minibench  # noqa: E402
@@ -66,7 +70,41 @@ def open_question_lines(slug_or_id: str | int) -> list[str]:
     return lines
 
 
-def main() -> None:
+def audit_lines(slug_or_id: str | int) -> list[str]:
+    """Every question (open, closed, resolved, upcoming), and whether we forecast it."""
+    api_filter = ApiFilter(
+        allowed_tournaments=[slug_or_id],
+        allowed_statuses=["upcoming", "open", "closed", "resolved"],
+        allowed_types=["binary", "numeric", "discrete", "multiple_choice"],
+        group_question_mode="unpack_subquestions",
+    )
+    questions = asyncio.run(MetaculusClient().get_questions_matching_filter(api_filter))
+    now = datetime.now(timezone.utc)
+    missed = [
+        q for q in questions
+        if not q.already_forecasted and q.close_time is not None and q.close_time <= now
+        and q.open_time is not None and q.open_time <= now
+    ]
+    lines = [
+        f"- Questions in any state: {len(questions)}; forecast by us: "
+        f"{sum(bool(q.already_forecasted) for q in questions)}; closed without our forecast: {len(missed)}",
+        "",
+        "| Question | Type | State | Opens (UTC) | Closes (UTC) | Forecast by us |",
+        "|---|---|---|---|---|---|",
+    ]
+    def when(t):  # type: ignore[no-untyped-def]
+        return f"{t:%Y-%m-%d %H:%M}" if t else "?"
+
+    for q in sorted(questions, key=lambda q: (q.open_time or now, q.id_of_post)):
+        state = getattr(q.state, "value", q.state)
+        lines.append(
+            f"| [{q.id_of_post}]({q.page_url}) | {q.question_type} | {state} | {when(q.open_time)} "
+            f"| {when(q.close_time)} | {'yes' if q.already_forecasted else '**no**'} |"
+        )
+    return lines
+
+
+def main(audit: bool = False) -> None:
     sections: list[str] = []
     minibench_id, how = current_minibench()
     sections += [f"**Current MiniBench round: {minibench_id}** (found by {how})", ""]
@@ -76,7 +114,7 @@ def main() -> None:
     ):
         sections += [f"## {label} (`{slug_or_id}`)", ""]
         sections += tournament_facts(slug_or_id)
-        sections += open_question_lines(slug_or_id)
+        sections += audit_lines(slug_or_id) if audit else open_question_lines(slug_or_id)
         sections.append("")
     report = "\n".join(sections)
     print(report)
@@ -89,4 +127,4 @@ def main() -> None:
 if __name__ == "__main__":
     if not os.getenv("METACULUS_TOKEN"):
         sys.exit("METACULUS_TOKEN is not set")
-    main()
+    main(audit="--audit" in sys.argv)
