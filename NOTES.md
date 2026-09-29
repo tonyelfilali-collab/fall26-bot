@@ -1,5 +1,36 @@
 # NOTES
 
+## What's live (switches and settings, 29 Sep 2026)
+
+Every on/off switch and key setting, its current value, what it does, and the PR. Change one = a PR
+(the tier rules in CLAUDE.md apply). Emergency stop: repo variable `BOT_ENABLED` = `false`.
+
+| Switch / setting | Where | Now | What it does | PR |
+|---|---|---|---|---|
+| `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
+| `ACTIVE_LINEUP` | `bot_config.py` | `gemini-free` | Free Google AI Studio key: 4 Flash forecasters, Flash-Lite for research/parsing | #8, #9 |
+| Credits lineup | `bot_config.py` (`credits`) | OFF (built) | Opus 5.5 / GPT-5.6 Sol / Gemini 3.6 Flash tiers; Flash slot tries the free key first; switch-on checklist PLAN.md 6b | #23, #74, #79 |
+| Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
+| Reserve | `GEMINI_FREE_RESERVE` | 20% | Held back for a question's first forecast, emergencies, research | #9 |
+| `EXTRA_FORECASTS_ENABLED` | `bot_config.py` | ON | Up to 5 (binary) / 6 (numeric, MC) forecasts when non-reserve quota is spare; 25 questions/day expected while MiniBench is active | #85, #89 |
+| Backup chain | `BACKUP_FORECASTS`, `BACKUP_FORECAST_MODEL` | 2 x Nemotron Ultra `:free` | No Flash answer and (closing within 45 min or all Flash out of quota): Nemotron x2 first, Flash-Lite only if Nemotron gives nothing | #67 |
+| Emergency window | `main.EMERGENCY_WINDOW` | 45 min | When the backup chain may use the Flash-Lite reserve | #59, #67 |
+| `STRETCH_K` | `forecast_safety.py` | 1.0 (off) | Log-odds stretch of the binary median (shadows 1.2 / 1.5 are logged) | #16, #44 |
+| `MARKET_MODE` | `bot_config.py` | `off` | Market matching (code kept; manual Market matches workflow) | #26, #30 |
+| `REFEREE_ENABLED` | `shadow.py` | `False` | Referee shadow (waits for credits) | #27 |
+| `FOLLOWUP_ENABLED` | `followup.py` | ON | Round 1 disagrees: 2 follow-up queries, "Follow-up findings" section, round 2 uses it | #86 |
+| `WIKIPEDIA_ENABLED` | `wikipedia.py` | ON | Up to 3 entity summaries as "Background (Wikipedia)" (<= 800 tokens) | #87 |
+| Official data line | `hard_data.py` (no switch) | ON | FRED / CoinGecko line in the dossier; exact match feeds the unit check; stand-in warning | #62, #68 |
+| `YAHOO_ENABLED` | `hard_data.py` | ON, but Yahoo answers 429 | Stocks/indices/commodities/FX via Yahoo; blocked, skipped gracefully (stocks not covered) | #87 |
+| Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
+| Zero-cost shadows | `shadow.py`, `stat_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, random-walk | #27, #44, #63 |
+| Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
+| Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; Gemini only spare, never reserve | #92 |
+| Spend guards | `spend.py` | ON (credits only) | Per-question cap 2x tier cost, daily cap 2x target, key backstop, never re-buy, fail closed | #81 |
+| Health check start | `health_dispatch.py` | ON | First tournament run after 06:00 UTC starts health.yml | #84 |
+| MiniBench discovery | `minibench.py` | ON | Slug + remembered rounds + 20-id scan every run; newest running round | #41, #90 |
+
+
 Findings from Task 1 (checked 2026-09-27).
 
 ## forecasting-tools version

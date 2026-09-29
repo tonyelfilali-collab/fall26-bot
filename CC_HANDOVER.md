@@ -1,5 +1,13 @@
 # CC_HANDOVER.md — for a fresh Claude Code session
 
+**Local folder (since 29 Sep 2026): `~/code/fall26-bot`** (outside iCloud; iCloud made " 2" copies of
+files, even inside `.git`). Open Claude Code there: `cd ~/code/fall26-bot` then `claude`. The old
+folder `~/Desktop/metaculus` is no longer used (Tony moves or deletes it himself).
+
+**Newest state:** see NOTES.md "What's live" (every switch, its value and PR) and the progress log at
+the bottom of PLAN.md. Feature building is paused (architect, 29 Sep) until credits arrive, resolved
+questions accumulate, or the MiniBench burst (~5 Oct) shows a problem.
+
 Written 28 Sep 2026, ~18:00 UTC, at the end of the first build session. Read with
 `CLAUDE.md` (rules), `PLAN.md` (plan + progress log at the bottom), `REPORT.md` (reports)
 and `NOTES.md` (technical notes). The owner (Tony) is a novice who relays an architect's
@@ -61,6 +69,9 @@ instructions; explain in plain, short language.
 ## 3. Watchers to restart in a new session
 
 Run each with the Bash tool and `run_in_background: true`; you're notified when one exits.
+(29 Sep: a) and b) below are still the ones to restart. Also worth checking once: the first
+nightly Replay lab start, in the last 3 hours of the Pacific day: `gh run list -R … -w replay_lab.yaml`.
+The health check no longer needs a cron job: the first tournament run after 06:00 UTC starts it.)
 
 **a) Red live run or health check** (exits on the first failure; ignores the deliberately red
 health PR checks):
