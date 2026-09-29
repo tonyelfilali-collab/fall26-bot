@@ -55,10 +55,14 @@ from forecasting_tools.data_models.forecast_report import ResearchWithPrediction
 
 import ensemble
 from bot_config import (
+    BACKUP_FORECASTS,
+    BACKUP_FORECAST_TIMEOUT_SECONDS,
     MARKET_MODE,
     SHADOW_FORECAST_MODEL,
     REHEARSAL_CREDIT,
     CreditsPlanner,
+    GEMINI_FORECAST_MODELS,
+    GEMINI_PARSER_MODELS,
     GeminiPool,
     ReplayCreditsPlanner,
     get_lineup,
@@ -217,6 +221,36 @@ def rehearsal_table(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def backup_chain_summary(records: list[dict], ledger, flash_lite_before: dict[str, int]) -> str:  # type: ignore[no-untyped-def]
+    """replay-gemini: which backup chain each question used, and whether the
+    Flash-Lite reserve was touched. Model names and counts only."""
+    lines = [
+        "| Question | Type | Backup chain | Answered by | Submitted |",
+        "|---|---|---|---|---|",
+    ]
+    for record in records:
+        question = record.get("question") or {}
+        answered = sorted({
+            m.split("/")[-1] for f in record.get("forecasts", []) if f.get("status") == "ok"
+            for m in f.get("answered_models") or []
+        })
+        lines.append(
+            f"| {question.get('id_of_post')} | {question.get('question_type', '?')} "
+            f"| {record.get('emergency', 'none')} | {', '.join(answered) or 'none'} "
+            f"| {'yes' if record.get('submitted') else 'no'} |"
+        )
+    if flash_lite_before:
+        after = {m: ledger.used.get(m, 0) for m in flash_lite_before}
+        untouched = after == flash_lite_before
+        lines.append("")
+        lines.append(
+            "Flash-Lite used (before -> after): "
+            + ", ".join(f"{m.split('/')[-1]} {flash_lite_before[m]} -> {after[m]}" for m in flash_lite_before)
+            + f". **Reserve untouched: {'yes' if untouched else 'NO'}**"
+        )
+    return "\n".join(lines)
+
+
 # Real-regression: questions forecast at the same time.
 REGRESSION_BATCH = 4
 
@@ -297,13 +331,19 @@ def closes_within(close_time: datetime, window: timedelta) -> bool:
 # The quick forecast (nothing else finished) tries this many passes through
 # the Gemini models, this far apart.
 QUICK_FORECAST_PASSES = 3
-# Emergency Flash-Lite forecasts only for a question closing within this time.
+# Emergency backup chain (Flash-Lite + Nemotron, reserve allowed) for a
+# question closing within this time.
 EMERGENCY_WINDOW = timedelta(minutes=45)
 QUICK_FORECAST_RETRY_WAIT_SECONDS = 30
 
 # The forecaster chain for the forecast running in the current asyncio task.
 _planned_forecaster: contextvars.ContextVar = contextvars.ContextVar(
     "planned_forecaster", default=None
+)
+# True inside a backup-chain forecast made before the 45-min window: its
+# answer may be parsed only with Flash-Lite quota above the reserve.
+_parser_above_reserve: contextvars.ContextVar = contextvars.ContextVar(
+    "parser_above_reserve", default=False
 )
 # True inside the shadow forecaster's own task (Build 1b): its answer is only
 # read directly (no parser call) and its reading is logged apart from live.
@@ -495,6 +535,8 @@ class FallBot2026(ForecastBot):
         if purpose == "parser" and _in_shadow.get():
             # The shadow forecaster never uses the live parser quota.
             raise NoValidForecast("shadow forecaster: answer not readable directly")
+        if purpose == "parser" and _parser_above_reserve.get() and isinstance(self.planner, GeminiPool):
+            return self.planner.parser(allow_reserve=False)
         # A planned forecast uses the model chain chosen for it.
         if purpose == "default":
             planned = _planned_forecaster.get()
@@ -529,8 +571,9 @@ class FallBot2026(ForecastBot):
             f"({', '.join(f.model for f in forecasters) or 'none: no quota left'})"
         )
 
-        async def forecast_with(forecaster, kind: str, timeout: float | None):  # type: ignore[no-untyped-def]
+        async def forecast_with(forecaster, kind: str, timeout: float | None, above_reserve: bool = False):  # type: ignore[no-untyped-def]
             _planned_forecaster.set(forecaster)
+            _parser_above_reserve.set(above_reserve)
             answered_models.set([])
             entry = {"kind": kind, "planned_model": forecaster.model, "started_at": utc_now()}
             record["forecasts"].append(entry)
@@ -610,34 +653,18 @@ class FallBot2026(ForecastBot):
                 )
             )
             errors = errors + quick_errors
-        # Emergency (architect, 28 Sep): the question closes within 45 minutes
-        # and no Flash forecaster answered (overloaded or out of quota): up to
-        # 2 forecasts from the Flash-Lite models, same code path, then the
-        # normal combine and checks. Outside that window nothing changes.
-        emergency = getattr(self.planner, "emergency_forecasters", None)
+        # Backup chain (architect, 29 Sep): no Flash forecaster answered.
         if (
             not valid_predictions
-            and emergency is not None
-            and question.close_time is not None
-            and closes_within(question.close_time, EMERGENCY_WINDOW)
+            and isinstance(self.planner, GeminiPool)
+            and not self.only_model
             and quick_forecast_timeout(question.close_time) != 0
         ):
-            forecasters = emergency()
-            if forecasters:
-                record["emergency"] = "flash-lite"
-                logger.warning(
-                    f"Question {question.id_of_post}: closes within 45 min with no Flash "
-                    f"forecast; emergency: {len(forecasters)} Flash-Lite forecast(s)"
-                )
-                valid_predictions, emergency_errors, exception_group = (
-                    await self._gather_results_and_exceptions(
-                        [
-                            forecast_with(f, "emergency", quick_forecast_timeout(question.close_time))
-                            for f in forecasters
-                        ]
-                    )
-                )
-                errors = errors + emergency_errors
+            valid_predictions, backup_errors, backup_group = await self._backup_forecasts(
+                question, record, forecast_with
+            )
+            errors = errors + backup_errors
+            exception_group = backup_group or exception_group
         await asyncio.to_thread(self.planner.save)
         if len(valid_predictions) == 0:
             if exception_group is None:
@@ -653,6 +680,61 @@ class FallBot2026(ForecastBot):
             errors=errors,
             predictions=valid_predictions,
         )
+
+    async def _backup_forecasts(self, question: MetaculusQuestion, record: dict, forecast_with) -> tuple:  # type: ignore[no-untyped-def]
+        """
+        The backup chain when no Flash forecaster answered (architect, 29 Sep):
+        Nemotron first: 2 forecasts at the same time, median of what answers.
+        Only if Nemotron gives no answer: up to 2 Flash-Lite forecasts. Then
+        the normal combine and checks. When it runs:
+        - Closing within 45 min: Flash-Lite may use its reserve.
+        - Earlier, only if EVERY Flash model is out of quota today (429 or
+          ledger at 0; a 503 is not, the normal retries go on): Flash-Lite
+          uses only quota above its reserve, and answers are parsed above
+          the reserve too, so research and parsing for later questions are
+          never starved.
+        The path used is saved in the question log ("emergency").
+        Returns (predictions, errors, exception group or None).
+        """
+        pool = self.planner
+        assert isinstance(pool, GeminiPool)
+        in_window = question.close_time is not None and closes_within(question.close_time, EMERGENCY_WINDOW)
+        if not in_window and not pool.flash_exhausted():
+            return [], [], None
+        prefix = "window" if in_window else "flash-exhausted"
+        kind = "emergency" if in_window else "backup"
+        above_reserve = not in_window
+        logger.warning(
+            f"Question {question.id_of_post}: "
+            + ("closes within 45 min with no Flash forecast" if in_window else "every Flash model is out of quota today")
+            + "; backup chain: Nemotron first"
+        )
+        valid: list = []
+        errors: list = []
+        group = None
+        nemotron = [pool.backup_forecaster() for _ in range(BACKUP_FORECASTS)] if pool.nemotron else []
+        if nemotron:
+            time_left = quick_forecast_timeout(question.close_time)
+            timeout = min(BACKUP_FORECAST_TIMEOUT_SECONDS, time_left or BACKUP_FORECAST_TIMEOUT_SECONDS)
+            valid, errors, group = await self._gather_results_and_exceptions(
+                [forecast_with(n, kind, timeout, above_reserve=above_reserve) for n in nemotron]
+            )
+            if valid:
+                record["emergency"] = f"{prefix}: nemotron"
+                logger.info(f"Question {question.id_of_post}: backup chain: {len(valid)} Nemotron forecast(s)")
+                return valid, errors, group
+        time_left = quick_forecast_timeout(question.close_time)
+        flash_lite = pool.emergency_forecasters(allow_reserve=in_window) if time_left != 0 else []
+        if not flash_lite:
+            if nemotron:
+                record["emergency"] = f"{prefix}: nemotron failed, no flash-lite"
+            return valid, errors, group
+        record["emergency"] = f"{prefix}: " + ("nemotron failed -> flash-lite" if nemotron else "flash-lite")
+        more, more_errors, more_group = await self._gather_results_and_exceptions(
+            [forecast_with(f, kind, time_left, above_reserve=above_reserve) for f in flash_lite]
+        )
+        logger.info(f"Question {question.id_of_post}: backup chain: {len(more)} Flash-Lite forecast(s)")
+        return more, errors + more_errors, more_group or group
 
     def _record_for(self, question: MetaculusQuestion) -> dict:
         records = self.__dict__.setdefault("_question_records", {})
@@ -1651,7 +1733,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--lineup",
-        choices=["free", "gemini-free", "credits", "replay", "replay-credits"],
+        choices=["free", "gemini-free", "credits", "replay", "replay-credits", "replay-gemini"],
         default=None,
         help="Model lineup (default: ACTIVE_LINEUP in bot_config.py). Test Bot uses 'free'.",
     )
@@ -1670,6 +1752,12 @@ if __name__ == "__main__":
         default=None,
         help="replay-credits only: this model (e.g. openrouter/anthropic/claude-opus-5.5) "
         "fails every call, so its backup chain runs",
+    )
+    parser.add_argument(
+        "--exhaust-flash",
+        action="store_true",
+        help="replay-gemini only: every Flash model starts the day used up and Flash-Lite "
+        "at its reserve, so the backup chain (Nemotron) must answer",
     )
     args = parser.parse_args()
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
@@ -1696,6 +1784,18 @@ if __name__ == "__main__":
             raise SystemExit("--fail-model only works with the replay-credits lineup.")
         _RecordedAnswer.failing_model = args.fail_model
         print(f"Deliberate outage: {args.fail_model} fails every call")
+    flash_lite_before: dict[str, int] = {}
+    if args.exhaust_flash:
+        if lineup.name != "replay-gemini" or not isinstance(lineup.planner, GeminiPool):
+            raise SystemExit("--exhaust-flash only works with the replay-gemini lineup.")
+        exhausted_ledger = lineup.planner.ledger
+        for model in GEMINI_FORECAST_MODELS:
+            exhausted_ledger.mark_used_up(model)
+        for bucket in dict.fromkeys(exhausted_ledger.bucket(m) for m in GEMINI_PARSER_MODELS):
+            # Flash-Lite exactly at its reserve: usable quota 0, reserve full.
+            exhausted_ledger.used[bucket] = exhausted_ledger.used.get(bucket, 0) + exhausted_ledger.usable_left(bucket)
+            flash_lite_before[bucket] = exhausted_ledger.used[bucket]
+        print("Forced: every Flash model used up today; Flash-Lite at its reserve")
     print(
         f"Model lineup: {lineup.name} "
         f"({', '.join(dict.fromkeys(lineup.llm_model_names()))})"
@@ -1743,8 +1843,10 @@ if __name__ == "__main__":
             timeout=SHADOW_FORECAST_TIMEOUT_SECONDS,
             allowed_tries=1,
         )
-    elif lineup.name == "replay":
+    elif lineup.name in ("replay", "replay-gemini"):
         template_bot.shadow_llm = ReplayLlm()
+    if lineup.name == "replay-gemini":
+        template_bot.keep_records = True
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
     template_bot.submit_forecasts = publish_to_metaculus
@@ -1895,6 +1997,10 @@ if __name__ == "__main__":
                 f.write(f"**{line}**\n\n")
         if template_bot.keep_records:
             table = rehearsal_table(template_bot.__dict__.get("kept_records", []))
+            if lineup.name == "replay-gemini" and isinstance(lineup.planner, GeminiPool):
+                table += "\n\n" + backup_chain_summary(
+                    template_bot.__dict__.get("kept_records", []), lineup.planner.ledger, flash_lite_before
+                )
             print(table)
             if summary_path:
                 with open(summary_path, "a", encoding="utf-8") as f:

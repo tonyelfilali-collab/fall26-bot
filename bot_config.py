@@ -16,7 +16,7 @@ To switch lineups, change ACTIVE_LINEUP.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 from forecasting_tools import GeneralLlm
 
@@ -25,7 +25,7 @@ from gemini_budget import QuotaLedger, make_store
 from llm_throttle import RequestPacer, ThrottledLlm
 from replay import REPLAY_MODEL, ReplayChainLlm, ReplayLlm, _RecordedAnswer
 
-ACTIVE_LINEUP: Literal["free", "gemini-free", "credits", "replay", "replay-credits"] = "gemini-free"
+ACTIVE_LINEUP: Literal["free", "gemini-free", "credits", "replay", "replay-credits", "replay-gemini"] = "gemini-free"
 
 # PLAN.md Step 7 (research.py): planner -> AskNews (at most 3 calls per
 # question, ASKNEWS_API_KEY) or free news -> dossier -> gap-fill. The planner
@@ -73,6 +73,14 @@ GEMINI_PARSER_MODELS = (
 # scoreboard), to judge it as a backup for when Gemini is overloaded.
 SHADOW_FORECAST_MODEL = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
 assert SHADOW_FORECAST_MODEL.endswith(":free")
+# Build 3 (architect, 29 Sep): the same model is also a live BACKUP
+# forecaster when no Flash model answered (main.py: _backup_forecasts). Its
+# hard time limit, and its pace (OpenRouter free models: 20 requests/minute).
+BACKUP_FORECAST_MODEL = SHADOW_FORECAST_MODEL
+BACKUP_FORECAST_TIMEOUT_SECONDS = 240
+# Nemotron makes this many backup forecasts at the same time (median).
+BACKUP_FORECASTS = 2
+BACKUP_REQUESTS_PER_MINUTE = 10
 # Flash forecasters: 20 a day each (Google counts over-limit attempts too).
 GEMINI_FREE_REQUESTS_PER_DAY = 20
 # Flash-Lite: 500 a day each on the AI Studio page; we plan with 400 (margin).
@@ -188,9 +196,13 @@ class GeminiPool:
 
     ledger: QuotaLedger
     pacers: dict[str, RequestPacer]
+    # Builds the Nemotron backup forecaster (None = no Nemotron backup).
+    nemotron: Callable[[], GeneralLlm] | None = None
+    # The LLM class of every Gemini slot (replay-gemini swaps in recorded replies).
+    llm_class: type = ThrottledLlm
 
     def _forecaster(self, model: str, **kwargs) -> ThrottledLlm:
-        return ThrottledLlm(
+        return self.llm_class(
             model=model,
             pacer=self.pacers[model],
             ledger=self.ledger,
@@ -288,6 +300,20 @@ class GeminiPool:
     def any_quota_left(self) -> bool:
         return any(self.ledger.total_left(m) > 0 for m in GEMINI_FORECAST_MODELS)
 
+    def flash_exhausted(self) -> bool:
+        """
+        Every Flash forecasting model is out of quota for the current quota
+        day (gemini_budget.quota_day: midnight Pacific, so 07:00 UTC in summer
+        time and 08:00 UTC in winter time): Google answered 429, or the
+        ledger is at 0. A 503 (overloaded) is not exhaustion: it only counts
+        one attempt, and the normal retry schedule goes on.
+        """
+        return not self.any_quota_left()
+
+    def backup_forecaster(self) -> GeneralLlm | None:
+        """The Nemotron backup forecaster (a free OpenRouter model), if set."""
+        return self.nemotron() if self.nemotron is not None else None
+
     def quick_forecaster(self) -> ThrottledLlm:
         """
         For the one quick forecast when no planned forecast finished: every
@@ -310,32 +336,38 @@ class GeminiPool:
         assert llm is not None
         return llm
 
-    def emergency_forecasters(self) -> list[ThrottledLlm]:
+    def emergency_forecasters(self, allow_reserve: bool = True) -> list[ThrottledLlm]:
         """
-        Emergency only (main.py: closing within 45 min, no Flash forecast):
-        up to 2 forecasts from the Flash-Lite models, each starting on a
-        different one with the others as backups, reserve allowed.
+        Backup chain only (main.py: no Flash forecast): up to 2 forecasts
+        from the Flash-Lite models, each starting on a different one with the
+        others as backups. Closing within 45 min: reserve allowed. Earlier
+        (every Flash model out of quota): allow_reserve=False, so only
+        Flash-Lite quota above the reserve is used and research and parsing
+        for later questions are never starved.
         """
-        ready = [m for m in GEMINI_PARSER_MODELS if self.ledger.total_left(m) > 0]
+        left = self.ledger.total_left if allow_reserve else self.ledger.usable_left
+        ready = [m for m in GEMINI_PARSER_MODELS if left(m) > 0]
         chains = []
         for first in ready[:2]:
             order = [first, *[m for m in GEMINI_PARSER_MODELS if m != first]]
             llm: ThrottledLlm | None = None
             for model in reversed(order):
-                llm = self._forecaster(model, backup=llm, allow_reserve=True)
+                llm = self._forecaster(model, backup=llm, allow_reserve=allow_reserve)
             assert llm is not None
             chains.append(llm)
         return chains
 
-    def parser(self) -> ThrottledLlm:
+    def parser(self, allow_reserve: bool = True) -> ThrottledLlm:
+        """The Flash-Lite parser chain. allow_reserve=False: for reading a
+        backup forecast made before the 45-min window (above the reserve only)."""
         llm: ThrottledLlm | None = None
         for model in reversed(GEMINI_PARSER_MODELS):
-            llm = ThrottledLlm(
+            llm = self.llm_class(
                 model=model,
                 pacer=self.pacers[model],
                 ledger=self.ledger,
                 backup=llm,
-                allow_reserve=True,
+                allow_reserve=allow_reserve,
                 temperature=None,
                 timeout=180,
                 # structure_output already retries a bad parse up to 3 times.
@@ -356,16 +388,40 @@ def gemini_pacers() -> dict[str, RequestPacer]:
     return pacers
 
 
-def _gemini_free_lineup() -> Lineup:
-    pool = GeminiPool(
+def _nemotron_factory(llm_class: type = ThrottledLlm) -> Callable[[], GeneralLlm]:
+    """The Nemotron backup forecaster: a free OpenRouter model, not in the
+    Gemini ledger, one try (a failure never blocks the Flash-Lite forecasts)."""
+    pacer = RequestPacer(BACKUP_REQUESTS_PER_MINUTE)
+
+    def make() -> GeneralLlm:
+        return llm_class(
+            model=BACKUP_FORECAST_MODEL,
+            pacer=pacer,
+            ledger=None,
+            temperature=None,
+            timeout=BACKUP_FORECAST_TIMEOUT_SECONDS,
+            allowed_tries=1,
+        )
+
+    return make
+
+
+def _gemini_pool(store, llm_class: type = ThrottledLlm) -> GeminiPool:  # type: ignore[no-untyped-def]
+    return GeminiPool(
         ledger=QuotaLedger(
-            make_store(GEMINI_LEDGER_PATH),
+            store,
             daily_limits=dict(GEMINI_DAILY_LIMITS),
             reserve_fraction=GEMINI_FREE_RESERVE,
             buckets=GEMINI_QUOTA_BUCKETS,
         ),
         pacers=gemini_pacers(),
+        nemotron=_nemotron_factory(llm_class),
+        llm_class=llm_class,
     )
+
+
+def _gemini_free_lineup() -> Lineup:
+    pool = _gemini_pool(make_store(GEMINI_LEDGER_PATH))
     parser = pool.parser()
     return Lineup(
         name="gemini-free",
@@ -522,8 +578,39 @@ def _replay_credits_lineup() -> Lineup:
     )
 
 
+def _replay_gemini_lineup() -> Lineup:
+    """
+    Test Bot's gemini-free rehearsal: the real GeminiPool logic (plan, quick
+    forecast, backup chain, ledger) with every Gemini and Nemotron slot a
+    recorded reply: 0 model calls. The ledger lives in memory only (never
+    saved to fall26-data). main.py --exhaust-flash marks every Flash model
+    used up and puts Flash-Lite at its reserve first.
+    """
+    from gemini_budget import MemoryStore
+
+    pool = _gemini_pool(MemoryStore(), llm_class=ReplayChainLlm)
+    replay = ReplayLlm()
+    return Lineup(
+        name="replay-gemini",
+        llms={
+            "default": pool.unplanned_forecaster(),
+            "parser": pool.parser(),
+            "summarizer": replay,
+            "researcher": "replay",
+        },
+        research_reports_per_question=1,
+        predictions_per_research_report=GEMINI_MAX_FORECASTS_PER_QUESTION,
+        parser_validation_samples=1,
+        summarize_research=False,
+        free_only=True,
+        test_only=True,
+        planner=pool,
+    )
+
+
 _LINEUPS = {
     "free": _free_lineup,
+    "replay-gemini": _replay_gemini_lineup,
     "gemini-free": _gemini_free_lineup,
     "credits": _credits_lineup,
     "replay": _replay_lineup,
