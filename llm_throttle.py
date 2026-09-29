@@ -43,6 +43,10 @@ answered_models: contextvars.ContextVar[list[str] | None] = contextvars.ContextV
 )
 
 
+# Paid chains: the wait before their second try.
+PAID_RETRY_WAIT_SECONDS = 5
+
+
 class NoQuotaLeft(RuntimeError):
     """No model in the chain has budget left today."""
 
@@ -82,6 +86,9 @@ class ThrottledLlm(GeneralLlm):
     booked: this model was booked in the ledger when the forecast was planned.
     allow_reserve: may use the model's reserve (only for a question's first
         forecast, and for parsing, so every question gets at least one).
+    spend: the credits spend guard (spend.SpendGuard) for a PAID model: its
+        cost is recorded, the question's cap is checked before each call, and
+        a model that timed out is not tried again on that question.
     """
 
     def __init__(
@@ -92,9 +99,11 @@ class ThrottledLlm(GeneralLlm):
         backup: ThrottledLlm | None = None,
         booked: bool = False,
         allow_reserve: bool = False,
+        spend=None,  # type: ignore[no-untyped-def]
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self._spend = spend
         self._pacer = pacer
         self._ledger = ledger
         self._backup = backup
@@ -111,7 +120,20 @@ class ThrottledLlm(GeneralLlm):
             if not started:
                 reason = self._ledger.last_refusal.get(self.model, "no budget left today")
                 return await self._hand_over(prompt, reason)
+        if self._spend is not None:
+            refusal = self._spend.refusal(self.model)
+            if refusal in ("cap", "no question"):
+                from spend import SpendCapReached
+
+                why = "question spend cap reached" if refusal == "cap" else "no question to charge it to"
+                logger.warning(f"{self.model}: {why}, no new paid forecast")
+                self._spend.refused += 1
+                raise SpendCapReached(f"{self.model}: {why}")
+            if refusal:
+                return await self._hand_over(prompt, refusal)
+            self._spend.start(self.model)
         succeeded = False
+        failure: BaseException | None = None
         try:
             await self._pacer.wait_turn()
             response = await super()._mockable_direct_call_to_model(prompt)
@@ -121,10 +143,23 @@ class ThrottledLlm(GeneralLlm):
                 # Google itself says the day's quota is gone.
                 self._ledger.mark_used_up(self.model)
             error_name = type(e).__name__
+            failure = e
+        except BaseException as e:  # (incl. cancellation: it may still be billed)
+            failure = e
+            raise
         finally:
             # Every attempt counts against the quota (Google counts failed ones).
             if self._ledger is not None:
                 self._ledger.finish(self.model, succeeded)
+            if self._spend is not None:
+                self._spend.finish(
+                    self.model,
+                    succeeded,
+                    cost=getattr(response, "cost", None) if succeeded else None,
+                    error=failure,
+                    timed_out=isinstance(failure, litellm.Timeout),
+                    output_tokens=getattr(response, "completion_tokens_used", None) if succeeded else None,
+                )
         if not succeeded:
             return await self._hand_over(prompt, error_name)
         logger.info(f"{self.model}: answered")
@@ -132,6 +167,23 @@ class ThrottledLlm(GeneralLlm):
         if answered is not None:
             answered.append(self.model)
         return response
+
+    async def _invoke_with_request_cost_time_and_token_limits_and_retry(self, prompt):  # type: ignore[no-untyped-def]
+        """Paid chains (spend guard set): the whole chain gets `allowed_tries`
+        tries, 5 s apart, and a reached spend cap is never retried."""
+        if self._spend is None:
+            return await super()._invoke_with_request_cost_time_and_token_limits_and_retry(prompt)
+        from spend import SpendCapReached
+
+        for attempt in range(self.allowed_tries):
+            try:
+                return await self._mockable_direct_call_to_model(prompt)
+            except SpendCapReached:
+                raise
+            except Exception:
+                if attempt + 1 >= self.allowed_tries:
+                    raise
+                await asyncio.sleep(PAID_RETRY_WAIT_SECONDS)
 
     async def _hand_over(self, prompt, reason: str):  # type: ignore[no-untyped-def]
         if self._backup is None:

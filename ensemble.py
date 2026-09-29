@@ -71,6 +71,22 @@ class Tier:
         return self.binary_round1 + self.binary_round2
 
 
+# OpenRouter prices, dollars per million tokens (prompt, completion), from the
+# Credits pre-flight run 36472633695 (28 Sep 2026). Used by the spend guards
+# (spend.py) to reserve an estimate per paid call. Rerun the pre-flight to refresh.
+MODEL_PRICES: dict[str, tuple[float, float]] = {
+    "anthropic/claude-opus-5.5": (4.00, 20.00),
+    "openai/gpt-5.6-sol": (2.00, 10.00),
+    "google/gemini-3.6-flash": (0.75, 3.75),
+    "anthropic/claude-fable-5.1": (10.00, 50.00),
+    "anthropic/claude-opus-5": (5.00, 25.00),
+    "openai/gpt-5.5": (5.00, 30.00),
+    "google/gemini-3.1-pro-preview": (2.00, 12.00),
+}
+# A model missing from the table is estimated at the most expensive price.
+UNKNOWN_MODEL_PRICE = (10.00, 50.00)
+MODEL_PRICES = {f"openrouter/{k}": v for k, v in MODEL_PRICES.items()}
+
 # Credits 4b (cost_table.py, Credits pre-flight run 36472957797, 28 Sep 2026):
 # dollars per question = real OpenRouter prices x prompt tokens measured from
 # our question logs (binary 7,143; numeric 7,476; discrete 4,991; multiple
@@ -159,6 +175,44 @@ def notify_tier_change(old: str | None, new: str, target: float) -> bool:
         return True
     except Exception:
         return False
+
+
+def open_alert_issue(title: str, body: str) -> bool:
+    """Credits 4d: open a GitHub issue (GitHub emails Tony), unless an open
+    issue already has this title (alert titles carry the date: once a day).
+    Never raises."""
+    try:
+        repo = os.environ["GITHUB_REPOSITORY"]
+        headers = {"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"}
+        existing = requests.get(
+            f"https://api.github.com/repos/{repo}/issues", headers=headers,
+            params={"state": "open", "per_page": 100}, timeout=30,
+        )
+        existing.raise_for_status()
+        if any(issue.get("title") == title for issue in existing.json()):
+            return False
+        response = requests.post(
+            f"https://api.github.com/repos/{repo}/issues", headers=headers,
+            json={"title": title, "body": body}, timeout=30,
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
+def openrouter_key_usage() -> float | None:
+    """Total dollars this OPENROUTER_API_KEY has spent (OpenRouter's own count), or None."""
+    try:
+        response = requests.get(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return float(response.json()["data"]["usage"])
+    except Exception:
+        return None
 
 
 def tier_record(tier: str, target: float) -> str:
