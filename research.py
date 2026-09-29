@@ -52,6 +52,8 @@ _asknews_pacer = RequestPacer(requests_per_minute=5)
 class ResearchPlan:
     queries: list[str]
     key_facts: list[str] = field(default_factory=list)
+    # Build 6a: up to 3 entities for Wikipedia background.
+    entities: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -64,6 +66,7 @@ class ResearchResult:
     gap_filled: bool = False
     dossier_written: bool = False
     current_value: CurrentValue | None = None
+    wikipedia: list[str] = field(default_factory=list)  # page titles used
 
     @property
     def articles(self) -> int:
@@ -86,7 +89,8 @@ def parse_plan(text: str, fallback_query: str) -> ResearchPlan:
         data = {}
     queries = [str(q).strip() for q in data.get("queries", []) if str(q).strip()][:MAX_QUERIES]
     facts = [str(f).strip() for f in data.get("key_facts", []) if str(f).strip()]
-    return ResearchPlan(queries=queries or [fallback_query], key_facts=facts)
+    entities = [str(e).strip() for e in data.get("entities", []) if str(e).strip()][:3]
+    return ResearchPlan(queries=queries or [fallback_query], key_facts=facts, entities=entities)
 
 
 def planner_prompt(question_text: str, resolution_criteria: str, dates: str) -> str:
@@ -94,8 +98,11 @@ def planner_prompt(question_text: str, resolution_criteria: str, dates: str) -> 
         "You plan news research for a forecaster. Do not forecast.\n\n"
         f"Question: {question_text}\n\nResolution criteria: {resolution_criteria}\n\n{dates}\n\n"
         f"Write up to {MAX_QUERIES} short news search queries (keywords, not sentences) that would "
-        "find the facts deciding this question, and list those key facts.\n"
-        'Answer with JSON only: {"queries": ["...", "..."], "key_facts": ["...", "..."]}'
+        "find the facts deciding this question, and list those key facts. Also name up to 3 "
+        "people, organisations, places or things central to the question, as English Wikipedia "
+        "article titles.\n"
+        'Answer with JSON only: {"queries": ["...", "..."], "key_facts": ["...", "..."], '
+        '"entities": ["...", "..."]}'
     )
 
 
@@ -236,6 +243,7 @@ async def run_planned_research(
     invoke_helper: Callable[[str], Awaitable[str]],
     search_asknews: Callable[[str], Awaitable[list[Any]]] = asknews_search,
     search_free: Callable[[str], list[Any]] = collect_free_news,
+    fetch_background: Callable[[list[str]], tuple[str, list[str]]] | None = None,
 ) -> ResearchResult:
     text = question.question_text
     criteria = question.resolution_criteria or ""
@@ -318,7 +326,24 @@ async def run_planned_research(
             result.gap_filled = True
             dossier += f"\n\n## Extra search: {missing}\n{extra}"
 
-    result.dossier = cap_tokens(remove_market_prices(dossier))
+    # 5. Build 6a: Wikipedia background for the planner's entities (a
+    # failure only means no background); the dossier is cut to make room.
+    section = ""
+    if plan.entities:
+        try:
+            from wikipedia import background
+
+            section, result.wikipedia = await asyncio.to_thread(fetch_background or background, plan.entities)
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: Wikipedia background failed ({type(e).__name__})")
+    dossier = remove_market_prices(dossier)
+    if section:
+        room = int(MAX_DOSSIER_TOKENS * WORDS_PER_TOKEN) - len(section.split()) - 1
+        words = dossier.split()
+        body = dossier if len(words) <= room else " ".join(words[:room]) + " [...]"
+        result.dossier = f"{body}\n\n{section}"
+    else:
+        result.dossier = cap_tokens(dossier)
     result.current_value = parse_current_value(result.dossier)
     return result
 

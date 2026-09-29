@@ -1286,6 +1286,7 @@ class FallBot2026(ForecastBot):
             f"free news {result.free_articles}); {len(result.queries)} queries; "
             f"dossier {'written' if result.dossier_written else 'not written, using the articles'}"
             f"{', gap-filled' if result.gap_filled else ''}; "
+            f"Wikipedia background: {len(result.wikipedia)} page(s); "
             f"{len(result.dossier.split())} words"
         )
         self._record_for(question)["research_detail"] = {
@@ -1300,6 +1301,7 @@ class FallBot2026(ForecastBot):
             "free_articles": result.free_articles,
             "gap_filled": result.gap_filled,
             "dossier_written": result.dossier_written,
+            "wikipedia": result.wikipedia,
         }
         return result.dossier
 
