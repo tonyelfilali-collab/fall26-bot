@@ -707,6 +707,12 @@ def _replay_gemini_lineup() -> Lineup:
     """
     from gemini_budget import MemoryStore
 
+    # Round 1 disagrees on binary questions (30 / 60 / 45 / 50), so the
+    # follow-up search (build 5, frozen in replay) and round 2 are rehearsed.
+    _RecordedAnswer.binary_percent = {
+        "gemini/gemini-3.6-flash": 30, "gemini/gemini-3.7-flash": 60,
+        "gemini/gemini-3.8-flash": 45, "gemini/gemini-3.5-flash": 50,
+    }
     pool = _gemini_pool(MemoryStore(), llm_class=ReplayChainLlm)
     replay = ReplayLlm()
     return Lineup(

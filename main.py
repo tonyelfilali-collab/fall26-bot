@@ -111,7 +111,10 @@ from real_regression import load_questions as load_regression_questions
 from real_regression import reading_table
 from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
 from replay import current_question as replay_question
-from research import run_planned_research, with_official_line
+from followup import FOLLOWUP_ENABLED, MIN_MINUTES_TO_CLOSE, run_followup, with_followup
+from followup import disagreement as followup_disagreement
+from followup import reason_of as followup_reason
+from research import MAX_ASKNEWS_CALLS, asknews_search, run_planned_research, with_official_line
 from gemini_budget import current_question_key
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
@@ -684,10 +687,16 @@ class FallBot2026(ForecastBot):
             )
         )
         valid_predictions = reused + valid_predictions
-        # Step 6: binary round 2 only when round 1 disagrees or is extreme.
-        if is_binary and valid_predictions and not self.only_model and round2_needed(
+        # Build 5: round 1 disagrees -> a follow-up search aimed at the
+        # disagreement; round 2 uses the updated dossier.
+        research, followed_up = await self._followup_search(question, record, valid_predictions, research)
+        # Step 6: binary round 2 only when round 1 disagrees or is extreme;
+        # numeric / multiple choice (Gemini pool) only after a follow-up search.
+        binary_round2 = is_binary and round2_needed(
             [p.prediction_value for p in valid_predictions]  # type: ignore[misc]
-        ):
+        )
+        other_round2 = not is_binary and followed_up and isinstance(self.planner, GeminiPool)
+        if valid_predictions and not self.only_model and (binary_round2 or other_round2):
             extra = self.planner.round2(
                 seasonal=self.forecasting_seasonal,
                 used_models=planned_models,
@@ -812,6 +821,50 @@ class FallBot2026(ForecastBot):
         )
         logger.info(f"Question {question.id_of_post}: backup chain: {len(more)} Flash-Lite forecast(s)")
         return more, errors + more_errors, more_group or group
+
+    # ------------------------------------------------ follow-up search (build 5)
+
+    async def _followup_search(self, question: MetaculusQuestion, record: dict, predictions: list, research: str) -> tuple[str, bool]:
+        """(research for round 2, whether a follow-up search was added). A
+        failure is only logged; research is then unchanged."""
+        record["followup"] = {"enabled": FOLLOWUP_ENABLED, "triggered": False}
+        if not FOLLOWUP_ENABLED or len(predictions) < 2:
+            return research, False
+        if question.close_time is not None and closes_within(question.close_time, timedelta(minutes=MIN_MINUTES_TO_CLOSE)):
+            record["followup"]["skipped"] = "closes within 25 min"
+            return research, False
+        why = followup_disagreement(question, [p.prediction_value for p in predictions])
+        if why is None:
+            return research, False
+        record["followup"].update(triggered=True, trigger=why)
+        try:
+            if self.get_llm("researcher") == "replay":
+                findings, detail = "Replay follow-up (frozen): no searches were made.", {"queries": [], "replay": True}
+            else:
+                used = (record.get("research_detail") or {}).get("asknews_calls")
+                asknews_left = MAX_ASKNEWS_CALLS - used if used is not None else 0
+                findings, detail = await run_followup(
+                    question.question_text,
+                    [followup_reason(p.reasoning) for p in predictions],
+                    self.get_llm("parser", "llm").invoke,
+                    asknews_left,
+                    asknews_search,
+                    lambda query: collect_free_news(query),
+                )
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: follow-up search failed ({type(e).__name__})")
+            record["followup"]["error"] = type(e).__name__
+            return research, False
+        record["followup"].update(detail)
+        if not findings:
+            logger.info(f"Question {question.id_of_post}: round 1 disagrees ({why}); follow-up search found nothing")
+            return research, False
+        logger.info(
+            f"Question {question.id_of_post}: round 1 disagrees ({why}); follow-up search: "
+            f"{len(detail.get('queries', []))} query(ies), AskNews {detail.get('asknews_articles', 0)}, "
+            f"free news {detail.get('free_articles', 0)} article(s)"
+        )
+        return with_followup(research, findings), True
 
     # ------------------------------------------------ never re-buy (credits 4d)
 
