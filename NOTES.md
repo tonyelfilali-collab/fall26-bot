@@ -304,6 +304,17 @@ adjustment of our submitted forecasts is saved as shadow `consistent` (scored by
 the group and violation count go to the question log (`consistency`), counts only in the public log.
 The value is computed when the question is submitted (siblings submitted later don't update it).
 
+## More forecasts when quota is spare (Build 4, 29 Sep 2026)
+
+`bot_config.EXTRA_FORECASTS_ENABLED` (default ON). A seasonal question (or MiniBench when the budget
+isn't low) gets 3 forecasts by default, up to 5 (binary round 1) or 6 (numeric / multiple choice)
+when the usable, non-reserve Flash quota left AFTER this question is at least 4 x the questions still
+expected today = max(7-day average of live questions per day, 4) x the share of the Pacific quota
+day left, + 2. The 7-day average comes from the question-log paths in fall26-data
+(`question_log.questions_per_day`, each live run). Distinct models first, then repeats (most usable
+quota first); extras never use the reserve. Question log `extra_forecasts` = {enabled, count, reason};
+the public log shows count and reason (quota counts only).
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:

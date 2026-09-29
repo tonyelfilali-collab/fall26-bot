@@ -16,7 +16,9 @@ To switch lineups, change ACTIVE_LINEUP.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Literal
+from zoneinfo import ZoneInfo
 
 from forecasting_tools import GeneralLlm
 
@@ -25,6 +27,8 @@ from gemini_budget import QuotaLedger, current_question_key, make_store
 from spend import FINISHED_PATH, QUESTION_CAP_FACTOR, SPEND_PATH, FinishedForecasts, SpendGuard
 from llm_throttle import RequestPacer, ThrottledLlm
 from replay import REPLAY_MODEL, ReplayChainLlm, ReplayLlm, _RecordedAnswer
+
+_PACIFIC = ZoneInfo("America/Los_Angeles")  # the Google quota day
 
 ACTIVE_LINEUP: Literal["free", "gemini-free", "credits", "replay", "replay-credits", "replay-gemini"] = "gemini-free"
 
@@ -105,6 +109,18 @@ GEMINI_FLASH_LITE_REQUESTS_PER_MINUTE = 12
 # get no forecast at all.
 GEMINI_FREE_RESERVE = 0.2
 GEMINI_MAX_FORECASTS_PER_QUESTION = 3
+# Build 4 (architect, 29 Sep): more forecasts when quota is spare. Switch
+# (default ON), logged per question ("extra_forecasts"). Up to 5 (binary
+# round 1) or 6 (numeric / multiple choice) when the usable (non-reserve)
+# Flash quota left AFTER this question is at least 4 x the questions still
+# expected today: max(7-day average per day, 4) x the share of the Pacific
+# quota day left, + 2. Distinct models first, then repeats; never the reserve.
+EXTRA_FORECASTS_ENABLED = True
+EXTRA_FORECASTS_MAX_BINARY = 5
+EXTRA_FORECASTS_MAX_OTHER = 6
+EXTRA_FORECASTS_QUOTA_FACTOR = 4
+EXTRA_FORECASTS_MIN_PER_DAY = 4
+EXTRA_FORECASTS_MARGIN = 2
 # Binary round 2 (Step 6): at most this many extra forecasts; only 1 once
 # less than half of today's forecast quota (all forecasting models) is left.
 GEMINI_ROUND2_MAX = 2
@@ -201,6 +217,12 @@ class GeminiPool:
     nemotron: Callable[[], GeneralLlm] | None = None
     # The LLM class of every Gemini slot (replay-gemini swaps in recorded replies).
     llm_class: type = ThrottledLlm
+    # Build 4: distinct questions per day over the last 7 days (main.py sets it
+    # each run; None = unknown, the minimum is used), and the switch.
+    questions_per_day: float | None = None
+    extra_forecasts: bool = EXTRA_FORECASTS_ENABLED
+    # Why the last plan() chose its number of forecasts (for the question log).
+    last_plan: dict = field(default_factory=dict)
 
     def _forecaster(self, model: str, **kwargs) -> ThrottledLlm:
         return self.llm_class(
@@ -286,17 +308,60 @@ class GeminiPool:
             if seasonal or not self.is_budget_low()
             else 1
         )
+        self.last_plan = {"enabled": self.extra_forecasts, "count": most, "reason": "default"}
+        base = most
+        if most == GEMINI_MAX_FORECASTS_PER_QUESTION and not only_model:
+            most = self._spare_quota_count(binary, most)
         chosen = [m for m in ranked if self.ledger.usable_left(m) > 0][:most]
         if not chosen:
             chosen = [m for m in ranked if self.ledger.total_left(m) > 0][:1]
         for model in chosen:
             self.ledger.book(model)
         spare = [m for m in ranked if m not in chosen]
-        return [
+        chains = [
             # The first forecast may use the reserve, so every question gets one.
             self._chain([model, *spare], allow_reserve=index == 0)
             for index, model in enumerate(chosen)
         ]
+        # Build 4: past the distinct models, repeats (most usable quota first),
+        # usable quota only, never the reserve.
+        while most > base and len(chains) < most:
+            repeat = max(ranked, key=lambda m: (self.ledger.usable_left(m), -GEMINI_FORECAST_MODELS.index(m)))
+            if self.ledger.usable_left(repeat) <= 0:
+                break
+            self.ledger.book(repeat)
+            chains.append(self._chain([repeat, *[m for m in ranked if m != repeat]], allow_reserve=False))
+        self.last_plan["count"] = len(chains)
+        return chains
+
+    def expected_questions_left_today(self, now: datetime | None = None) -> float:
+        """max(7-day average per day, 4) x the share of the Pacific quota day
+        left, + 2."""
+        now = (now or datetime.now(timezone.utc)).astimezone(_PACIFIC)
+        midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        share_left = (midnight - now).total_seconds() / 86400
+        per_day = max(self.questions_per_day or 0.0, EXTRA_FORECASTS_MIN_PER_DAY)
+        return per_day * share_left + EXTRA_FORECASTS_MARGIN
+
+    def _spare_quota_count(self, binary: bool, default: int) -> int:
+        """Build 4: up to 5 (binary) / 6 forecasts when the usable Flash quota
+        left after this question covers 4x the questions still expected today."""
+        if not self.extra_forecasts:
+            self.last_plan["reason"] = "extra forecasts switched off"
+            return default
+        cap = EXTRA_FORECASTS_MAX_BINARY if binary else EXTRA_FORECASTS_MAX_OTHER
+        usable = sum(max(0, self.ledger.usable_left(m)) for m in GEMINI_FORECAST_MODELS)
+        expected = self.expected_questions_left_today()
+        need = EXTRA_FORECASTS_QUOTA_FACTOR * expected
+        for count in range(cap, default, -1):
+            if usable - count >= need:
+                self.last_plan.update(
+                    count=count,
+                    reason=f"spare quota: {usable} usable, {usable - count} left after >= 4 x {expected:.1f} expected",
+                )
+                return count
+        self.last_plan["reason"] = f"no spare quota: {usable} usable < 4 x {expected:.1f} expected + extras"
+        return default
 
     def any_quota_left(self) -> bool:
         return any(self.ledger.total_left(m) > 0 for m in GEMINI_FORECAST_MODELS)
