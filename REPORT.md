@@ -200,3 +200,19 @@ Credit check stayed at $0 (limit $1). No revert needed.
 - Cost per question (4b, measured prompts + ASSUMED 8k output, after Fable removal): full $0.64,
   standard $0.39, lean $0.26. Only 1–2 logged questions per type so far.
 - Credits lineup is still OFF. Switch-on checklist: PLAN.md section 6b.
+
+## Update 29 Sep 2026 (06:30–09:30 UTC)
+
+| PR | What | Tier | Gate runs | Live run after |
+|---|---|---|---|---|
+| #83 | Tournament info `--audit` (read-only) | A | audit 36540542752 | – |
+| #84 | Health check started by the first tournament run after 06:00 UTC | B | replay 36540980282 | 36542287279 (started health 36542374417) |
+| #85 | More forecasts when Flash quota is spare (up to 5 / 6) | C (pre-approved) | replay 36543190072, replay-gemini 36543467516, real 36544531697 (1st try 36543728238: OpenRouter 503) | 36545459916 |
+| #86 | Disagreement follow-up search | C (pre-approved) | replay 36545434504, replay-gemini 36545668198, real 36545924191 | 36547635164 |
+| #87 | Wikipedia background; Yahoo Finance data | C (pre-approved) | replay 36547903370, real 36548079745, Credit check 36548826382 | 36548724506 |
+
+- MiniBench audit: round 33125 (21 Sep–9 Oct) had 60 questions, each open ~3 hours, all opened
+  21–23 Sep (last closed 24 Sep 02:49 UTC), before the bot went live (27 Sep 18:00). None could
+  have been forecast; no new MiniBench question since. Seasonal: 2 questions so far, both forecast.
+- Yahoo Finance answers HTTP 429 to both Actions and a home connection (even the cookie/crumb
+  handshake yfinance uses): skipped gracefully (error saved, no line). Wikipedia works.
