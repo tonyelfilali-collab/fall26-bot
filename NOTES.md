@@ -29,7 +29,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Spend guards | `spend.py` | ON (credits only) | Per-question cap 2x tier cost, daily cap 2x target, key backstop, never re-buy, fail closed | #81 |
 | Health check start | `health_dispatch.py` | ON | First tournament run after 06:00 UTC starts health.yml | #84 |
 | MiniBench discovery | `minibench.py` | ON | Slug + remembered rounds + 20-id scan every run; newest running round | #41, #90 |
-| Run timing | `run_timing.py` | ON | One run queue, research soonest-closing first; research 4 min; forecasting stages 12 min; no new question after 30 min; shadows at the run's end only before minute 45 (end by 47); log saved at submission, shadows in `<log>_shadows.json` | #96, this PR |
+| Run timing | `run_timing.py` | ON | One run queue, research soonest-closing first; research 4 min; forecasting stages 12 min (planned forecasts waited for until minute 9); no new question after 30 min; shadows at the run's end only before minute 45 (end by 47); log saved at submission, shadows in `<log>_shadows.json` | #96, this PR |
 
 
 Findings from Task 1 (checked 2026-09-27).
@@ -394,7 +394,8 @@ Architect, Tier B: a burst of questions must never push a run past the workflow'
   official-data wait counts in the 4 minutes. Any other research is cut 15 s after the limit
   (`research_time_limit: cut`, forecast without research).
 - **Forecasting stages: 12 min per question**, from the end of its research: planned forecasts,
-  the quick forecast, the follow-up search and round 2 (skipped with under 60 s left; question log
+  the quick forecast, the follow-up search and round 2. Planned forecasts are waited for only until
+  minute 9 (what finished is used), so if none finished the quick forecast has minutes 9-12 (skipped with under 60 s left; question log
   `round2_skipped`, `followup.skipped`). The existing close-time limits still apply when shorter.
   The last-minute backup chain (Nemotron / Flash-Lite) keeps its own limits. Non-Gemini lineups:
   each forecast at most 12 min.
@@ -413,7 +414,12 @@ Architect, Tier B: a burst of questions must never push a run past the workflow'
   question): 36.0 min, closing order. B: overload of 12, 11.5-min forecasts: 8 start (last at 28),
   the 4 latest-closing wait, 47.0 min. C: late run (questions arrive at minute 25.5; one starts at
   29.5): 45.4 min, shadows skipped. In each, a job killed at any minute 1-60 leaves every submitted
-  question's log saved. Worst case: a question starting just before minute 30 ends by 46; with
+  question's log saved. (Numbers before the minute-9 rule; now A 33.0, B 44.5 with 8.5-min forecasts,
+  C = worst case: one question starts at 29.5, every planned forecast hangs, the quick forecast
+  answers at minute 11.9: 45.4 min.) D: every planned forecast hangs, one run per type: the quick
+  forecast submits at minute 11.5 of 12, every type. Two such questions in ONE run: the second gets
+  no forecast (the cut calls use up each Flash model's 2 failures for the run, #60) and is retried
+  by the next run. Worst case: a question starting just before minute 30 ends by 46; with
   shadows the run ends by 47.
 - A model call cut by these limits counts as a failed attempt (quota ledger, #60): 2 in a run and
   that model is skipped for the rest of the run.

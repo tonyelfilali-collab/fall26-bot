@@ -8,8 +8,10 @@ past the workflow's 60-minute limit.
    first (ResearchQueue).
 3. Forecasting stages (planned forecasts, quick forecast, follow-up search,
    round 2): at most 12 minutes per question, counted from the end of its
-   research. The last-minute backup chain (Nemotron / Flash-Lite) keeps its
-   own limits.
+   research. The planned forecasts are waited for only until minute 9 (what
+   finished is used), so if none finished the quick forecast has minutes
+   9-12. The last-minute backup chain (Nemotron / Flash-Lite) keeps its own
+   limits.
 4. Shadow forecasts run at the end of the run, all together, only if the run
    is before minute 45 (otherwise skipped: "shadows skipped: time"), and end
    by minute 47. Each question's log is saved as soon as it is submitted; the
@@ -29,6 +31,8 @@ from typing import Any
 
 RESEARCH_LIMIT_SECONDS = 4 * 60
 FORECAST_STAGES_LIMIT_SECONDS = 12 * 60
+# Inside those 12 minutes: planned forecasts are waited for until minute 9.
+PLANNED_WAIT_SECONDS = 9 * 60
 START_CUTOFF_SECONDS = 30 * 60
 # Shadow forecasts start only before this point of the run...
 SHADOW_START_BEFORE_SECONDS = 45 * 60
