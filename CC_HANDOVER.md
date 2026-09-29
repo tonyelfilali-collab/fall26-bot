@@ -94,7 +94,23 @@ from its latest log in `fall26-data/questions/tournament/`: question id, type, f
 models that answered (`forecasts[].answered_models`), emergency?, research article count
 (`research_detail`), reading outcome (`reading`), warnings; **for numeric questions also the
 CURRENT VALUE from the dossier (`research_detail.current_value`) and whether the unit check
-flagged/dropped a model**, plus `hard_data` and the shadows. Flag anything odd.
+flagged/dropped a model**, plus `hard_data` and the shadows (Nemotron shadow: `<log>_shadows.json`
+next to the log, since #98). **Also each live forecast's duration per model** (`forecasts[].seconds`
+with `planned_model` / `answered_models`, kind and status). Flag anything odd; **tell the architect
+at once if any live Flash forecast (not Flash-Lite) takes over 6 minutes**, answered or cut at the
+minute-9 wait (#99): the 9-minute cut may then need raising.
+
+**d) Slow Flash forecasts** (architect, 29 Sep): exits when a live tournament log has a Flash forecast
+over 360 s. A small script (question id, kind, model, seconds only), run in the background every
+15 min: list `questions/tournament/*.json` (not `_shadows.json`) in fall26-data, read each new log,
+check `forecasts[]` where `planned_model` or `answered_models` is a Gemini Flash (not Lite) model
+and `seconds > 360`.
+
+**Checked 29 Sep (architect question):** a question whose Flash models are all blocked by the
+2-failure rule still gets the Nemotron backup when it closes within 45 min (the backup chain only
+needs "no forecast yet" + the window; Nemotron is not in the Gemini ledger). Virtual run: question
+2 of 2, every planned forecast hung, Flash failures 2-3 each, quick forecasts refused ->
+`emergency: window: nemotron`, submitted.
 
 **c) Timed jobs:** none pending. (The 00:00 UTC Tier C Test Bot was done; #34 merged.)
 cron-job.org runs the tournament every 10 min. Since 29 Sep the first tournament run after
