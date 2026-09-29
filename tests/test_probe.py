@@ -69,3 +69,36 @@ def test_parser_is_never_called():
 
     with pytest.raises(RuntimeError):
         asyncio.run(probe.NoParser().invoke("x"))
+
+
+def test_flash_probe_counts_in_the_ledger_and_never_uses_the_reserve(monkeypatch):
+    import litellm
+    from forecasting_tools import BinaryQuestion, GeneralLlm
+
+    import bot_config
+    from gemini_budget import MemoryStore, QuotaLedger
+
+    ledger = QuotaLedger(MemoryStore(), daily_limits=dict(bot_config.GEMINI_DAILY_LIMITS),
+                         reserve_fraction=bot_config.GEMINI_FREE_RESERVE, buckets=bot_config.GEMINI_QUOTA_BUCKETS)
+    ledger.used["gemini/gemini-3.8-flash"] = 16  # 3.8: non-reserve quota used up, only the reserve left
+    monkeypatch.setattr(probe, "live_ledger", lambda: ledger)
+    monkeypatch.setattr(probe, "FLASH_PROBE_GAP_SECONDS", 0)
+    sent = []
+
+    async def fake_call(self, prompt):  # type: ignore[no-untyped-def]
+        sent.append((self.model, self.litellm_kwargs.get("reasoning_effort"), self.litellm_kwargs.get("timeout")))
+        if len(sent) == 2:
+            raise litellm.ServiceUnavailableError(message="overloaded", llm_provider="gemini", model=self.model)
+        return SimpleNamespace(data="Reasoning.\nProbability: 40%", completion_tokens_used=50, prompt_tokens_used=900,
+                               total_tokens_used=950, cost=0.0)
+
+    monkeypatch.setattr(GeneralLlm, "_mockable_direct_call_to_model", fake_call)
+    question = BinaryQuestion(question_text="Will it rain?", id_of_post=1, page_url="https://www.metaculus.com/questions/1")
+    outcomes = probe.flash_probe(question)
+    assert [o["status"] for o in outcomes] == ["answered", "503", "not called: no budget left today", "not called: no budget left today"]
+    assert probe.CallBudget.used == 2
+    # Live setting (reasoning high) vs the default (no reasoning setting sent); the live 300 s timeout.
+    assert sent == [("gemini/gemini-3.6-flash", "high", 300), ("gemini/gemini-3.6-flash", None, 300)]
+    assert ledger.used["gemini/gemini-3.6-flash"] == 2  # both attempts counted (the 503 too)
+    assert ledger.used["gemini/gemini-3.8-flash"] == 16  # the reserve was never touched
+    assert all("seconds" in o for o in outcomes[:2])

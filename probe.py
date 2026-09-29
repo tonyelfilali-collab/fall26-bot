@@ -9,6 +9,13 @@ b) gemini-3-flash: the bot's own prompts on the 4 bot-testing-area questions
    (no research, answers read directly only: the parser is disabled).
 c) gemma-4-31b: one binary test question with a ~6,000-token dossier (free
    news, no model call), to see if it fits the 16K tokens/minute limit.
+flash: Flash 503 probe (architect, 29 Sep): the same binary test question
+   (the bot's own prompt, no research) on gemini-3.6-flash and
+   gemini-3.8-flash, each with the live setting (reasoning "high") and with
+   the default (no reasoning setting sent): 4 calls, one attempt each, no
+   retries, the live 300 s timeout. Every call is counted in the live quota
+   ledger and uses non-reserve quota only (a model without it is not called).
+   Run it twice, hours apart: at most 8 calls in total.
 
 The repo is public: the log shows only statuses and counts. The raw answers
 (grounded text and sources, forecasts' text) go to the private fall26-data
@@ -24,6 +31,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -37,7 +45,7 @@ from forecasting_tools import BinaryQuestion, GeneralLlm, MetaculusClient  # noq
 
 import main  # noqa: E402
 from free_news import collect_free_news, format_articles  # noqa: E402
-from gemini_budget import GitHubFileStore  # noqa: E402
+from gemini_budget import GitHubFileStore, QuotaLedger, make_store  # noqa: E402
 from question_log import DATA_REPO, to_jsonable  # noqa: E402
 
 logger = logging.getLogger(PUBLIC_LOGGER_NAME)
@@ -190,6 +198,87 @@ def build_dossier(question: Any) -> str:
     return " ".join(text.split()[:DOSSIER_WORDS])
 
 
+# ---------------------------------------------------------------- flash: 503 probe
+
+FLASH_PROBE = (
+    ("gemini/gemini-3.6-flash", "high"),
+    ("gemini/gemini-3.6-flash", "default"),
+    ("gemini/gemini-3.8-flash", "high"),
+    ("gemini/gemini-3.8-flash", "default"),
+)
+FLASH_PROBE_GAP_SECONDS = 20  # between calls (the free tier allows 5 a minute per model)
+
+
+def live_ledger() -> QuotaLedger:
+    import bot_config
+
+    return QuotaLedger(
+        make_store(bot_config.GEMINI_LEDGER_PATH),
+        daily_limits=bot_config.GEMINI_DAILY_LIMITS,
+        reserve_fraction=bot_config.GEMINI_FREE_RESERVE,
+        buckets=bot_config.GEMINI_QUOTA_BUCKETS,
+    )
+
+
+def error_kind(error: BaseException) -> str:
+    name = type(error).__name__
+    return {"ServiceUnavailableError": "503", "RateLimitError": "429", "InternalServerError": "500",
+            "Timeout": "timeout"}.get(name, name)
+
+
+class LedgerTimedLlm(GeneralLlm):
+    """One Gemini call, counted in the live quota ledger (non-reserve only),
+    timed, its outcome kept."""
+
+    def __init__(self, model: str, setting: str, ledger: QuotaLedger, outcome: dict) -> None:
+        extra = {"reasoning_effort": "high"} if setting == "high" else {}
+        super().__init__(model=model, temperature=None, timeout=300, allowed_tries=1, **extra)
+        self._ledger = ledger
+        self._outcome = outcome
+
+    async def _mockable_direct_call_to_model(self, prompt):  # type: ignore[no-untyped-def]
+        if not self._ledger.start(self.model, booked=False, allow_reserve=False):
+            self._outcome["status"] = f"not called: {self._ledger.last_refusal.get(self.model)}"
+            raise RuntimeError(self._outcome["status"])
+        CallBudget.take()
+        self._outcome["called_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        started = time.monotonic()
+        succeeded = False
+        try:
+            response = await super()._mockable_direct_call_to_model(prompt)
+            succeeded = True
+            self._outcome.update(status="answered", answer_tokens=response.completion_tokens_used,
+                                 prompt_tokens=response.prompt_tokens_used)
+            return response
+        except BaseException as e:
+            self._outcome.update(status=error_kind(e), error=str(e)[:500])
+            raise
+        finally:
+            self._outcome["seconds"] = round(time.monotonic() - started, 1)
+            self._ledger.finish(self.model, succeeded)
+            self._ledger.save()
+
+
+def flash_probe(binary: Any, max_calls: int = len(FLASH_PROBE)) -> list[dict]:
+    ledger = live_ledger()
+    outcomes = []
+    for i, (model, setting) in enumerate(FLASH_PROBE[:max_calls]):
+        if i:
+            time.sleep(FLASH_PROBE_GAP_SECONDS)
+        outcome: dict[str, Any] = {"model": model, "setting": setting, "non_reserve_left_before": ledger.usable_left(model)}
+        r = asyncio.run(forecast_one(_bot(LedgerTimedLlm(model, setting, ledger, outcome)), binary,
+                                     "No research is available for this test."))
+        outcome.update(forecast_status=r["status"], reading=r["reading"], raw_output=r.get("raw_output"))
+        outcomes.append(outcome)
+        print(
+            f"flash) {model.split('/')[-1]} reasoning {setting}: {outcome.get('status')}"
+            + (f" after {outcome['seconds']} s" if "seconds" in outcome else "")
+            + (f", answer tokens {outcome['answer_tokens']}" if outcome.get("answer_tokens") is not None else "")
+            + f" (UTC {outcome.get('called_at', '-')})"
+        )
+    return outcomes
+
+
 # ---------------------------------------------------------------- run
 
 
@@ -255,6 +344,9 @@ def main_probe(part: str) -> int:
                 f"answer tokens {tokens.get('answer_tokens', '?')}"
             )
 
+    if part == "flash":
+        results["flash_probe"] = flash_probe(binary)
+
     results["b_c_usage"] = CountedLlm.usage
     results["gemini_calls"] = CallBudget.used
     print(f"Gemini generate calls made: {CallBudget.used} (limit {MAX_GEMINI_CALLS}); nothing submitted")
@@ -270,5 +362,5 @@ def main_probe(part: str) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test-only probe of other free Gemini models")
-    parser.add_argument("--part", choices=["a", "b", "c", "all"], default="all")
+    parser.add_argument("--part", choices=["a", "b", "c", "all", "flash"], default="all")
     sys.exit(main_probe(parser.parse_args().part))
