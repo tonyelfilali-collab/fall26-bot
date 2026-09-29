@@ -29,6 +29,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Spend guards | `spend.py` | ON (credits only) | Per-question cap 2x tier cost, daily cap 2x target, key backstop, never re-buy, fail closed | #81 |
 | Health check start | `health_dispatch.py` | ON | First tournament run after 06:00 UTC starts health.yml | #84 |
 | MiniBench discovery | `minibench.py` | ON | Slug + remembered rounds + 20-id scan every run; newest running round | #41, #90 |
+| Run timing | `run_timing.py` | ON | One run queue, research soonest-closing first; research 4 min; forecasting stages 12 min; no new question after 40 min; shadows at the run's end (until minute 33) | this PR |
 
 
 Findings from Task 1 (checked 2026-09-27).
@@ -375,6 +376,43 @@ Round 2 uses it: binary round 2 as before; numeric / multiple choice get a round
   so no pandas/yfinance dependency), ~1 year of daily closes. Same dossier line as FRED/CoinGecko;
   stand-in warning rules apply, plus "futures price vs spot price". A block (e.g. HTTP 429) is saved
   as an error: no line. The Credit check workflow also checks Yahoo (gold) and Wikipedia.
+
+## Run timing (29 Sep 2026)
+
+Architect, Tier B: a burst of questions must never push a run past the workflow's 60-minute limit
+(`run_timing.py`, used by `main.py`). All times are event-loop seconds from the process start.
+- **One run queue:** seasonal and MiniBench questions go into one `forecast_questions` call (the old
+  batches, where MiniBench closing within 30 min went first and each batch waited for the one before,
+  are gone). Each question keeps its own seasonal/MiniBench flag (`seasonal_by_post`), so seasonal
+  keeps its quota priority in planning.
+- **Research order:** one question researches at a time (`ResearchQueue`, replacing the template's
+  semaphore); the turn always goes to the soonest-closing question that hasn't researched yet.
+  Forecasting runs side by side, as before.
+- **Research: 4 min per question.** Planned research stops at the deadline in whichever step it's
+  in (plan, search, dossier, gap-fill, Wikipedia) and the dossier is built from what was gathered
+  (the articles if the dossier wasn't written). Question log `research_time_limit` = that step. The
+  official-data wait counts in the 4 minutes. Any other research is cut 15 s after the limit
+  (`research_time_limit: cut`, forecast without research).
+- **Forecasting stages: 12 min per question**, from the end of its research: planned forecasts,
+  the quick forecast, the follow-up search and round 2 (skipped with under 60 s left; question log
+  `round2_skipped`, `followup.skipped`). The existing close-time limits still apply when shorter.
+  The last-minute backup chain (Nemotron / Flash-Lite) keeps its own limits. Non-Gemini lineups:
+  each forecast at most 12 min.
+- **Start cutoff: 40 min.** A question whose research turn comes after 40 min into the run is not
+  started (public log "not started, the run is past 40 min"); it waits for the next run, gets no
+  question log and no retry backoff. The run goes red only if it closes within 25 min, as before.
+- **Shadows at the end of the run:** the Nemotron shadow forecasts run all together after every
+  question is done, each within min(240 s, time until minute 33 of the run); under 30 s left =
+  skipped (`shadow_model.skipped: "run time"`, left out of the Scoreboard's answer rate). Question
+  logs are saved after the shadows (the saver can't overwrite a file), so a question's log appears
+  at the end of the run.
+- **Rehearsal** (`timing_rehearsal.py`, Test Bot `timing-rehearsal`; unit test): the real bot code on
+  a virtual clock, 0 model calls. Burst of 5 with slow research and one hung forecast per question:
+  33.0 min, done in closing order. Overload of 12: 10 start (last at 36 min), the 2 latest-closing
+  wait for the next run. Worst case in general: a question starting just before minute 40 ends by
+  minute 56.
+- A model call cut by these limits counts as a failed attempt (quota ledger, #60): 2 in a run and
+  that model is skipped for the rest of the run.
 
 ## Replay lab (29 Sep 2026)
 

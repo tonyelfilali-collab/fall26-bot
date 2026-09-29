@@ -80,7 +80,19 @@ from forecast_safety import (
     question_range,
     still_open_problem,
 )
-from deadlines import planned_forecast_timeout, quick_forecast_timeout
+from deadlines import MIN_FORECAST_SECONDS, MIN_QUICK_FORECAST_SECONDS, planned_forecast_timeout, quick_forecast_timeout
+from run_timing import (
+    FORECAST_STAGES_LIMIT_SECONDS,
+    RESEARCH_GRACE_SECONDS,
+    RESEARCH_LIMIT_SECONDS,
+    START_CUTOFF_SECONDS,
+    QuestionDeferred,
+    ResearchQueue,
+    capped,
+    research_key,
+    research_order,
+    shadow_seconds,
+)
 from answer_parsing import (
     parse_binary_answer,
     parse_multiple_choice_answer,
@@ -350,29 +362,16 @@ def update_retry_state(state: dict, attempted: list, failed: set, now: datetime)
     }
 
 
-# A MiniBench question closing within this time is forecast before the
-# seasonal ones (seasonal otherwise goes first, for time and for quota).
-URGENT_MINIBENCH = timedelta(minutes=30)
-
-
-def queue_batches(
-    seasonal: list, minibench: list, now: datetime
-) -> list[tuple[bool, list]]:
-    """(is seasonal, questions) batches in forecasting order: MiniBench questions
-    closing within 30 minutes (soonest first), then seasonal, then the rest of
-    MiniBench."""
-
-    def closes_soon(q) -> bool:  # type: ignore[no-untyped-def]
-        close = getattr(q, "close_time", None)
-        if close is None:
-            return False
-        close = close if close.tzinfo else close.replace(tzinfo=timezone.utc)
-        return close - now <= URGENT_MINIBENCH
-
-    urgent = sorted((q for q in minibench if closes_soon(q)), key=lambda q: q.close_time)
-    rest = [q for q in minibench if not closes_soon(q)]
-    batches = [(False, urgent), (True, list(seasonal)), (False, rest)]
-    return [(flag, questions) for flag, questions in batches if questions]
+def run_queue(seasonal: list, minibench: list) -> tuple[list, dict]:
+    """
+    Run timing (architect, 29 Sep): seasonal and MiniBench questions go in ONE
+    run queue (no batch waits for another), researched soonest-closing first.
+    Returns (questions in research order, post id -> is seasonal). Seasonal
+    keeps its quota priority in planning (GeminiPool.plan).
+    """
+    seasonal_by_post = {q.id_of_post: True for q in seasonal}
+    seasonal_by_post.update({q.id_of_post: False for q in minibench})
+    return research_order([*seasonal, *minibench]), seasonal_by_post
 
 
 # A question with no forecast that closes within this time can't count on a
@@ -402,6 +401,11 @@ _planned_forecaster: contextvars.ContextVar = contextvars.ContextVar(
 _parser_above_reserve: contextvars.ContextVar = contextvars.ContextVar(
     "parser_above_reserve", default=False
 )
+# Run timing: the question in this task is seasonal (True), MiniBench (False),
+# or not set (the bot's forecasting_seasonal applies).
+_question_seasonal: contextvars.ContextVar = contextvars.ContextVar("question_seasonal", default=None)
+# Run timing: event-loop time when this question's research must stop.
+_research_deadline: contextvars.ContextVar = contextvars.ContextVar("research_deadline", default=None)
 # True inside the shadow forecaster's own task (Build 1b): its answer is only
 # read directly (no parser call) and its reading is logged apart from live.
 _in_shadow: contextvars.ContextVar = contextvars.ContextVar("in_shadow", default=False)
@@ -491,10 +495,8 @@ class FallBot2026(ForecastBot):
     Additionally OpenRouter has large rate limits immediately on account creation
     """
 
-    _max_concurrent_questions = (
-        1  # Set this to whatever works for your search-provider/ai-model rate limits
-    )
-    _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
+    # One question researches at a time, soonest-closing first: the run
+    # timing's ResearchQueue (run_timing.py) replaces the template's semaphore.
     _structure_output_validation_samples = 2
     # Test switch: make every question fail, to prove a failed run shows red.
     break_on_purpose = False
@@ -515,8 +517,14 @@ class FallBot2026(ForecastBot):
     # budget. Set in __main__ from the lineup.
     planner: GeminiPool | None = None
     # Whether the tournament being forecast is the seasonal one (it gets
-    # priority when the budget is low). Set per tournament in __main__.
-    forecasting_seasonal = True
+    # priority when the budget is low). The default for questions not in
+    # seasonal_by_post (the run queue sets it per question).
+    _forecasting_seasonal = True
+    # Run timing: post id -> seasonal (True) or MiniBench (False).
+    seasonal_by_post: dict = {}
+    # Run timing: event-loop time the run started (None = at the first
+    # forecast_questions call). Set in __main__ from the process start.
+    run_started: float | None = None
     # Test switch: forecast with only this Gemini model.
     only_model: str | None = None
     # Credits rehearsal: keep each question's record for the job summary.
@@ -529,6 +537,21 @@ class FallBot2026(ForecastBot):
     # Related-question consistency shadow: our latest submitted binary
     # forecasts (fall26-data index in tournament mode), or None.
     consistency_index: ForecastIndex | None = None
+
+    @property
+    def forecasting_seasonal(self) -> bool:
+        flag = _question_seasonal.get()
+        return self._forecasting_seasonal if flag is None else flag
+
+    @forecasting_seasonal.setter
+    def forecasting_seasonal(self, value: bool) -> None:
+        self._forecasting_seasonal = value
+
+    def _run_elapsed(self) -> float:
+        loop = asyncio.get_running_loop()
+        if self.run_started is None:
+            self.run_started = loop.time()
+        return loop.time() - self.run_started
 
     async def _aggregate_predictions(
         self, predictions: list[PredictionTypes], question: MetaculusQuestion
@@ -623,6 +646,14 @@ class FallBot2026(ForecastBot):
         research = await self.run_research(question)
         record["research"] = {"fetched_at": utc_now(), "text": research}
         summary_report = await self.summarize_research(question, research)
+        # Run timing: planned forecasts, quick forecast, follow-up search and
+        # round 2 all end within 12 minutes of the end of research.
+        loop = asyncio.get_running_loop()
+        stages_end = loop.time() + FORECAST_STAGES_LIMIT_SECONDS
+
+        def stage_left() -> float:
+            return max(0.0, stages_end - loop.time())
+
         is_binary = isinstance(question, BinaryQuestion)
         forecasters = self.planner.plan(
             seasonal=self.forecasting_seasonal,
@@ -673,9 +704,9 @@ class FallBot2026(ForecastBot):
             )
             return prediction
 
-        # The full set must be done 15 minutes before the close; what finished
-        # by then is combined (median).
-        timeout = planned_forecast_timeout(question.close_time)
+        # The full set must be done 15 minutes before the close (and within the
+        # 12-minute stage limit); what finished by then is combined (median).
+        timeout = capped(planned_forecast_timeout(question.close_time), stage_left())
         planned_models = [f.model for f in forecasters]
         # Credits 4d, never re-buy: forecasts this question already finished in
         # an earlier run are reused, not bought again.
@@ -689,14 +720,25 @@ class FallBot2026(ForecastBot):
         valid_predictions = reused + valid_predictions
         # Build 5: round 1 disagrees -> a follow-up search aimed at the
         # disagreement; round 2 uses the updated dossier.
-        research, followed_up = await self._followup_search(question, record, valid_predictions, research)
+        try:
+            research, followed_up = await asyncio.wait_for(
+                self._followup_search(question, record, valid_predictions, research), stage_left()
+            )
+        except asyncio.TimeoutError:
+            record.setdefault("followup", {})["skipped"] = "12-minute stage limit"
+            logger.info(f"Question {question.id_of_post}: follow-up search stopped (12-minute limit)")
+            followed_up = False
         # Step 6: binary round 2 only when round 1 disagrees or is extreme;
         # numeric / multiple choice (Gemini pool) only after a follow-up search.
         binary_round2 = is_binary and round2_needed(
             [p.prediction_value for p in valid_predictions]  # type: ignore[misc]
         )
         other_round2 = not is_binary and followed_up and isinstance(self.planner, GeminiPool)
-        if valid_predictions and not self.only_model and (binary_round2 or other_round2):
+        wants_round2 = valid_predictions and not self.only_model and (binary_round2 or other_round2)
+        if wants_round2 and stage_left() < MIN_FORECAST_SECONDS:
+            record["round2_skipped"] = "12-minute stage limit"
+            logger.info(f"Question {question.id_of_post}: round 2 skipped (12-minute limit)")
+        elif wants_round2:
             extra = self.planner.round2(
                 seasonal=self.forecasting_seasonal,
                 used_models=planned_models,
@@ -711,7 +753,7 @@ class FallBot2026(ForecastBot):
             if extra:
                 more, more_errors, _ = await self._gather_results_and_exceptions(
                     [
-                        forecast_with(f, "round2", planned_forecast_timeout(question.close_time))
+                        forecast_with(f, "round2", capped(planned_forecast_timeout(question.close_time), stage_left()))
                         for f in extra
                     ]
                 )
@@ -724,10 +766,17 @@ class FallBot2026(ForecastBot):
             if valid_predictions:
                 break
             quick_timeout = quick_forecast_timeout(question.close_time)
-            if quick_timeout == 0 or not self.planner.any_quota_left():
+            if quick_timeout != 0:
+                quick_timeout = capped(quick_timeout, stage_left())
+            if quick_timeout is not None and quick_timeout < MIN_QUICK_FORECAST_SECONDS:
+                break  # no time left (to the close, or in the 12-minute limit)
+            if not self.planner.any_quota_left():
                 break
             if quick_pass > 0:
                 await asyncio.sleep(QUICK_FORECAST_RETRY_WAIT_SECONDS)
+                if stage_left() < MIN_QUICK_FORECAST_SECONDS:
+                    break
+                quick_timeout = capped(quick_timeout, stage_left())
             logger.warning(
                 f"Question {question.id_of_post}: no planned forecast finished, "
                 f"making one quick forecast (pass {quick_pass + 1})"
@@ -937,10 +986,39 @@ class FallBot2026(ForecastBot):
             record.setdefault("unread_replies", []).append(reply[-4000:])
         logger.info(f"Question {question.id_of_post}: answer read: {how}")
 
+    async def forecast_questions(self, questions, return_exceptions=False):  # type: ignore[no-untyped-def,override]
+        """As ForecastBot's, plus run timing: research one question at a time,
+        soonest-closing first; then, at the end of the run, the shadow
+        forecasts (time-bounded) and the question logs."""
+        self._run_elapsed()  # starts the run clock if __main__ didn't
+        self.__dict__["_research_queue"] = ResearchQueue()
+        try:
+            return await super().forecast_questions(questions, return_exceptions=return_exceptions)
+        finally:
+            await self._finish_run()
+
+    def _queue(self) -> ResearchQueue:
+        queue = self.__dict__.get("_research_queue")
+        if queue is None:  # research outside forecast_questions
+            queue = self.__dict__["_research_queue"] = ResearchQueue()
+        return queue
+
     async def _run_individual_question(self, question: MetaculusQuestion) -> ForecastReport:
         replay_question.set(question)  # replay mode answers from the question's shape
         # Gemini calls count per question too (a cap per model per day).
         current_question_key.set(str(question.id_of_post))
+        seasonal = self.seasonal_by_post.get(question.id_of_post)
+        if seasonal is not None:
+            _question_seasonal.set(seasonal)
+        # Run timing: join the research queue at once, before anything slow.
+        queue = self._queue()
+        queue.join(id(question), research_key(question))
+        try:
+            return await self._run_question_timed(question)
+        finally:
+            queue.leave(id(question))
+
+    async def _run_question_timed(self, question: MetaculusQuestion) -> ForecastReport:
         started = datetime.now(timezone.utc)
         record = self._record_for(question)
         # Build 2a: official data (FRED / CoinGecko) for a clearly matching
@@ -954,17 +1032,23 @@ class FallBot2026(ForecastBot):
             # Never a pure guess: with no real model forecast, nothing is
             # submitted and the next run tries again (it isn't marked as
             # forecast), until the question closes.
-            record.update(submitted=False, error=describe_exception(e))
             self.__dict__.setdefault("unforecast_close_times", {})[
                 question.id_of_post
             ] = question.close_time
+            if question.id_of_post in self.__dict__.get("deferred_posts", set()):
+                # Run timing: never started (the run is past 40 min); nothing
+                # to log, and not a failure for the retry backoff.
+                self.__dict__.get("_question_records", {}).pop(id(question), None)
+                self.__dict__.get("_hard_data_tasks", {}).pop(id(question), None)
+                hard_data_task.cancel()
+                raise
+            record.update(submitted=False, error=describe_exception(e))
             logger.warning(
                 f"Question {question.id_of_post}: no real forecast this run, "
                 "left for the next run"
             )
             await self._attach_hard_data(question, record, hard_data_task)
-            await self._finish_shadow_forecast(question, record)
-            await self._save_record(question, record, started)
+            self._finish_later(question, record, started)
             raise
         submitted = await self._submit_if_still_open(question, report)
         if submitted and isinstance(question, BinaryQuestion):
@@ -1004,15 +1088,36 @@ class FallBot2026(ForecastBot):
                     f"Question {question.id_of_post}: market matching failed ({type(e).__name__})"
                 )
         await self._attach_hard_data(question, record, hard_data_task)
-        await self._finish_shadow_forecast(question, record)
         record.update(
             submitted=submitted,
             final_forecast=to_jsonable(report.prediction),
             minutes=report.minutes_taken,
             list_price_cost=report.price_estimate,
         )
-        await self._save_record(question, record, started)
+        self._finish_later(question, record, started)
         return report
+
+    def _finish_later(self, question: MetaculusQuestion, record: dict, started: datetime) -> None:
+        """Run timing: the shadow forecast and the question log wait for the
+        end of the run (the log is written once, with the shadow in it)."""
+        self.__dict__.setdefault("_pending_finish", []).append((question, record, started))
+
+    async def _finish_run(self) -> None:
+        """End of the run: every pending shadow forecast at once, within the
+        shadow time budget (none after SHADOW_PHASE_END), then the logs."""
+        pending = self.__dict__.pop("_pending_finish", [])
+        if not pending:
+            return
+        seconds = shadow_seconds(self._run_elapsed(), SHADOW_FORECAST_TIMEOUT_SECONDS)
+        results = await asyncio.gather(
+            *[self._finish_shadow_forecast(question, record, seconds) for question, record, _ in pending],
+            return_exceptions=True,
+        )
+        for (question, _, _), result in zip(pending, results):
+            if isinstance(result, BaseException):
+                logger.warning(f"Question {question.id_of_post}: shadow forecaster failed ({type(result).__name__})")
+        for question, record, started in pending:
+            await self._save_record(question, record, started)
 
     def _consistency_shadow(self, question: MetaculusQuestion, record: dict, prediction) -> None:  # type: ignore[no-untyped-def]
         """Sibling binary questions (differ in one number or date) must go the
@@ -1113,9 +1218,10 @@ class FallBot2026(ForecastBot):
     ) -> ReasonedPrediction[PredictionTypes]:
         # Lineups without the Gemini pool: forecasts not done by the 15-minute
         # cut-off count as failed; the finished ones are combined.
+        # Run timing: at most 12 minutes (the forecasts run side by side).
         return await asyncio.wait_for(
             super()._make_prediction(question, research),
-            planned_forecast_timeout(question.close_time),
+            capped(planned_forecast_timeout(question.close_time), FORECAST_STAGES_LIMIT_SECONDS),
         )
 
     ##################################### RESEARCH #####################################
@@ -1123,27 +1229,60 @@ class FallBot2026(ForecastBot):
     async def run_research(self, question: MetaculusQuestion) -> str:
         if self.break_on_purpose:
             raise RuntimeError("Deliberate failure (--break-on-purpose)")
-        async with self._concurrency_limiter:
-            try:
-                research = await self._run_research_unguarded(question)
-            except Exception as e:
-                # A missed question scores 0: forecast without news rather
-                # than not at all.
-                logger.warning(
-                    f"Question {question.id_of_post}: research failed"
-                    f"{_http_status_note(e)}, forecasting without it "
-                    f"({describe_exception(e)})"
-                )
-                research = "No research is available: the news search failed."
-                research = await self._with_official_data(question, research)
-                self._start_shadow_forecast(question, research)
-                return research
-            logger.info(f"Question {question.id_of_post}: research done")
-            if "base" not in self._record_for(question).get("dossier_sections", {}):
-                self._save_section(question, "base", research)
-            research = await self._with_official_data(question, research)
+        # Run timing: one question researches at a time, soonest-closing first.
+        queue = self._queue()
+        await queue.turn(id(question), research_key(question))
+        try:
+            return await self._research_turn(question)
+        finally:
+            queue.release()
+
+    async def _research_turn(self, question: MetaculusQuestion) -> str:
+        if self._run_elapsed() >= START_CUTOFF_SECONDS:
+            # Run timing: no new question after 40 min; the next run takes it.
+            self.__dict__.setdefault("deferred_posts", set()).add(question.id_of_post)
+            logger.warning(
+                f"Question {question.id_of_post}: not started, the run is past "
+                f"{START_CUTOFF_SECONDS // 60} min; left for the next run"
+            )
+            raise QuestionDeferred(f"run past {START_CUTOFF_SECONDS // 60} min")
+        # Run timing: at most 4 minutes, then forecast with what was gathered
+        # (planned research stops at the deadline; any other research is cut
+        # a little after it).
+        deadline = asyncio.get_running_loop().time() + RESEARCH_LIMIT_SECONDS
+        _research_deadline.set(deadline)
+        try:
+            research = await asyncio.wait_for(
+                self._run_research_unguarded(question), RESEARCH_LIMIT_SECONDS + RESEARCH_GRACE_SECONDS
+            )
+        except asyncio.TimeoutError:
+            self._record_for(question)["research_time_limit"] = "cut"
+            logger.warning(
+                f"Question {question.id_of_post}: research time limit "
+                f"({RESEARCH_LIMIT_SECONDS // 60} min) reached, forecasting without it"
+            )
+            research = "No research is available: the research time limit was reached."
+            research = await self._with_official_data(question, research, deadline)
             self._start_shadow_forecast(question, research)
             return research
+        except Exception as e:
+            # A missed question scores 0: forecast without news rather
+            # than not at all.
+            logger.warning(
+                f"Question {question.id_of_post}: research failed"
+                f"{_http_status_note(e)}, forecasting without it "
+                f"({describe_exception(e)})"
+            )
+            research = "No research is available: the news search failed."
+            research = await self._with_official_data(question, research, deadline)
+            self._start_shadow_forecast(question, research)
+            return research
+        logger.info(f"Question {question.id_of_post}: research done")
+        if "base" not in self._record_for(question).get("dossier_sections", {}):
+            self._save_section(question, "base", research)
+        research = await self._with_official_data(question, research, deadline)
+        self._start_shadow_forecast(question, research)
+        return research
 
     def _save_section(self, question: MetaculusQuestion, name: str, text: str) -> None:
         """Replay lab: one dossier part (base research, follow-up findings,
@@ -1151,7 +1290,7 @@ class FallBot2026(ForecastBot):
         if text:
             self._record_for(question).setdefault("dossier_sections", {})[name] = {"text": text, "at": utc_now()}
 
-    async def _with_official_data(self, question: MetaculusQuestion, research: str) -> str:
+    async def _with_official_data(self, question: MetaculusQuestion, research: str, deadline: float | None = None) -> str:
         """
         Build 2c, partial (architect, 29 Sep): for a question matched to
         official data, ONE line first in the dossier (series, latest value
@@ -1163,7 +1302,11 @@ class FallBot2026(ForecastBot):
         if task is None:
             return research
         try:
-            found = await asyncio.wait_for(asyncio.shield(task), HARD_DATA_WAIT_SECONDS)
+            # Run timing: the wait counts in the research time limit.
+            wait = HARD_DATA_WAIT_SECONDS
+            if deadline is not None:
+                wait = max(0.0, min(wait, deadline - asyncio.get_running_loop().time()))
+            found = await asyncio.wait_for(asyncio.shield(task), wait)
             line = official_line(question, found)
         except Exception as e:
             logger.warning(f"Question {question.id_of_post}: official data line skipped ({type(e).__name__})")
@@ -1191,9 +1334,12 @@ class FallBot2026(ForecastBot):
             return
         self.__dict__.setdefault("_shadow_research", {}).setdefault(id(question), research)
 
-    async def _shadow_forecast(self, question: MetaculusQuestion, research: str) -> tuple:
+    async def _shadow_forecast(self, question: MetaculusQuestion, research: str, timeout: float) -> tuple:
         _in_shadow.set(True)
         _planned_forecaster.set(self.shadow_llm)
+        # It runs at the end of the run, outside the question's own task.
+        replay_question.set(question)
+        current_question_key.set(str(question.id_of_post))
         started = time.monotonic()
         try:
             # The per-type forecast directly: the library's _make_prediction
@@ -1206,7 +1352,7 @@ class FallBot2026(ForecastBot):
                 forecast = self._run_forecast_on_numeric(question, research)
             else:
                 raise ValueError(f"no shadow forecast for {type(question).__name__}")
-            prediction = await asyncio.wait_for(forecast, SHADOW_FORECAST_TIMEOUT_SECONDS)
+            prediction = await asyncio.wait_for(forecast, timeout)
             status, value = "ok", prediction.prediction_value
         except asyncio.TimeoutError:
             status, value = "timeout", None
@@ -1214,16 +1360,25 @@ class FallBot2026(ForecastBot):
             status, value = f"failed: {describe_exception(e)}"[:200], None
         return status, value, round(time.monotonic() - started, 1)
 
-    async def _finish_shadow_forecast(self, question: MetaculusQuestion, record: dict) -> None:
-        """After the live forecast (submitted or not): run the shadow in its
-        own task (hard time limit), save it and 'live median with it added'.
-        A failure is only logged."""
+    async def _finish_shadow_forecast(self, question: MetaculusQuestion, record: dict, timeout: float) -> None:
+        """At the end of the run (the live forecast submitted or not): run the
+        shadow in its own task (hard time limit `timeout`; 0 = skipped, the
+        run is too long), save it and 'live median with it added'. A failure
+        is only logged."""
         research = self.__dict__.get("_shadow_research", {}).pop(id(question), None)
         live = self.__dict__.get("_live_predictions", {}).pop(id(question), None)
         if research is None:
             return
+        if timeout <= 0:
+            # No "status": the Scoreboard's answer rate leaves it out.
+            record["shadow_model"] = {
+                "model": getattr(self.shadow_llm, "model", str(self.shadow_llm)),
+                "skipped": "run time",
+            }
+            logger.info(f"Question {question.id_of_post}: shadow forecaster: skipped (run time)")
+            return
         try:
-            status, value, seconds = await asyncio.create_task(self._shadow_forecast(question, research))
+            status, value, seconds = await asyncio.create_task(self._shadow_forecast(question, research, timeout))
         except Exception as e:  # never raised by _shadow_forecast, but be safe
             status, value, seconds = f"failed: {describe_exception(e)}"[:200], None, None
         shadow = record.setdefault("shadow_model", {})
@@ -1288,8 +1443,14 @@ class FallBot2026(ForecastBot):
         """
         helper = self.get_llm("parser", "llm")
         result = await run_planned_research(
-            question, dates_line(question), helper.invoke
+            question, dates_line(question), helper.invoke, deadline=_research_deadline.get()
         )
+        if result.time_limit_hit:
+            self._record_for(question)["research_time_limit"] = result.time_limit_hit
+            logger.warning(
+                f"Question {question.id_of_post}: research time limit reached "
+                f"({result.time_limit_hit}); forecasting with what was gathered"
+            )
         logger.info(
             f"Question {question.id_of_post}: articles found: {result.articles} "
             f"(AskNews {result.asknews_articles} in {result.asknews_calls} call(s), "
@@ -1949,6 +2110,9 @@ class FallBot2026(ForecastBot):
 
 
 if __name__ == "__main__":
+    # Run timing: the run clock (for the 40-minute start cutoff and the shadow
+    # phase) starts with the process; loop.time() is time.monotonic().
+    RUN_STARTED = time.monotonic()
     configure_public_logging()
     if os.getenv("METACULUS_READ_TOKEN"):
         # Tony's personal read-only token is for the test bench only: the live
@@ -2145,6 +2309,7 @@ if __name__ == "__main__":
         print(f"Live questions per day (7-day average): {lineup.planner.questions_per_day}")
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
+    template_bot.run_started = RUN_STARTED
     template_bot.submit_forecasts = publish_to_metaculus
     template_bot.question_log = QuestionLogWriter()
 
@@ -2200,21 +2365,23 @@ if __name__ == "__main__":
                 else:
                     logger.info(f"Question {q.id_of_post}: failed before, next try within 30 min (backoff)")
             open_by_tournament[tournament_id] = kept
-        # Seasonal first, except MiniBench questions closing within 30 minutes.
-        for seasonal, questions in queue_batches(
+        # Run timing: one queue, researched soonest-closing first.
+        queued, template_bot.seasonal_by_post = run_queue(
             open_by_tournament.get(FALL_2026_TOURNAMENT_ID, []),
             open_by_tournament.get(minibench_id, []),
-            now,
-        ):
-            template_bot.forecasting_seasonal = seasonal
+        )
+        if queued:
             try:
                 forecast_reports += asyncio.run(
-                    template_bot.forecast_questions(questions, return_exceptions=True)
+                    template_bot.forecast_questions(queued, return_exceptions=True)
                 )
             except Exception as e:
                 logger.error(f"Forecasting could not run, {describe_exception(e)}")
                 forecast_reports.append(e)
-        failed = set(template_bot.__dict__.get("unforecast_close_times", {}))
+        # A question deferred by the 40-minute cutoff was never tried: no backoff.
+        deferred = template_bot.__dict__.get("deferred_posts", set())
+        attempted = [post for post in attempted if post not in deferred]
+        failed = set(template_bot.__dict__.get("unforecast_close_times", {})) - deferred
         try:
             retry_store.save(update_retry_state(retry_state, attempted, failed, datetime.now(timezone.utc)))
         except Exception:

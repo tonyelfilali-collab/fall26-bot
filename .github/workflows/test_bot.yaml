@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       lineup:
-        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls. 'burst-rehearsal': 3 simulated days of MiniBench bursts, 0 model calls."
+        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls. 'burst-rehearsal': 3 simulated days of MiniBench bursts, 0 model calls. 'timing-rehearsal': run time limits on a virtual clock (burst of 5 at every limit; overload of 12), 0 model calls."
         type: choice
-        options: [free, replay, replay-credits, replay-gemini, burst-rehearsal, real-regression, gemini-free]
+        options: [free, replay, replay-credits, replay-gemini, burst-rehearsal, timing-rehearsal, real-regression, gemini-free]
         default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
@@ -46,7 +46,7 @@ on:
 
 # Lineups that call Gemini with the live key (gemini-free) share the group of
 # every workflow that uses it, one at a time. The others (replay, replay-credits,
-# replay-gemini, free, real-regression: no Gemini key) have their own group,
+# replay-gemini, burst/timing rehearsals, free, real-regression: no Gemini key) have their own group,
 # so a test can never cancel a waiting live run (GitHub keeps only one waiting
 # run per group and cancels the older one).
 concurrency:
@@ -78,6 +78,10 @@ jobs:
         run: |
           if [ "$LINEUP" = "burst-rehearsal" ]; then
             poetry run python burst_rehearsal.py
+            exit $?
+          fi
+          if [ "$LINEUP" = "timing-rehearsal" ]; then
+            poetry run python timing_rehearsal.py
             exit $?
           fi
           if [ "$LINEUP" = "real-regression" ]; then

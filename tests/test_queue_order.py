@@ -1,4 +1,4 @@
-"""Queue order (main.queue_batches): seasonal first, except MiniBench closing within 30 min."""
+"""Run queue (main.run_queue): seasonal and MiniBench in one queue, soonest-closing first."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -13,22 +13,15 @@ def q(post, minutes):
     return SimpleNamespace(id_of_post=post, close_time=NOW + timedelta(minutes=minutes))
 
 
-def ids(batches):
-    return [(seasonal, [x.id_of_post for x in questions]) for seasonal, questions in batches]
+def test_one_queue_soonest_closing_first():
+    queued, seasonal = main.run_queue([q(1, 600), q(2, 20)], [q(10, 120), q(11, 45), q(12, 10)])
+    assert [x.id_of_post for x in queued] == [12, 2, 11, 10, 1]
+    assert seasonal == {1: True, 2: True, 10: False, 11: False, 12: False}
 
 
-def test_seasonal_first_normally():
-    assert ids(main.queue_batches([q(1, 600), q(2, 300)], [q(10, 120), q(11, 45)], NOW)) == [
-        (True, [1, 2]), (False, [10, 11])
-    ]
-
-
-def test_minibench_closing_within_30_minutes_goes_first():
-    batches = main.queue_batches([q(1, 20)], [q(10, 120), q(11, 25), q(12, 10), q(13, 30)], NOW)
-    assert ids(batches) == [(False, [12, 11, 13]), (True, [1]), (False, [10])]
-
-
-def test_empty_batches_dropped_and_naive_times():
+def test_naive_times_and_no_close_time_last():
     naive = SimpleNamespace(id_of_post=5, close_time=(NOW + timedelta(minutes=5)).replace(tzinfo=None))
-    assert ids(main.queue_batches([], [naive], NOW)) == [(False, [5])]
-    assert main.queue_batches([], [], NOW) == []
+    none = SimpleNamespace(id_of_post=6, close_time=None)
+    queued, _ = main.run_queue([none], [q(7, 60), naive])
+    assert [x.id_of_post for x in queued] == [5, 7, 6]
+    assert main.run_queue([], []) == ([], {})
