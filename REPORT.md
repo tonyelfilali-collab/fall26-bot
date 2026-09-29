@@ -216,3 +216,18 @@ Credit check stayed at $0 (limit $1). No revert needed.
   have been forecast; no new MiniBench question since. Seasonal: 2 questions so far, both forecast.
 - Yahoo Finance answers HTTP 429 to both Actions and a home connection (even the cookie/crumb
   handshake yfinance uses): skipped gracefully (error saved, no line). Wikipedia works.
+
+## Update 29 Sep 2026 (09:30–10:30 UTC)
+
+| PR | What | Tier | Gate runs | Live run after |
+|---|---|---|---|---|
+| #89 | Spare-quota rule: 25/day while MiniBench is active | B | replay 36550995079 | 36551941613 |
+| #90 | MiniBench: new round found within one run | B | replay 36551598294 | 36553024092 |
+| #91 | MiniBench burst rehearsal | B | burst 36552294108, replay 36552394780 | 36554092243 |
+| #92 | Replay lab | B (pre-approved) | replay 36553665680, synthetic lab 36555610672, real lab 36555713026 | 36555144038 |
+
+- Burst rehearsal (seed 29; seeds 1–10 all pass): 60/60 MiniBench and 6/6 seasonal questions forecast
+  before close (all by Flash, 2.3 and 2.8 forecasts each, max 8 min after opening); Flash at most
+  16/20 per model a day; Flash-Lite reserve never used outside a question's last 45 min.
+- Stooq: its CSV URL serves a JavaScript bot challenge and robots.txt disallows all but Google/Bing:
+  not used (stopped as instructed).
