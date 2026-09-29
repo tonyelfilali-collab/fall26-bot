@@ -50,3 +50,26 @@ def test_workflow_step_never_blocks_the_forecast():
     assert "continue-on-error: true" in step.split("- name:")[0]
     assert text.index("Start the daily health check") > text.index("name: Run bot")
     assert "actions: write" in text
+
+
+def test_lab_due_once_a_pacific_day_in_its_last_3_hours():
+    from zoneinfo import ZoneInfo
+
+    pt = ZoneInfo("America/Los_Angeles")
+    evening = datetime(2026, 10, 6, 21, 10, tzinfo=pt).astimezone(timezone.utc)
+    assert not hd.lab_due(datetime(2026, 10, 6, 20, 50, tzinfo=pt).astimezone(timezone.utc), [])
+    assert hd.lab_due(evening, [])
+    same_day = {"created_at": datetime(2026, 10, 6, 21, 5, tzinfo=pt).astimezone(timezone.utc).isoformat()}
+    assert not hd.lab_due(evening, [same_day])
+    yesterday = {"created_at": datetime(2026, 10, 5, 22, 0, tzinfo=pt).astimezone(timezone.utc).isoformat()}
+    assert hd.lab_due(evening, [yesterday])
+
+
+def test_scoreboard_lab_section_without_results(monkeypatch):
+    import scoreboard
+
+    def missing(path, token, method="GET", body=None):
+        raise RuntimeError("404")
+
+    monkeypatch.setattr(scoreboard, "_github", missing)
+    assert "no results yet" in scoreboard.lab_section("t")

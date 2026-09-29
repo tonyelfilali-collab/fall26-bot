@@ -345,6 +345,21 @@ Round 2 uses it: binary round 2 as before; numeric / multiple choice get a round
   stand-in warning rules apply, plus "futures price vs spot price". A block (e.g. HTTP 429) is saved
   as an error: no line. The Credit check workflow also checks Yahoo (gold) and Wikipedia.
 
+## Replay lab (29 Sep 2026)
+
+Test-only, never submits (`lab.py`, workflow "Replay lab", started once a Pacific day by the
+tournament run in the day's last 3 hours, `health_dispatch.py`; `synthetic` input = end-to-end on a
+synthetic resolved question). Live question logs now keep each dossier part with its time:
+`dossier_sections` = base, followup, wikipedia, official_data. For resolved questions the lab runs
+E1 3 vs 5 forecasts (free when live had 5+), E2 without follow-up, E3 without Wikipedia (3 Gemini
+forecasts each), E4 + Nemotron; scores (binary log score, MC log score, numeric log density per unit
+of range) and reports paired differences vs live with a bootstrap 90% CI per type
+(`lab/results.json`; section in the weekly Scoreboard). Quota: Nemotron <= 300 lab calls/UTC day
+(`lab/nemotron_calls.json`); Gemini only in the last 3 h of the Pacific day, only non-reserve quota
+beyond 2 x expected questions left, never while MiniBench is open or was in the last 6 h; single-model
+chains without the reserve; a 6-minute time budget per run. Leak guard: a model released after the
+question opened (OpenRouter `created` date) or of unknown date is never used.
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:
