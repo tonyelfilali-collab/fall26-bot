@@ -111,9 +111,9 @@ from real_regression import load_questions as load_regression_questions
 from real_regression import reading_table
 from replay import REPLAY_RESEARCH, ReplayLlm, _RecordedAnswer
 from replay import current_question as replay_question
-from research import run_planned_research
+from research import run_planned_research, with_official_line
 from gemini_budget import current_question_key
-from hard_data import hard_data_for
+from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from stat_baseline import random_walk_baseline
 from question_log import QuestionLogWriter, question_snapshot, record_path, to_jsonable, utc_now
 
@@ -348,6 +348,9 @@ _parser_above_reserve: contextvars.ContextVar = contextvars.ContextVar(
 # True inside the shadow forecaster's own task (Build 1b): its answer is only
 # read directly (no parser call) and its reading is logged apart from live.
 _in_shadow: contextvars.ContextVar = contextvars.ContextVar("in_shadow", default=False)
+# Build 2c: how long research waits for the official data fetch (it runs
+# beside research and is usually done first).
+HARD_DATA_WAIT_SECONDS = 45
 # The shadow forecaster (never submitted): its hard time limit, and its name
 # in the question log's "shadow" variants.
 SHADOW_FORECAST_TIMEOUT_SECONDS = 240
@@ -770,9 +773,10 @@ class FallBot2026(ForecastBot):
         started = datetime.now(timezone.utc)
         record = self._record_for(question)
         # Build 2a: official data (FRED / CoinGecko) for a clearly matching
-        # numeric question, fetched beside the forecast and only saved in the
-        # question log (nothing reaches the forecasters yet).
+        # numeric question, fetched beside research and saved in the question
+        # log. Build 2c: one line of it goes into the dossier (run_research).
         hard_data_task = asyncio.create_task(asyncio.to_thread(hard_data_for, question))
+        self.__dict__.setdefault("_hard_data_tasks", {})[id(question)] = hard_data_task
         try:
             report = await super()._run_individual_question(question)
         except Exception as e:
@@ -838,6 +842,7 @@ class FallBot2026(ForecastBot):
         return report
 
     async def _attach_hard_data(self, question: MetaculusQuestion, record: dict, task) -> None:  # type: ignore[no-untyped-def]
+        self.__dict__.get("_hard_data_tasks", {}).pop(id(question), None)
         try:
             found = await task
         except Exception as e:
@@ -931,11 +936,42 @@ class FallBot2026(ForecastBot):
                     f"({describe_exception(e)})"
                 )
                 research = "No research is available: the news search failed."
+                research = await self._with_official_data(question, research)
                 self._start_shadow_forecast(question, research)
                 return research
             logger.info(f"Question {question.id_of_post}: research done")
+            research = await self._with_official_data(question, research)
             self._start_shadow_forecast(question, research)
             return research
+
+    async def _with_official_data(self, question: MetaculusQuestion, research: str) -> str:
+        """
+        Build 2c, partial (architect, 29 Sep): for a question matched to
+        official data, ONE line first in the dossier (series, latest value
+        and date, 1-year min/max, 30-day change, and a warning when the series
+        is only a stand-in). Only an exact match's latest value is given to
+        the unit check. The random-walk range is never added (a shadow).
+        """
+        task = self.__dict__.get("_hard_data_tasks", {}).get(id(question))
+        if task is None:
+            return research
+        try:
+            found = await asyncio.wait_for(asyncio.shield(task), HARD_DATA_WAIT_SECONDS)
+            line = official_line(question, found)
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: official data line skipped ({type(e).__name__})")
+            return research
+        if line is None or len(line.text.split()) > MAX_LINE_WORDS:
+            return research
+        record = self._record_for(question)
+        record["official_data"] = {"line": line.text, "exact": line.exact}
+        if line.exact:
+            record["official_current_value"] = line.latest
+        logger.info(
+            f"Question {question.id_of_post}: official data line added "
+            f"({'exact: feeds the unit check' if line.exact else 'stand-in: not used by the unit check'})"
+        )
+        return with_official_line(research, line.text)
 
     # ------------------------------------------------ shadow forecaster (Build 1b)
 
@@ -1408,8 +1444,12 @@ class FallBot2026(ForecastBot):
           all are kept and a warning is logged). Never a made-up forecast.
         """
         lower, upper = question_range(question)
-        current = self._record_for(question).get("research_detail", {}).get("current_value")
-        current_value = current["value"] if current else None
+        record = self._record_for(question)
+        current = record.get("research_detail", {}).get("current_value")
+        # Build 2c: an exact official-data match beats the dossier's own value.
+        current_value = record.get("official_current_value")
+        if current_value is None:
+            current_value = current["value"] if current else None
         instructions = parsing_instructions
         # First try reading the "Percentile P: value" lines directly (no model
         # call); the parser model if that fails or looks like a unit error.

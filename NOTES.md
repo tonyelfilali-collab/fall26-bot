@@ -248,6 +248,22 @@ the current quota day (429, or ledger at 0; `GeminiPool.flash_exhausted`; the da
 - Test Bot `lineup=replay-gemini` (+ `exhaust_flash`): the real pool logic with recorded replies,
   0 model calls, ledger in memory only; the job summary shows the chain used and whether the
   Flash-Lite reserve was touched.
+## Official data line in the dossier (Build 2c partial, 29 Sep 2026)
+
+For a numeric/discrete question matched to FRED or CoinGecko (`hard_data.match_question`, 2a), ONE
+line goes first in the dossier (`main._with_official_data`, `hard_data.official_line`): series name
+and id, latest value and date, past-year min/max, 30-day change. The dossier is cut to keep the
+total within ~6,000 tokens (`research.with_official_line`).
+- **Exact** (the latest value feeds the unit check, #34, instead of the dossier's own CURRENT
+  VALUE): no stand-in reason below.
+- **Stand-in** (line shown with `WARNING: stand-in: ...`, unit check NOT fed): the question asks
+  for an intraday value / maximum / minimum / average; or it names another data site (Yahoo
+  Finance, Bloomberg, Coinbase...) and not FRED / the series id / the official publisher; or a
+  coin question doesn't name CoinGecko; or the latest value is outside the question's range
+  (units may differ).
+- The random-walk range (2b) is never in the dossier: it stays a shadow until scored.
+- Research waits at most 45 s for the fetch; a failure or no match = no line.
+- Question log: `official_data` (line, exact), `official_current_value` (exact only).
 
 ## Free news fallback (27 Sep 2026)
 

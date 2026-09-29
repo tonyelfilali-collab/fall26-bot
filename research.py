@@ -184,6 +184,15 @@ def cap_tokens(text: str, max_tokens: int = MAX_DOSSIER_TOKENS) -> str:
     return " ".join(words[:max_words]) + " [...]"
 
 
+def with_official_line(dossier: str, line: str, max_tokens: int = MAX_DOSSIER_TOKENS) -> str:
+    """The official-data line first, then the dossier cut so both together
+    stay within the ~6,000-token limit (same words-per-token estimate)."""
+    max_words = int(max_tokens * WORDS_PER_TOKEN) - len(line.split()) - 1  # 1: the "[...]"
+    words = dossier.split()
+    body = dossier if len(words) <= max_words else " ".join(words[:max_words]) + " [...]"
+    return f"{line}\n\n{body}"
+
+
 # ---------------------------------------------------------------- AskNews
 
 
