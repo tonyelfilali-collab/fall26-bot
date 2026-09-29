@@ -83,6 +83,7 @@ from forecast_safety import (
 from deadlines import MIN_FORECAST_SECONDS, MIN_QUICK_FORECAST_SECONDS, planned_forecast_timeout, quick_forecast_timeout
 from run_timing import (
     FORECAST_STAGES_LIMIT_SECONDS,
+    PLANNED_WAIT_SECONDS,
     RESEARCH_GRACE_SECONDS,
     RESEARCH_LIMIT_SECONDS,
     START_CUTOFF_SECONDS,
@@ -647,9 +648,12 @@ class FallBot2026(ForecastBot):
         record["research"] = {"fetched_at": utc_now(), "text": research}
         summary_report = await self.summarize_research(question, research)
         # Run timing: planned forecasts, quick forecast, follow-up search and
-        # round 2 all end within 12 minutes of the end of research.
+        # round 2 all end within 12 minutes of the end of research; planned
+        # forecasts are waited for until minute 9, leaving the quick forecast
+        # minutes 9-12 if none finished.
         loop = asyncio.get_running_loop()
         stages_end = loop.time() + FORECAST_STAGES_LIMIT_SECONDS
+        planned_end = loop.time() + PLANNED_WAIT_SECONDS
 
         def stage_left() -> float:
             return max(0.0, stages_end - loop.time())
@@ -704,9 +708,9 @@ class FallBot2026(ForecastBot):
             )
             return prediction
 
-        # The full set must be done 15 minutes before the close (and within the
-        # 12-minute stage limit); what finished by then is combined (median).
-        timeout = capped(planned_forecast_timeout(question.close_time), stage_left())
+        # The full set must be done 15 minutes before the close (and by minute
+        # 9 of the forecasting stages); what finished by then is combined (median).
+        timeout = capped(planned_forecast_timeout(question.close_time), max(0.0, planned_end - loop.time()))
         planned_models = [f.model for f in forecasters]
         # Credits 4d, never re-buy: forecasts this question already finished in
         # an earlier run are reused, not bought again.

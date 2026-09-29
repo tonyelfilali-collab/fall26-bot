@@ -10,12 +10,16 @@ A. Burst of 5, given in shuffled order, at every limit: Flash-Lite calls take
    question one Flash forecast never answers, the others take 5 min (the
    12-minute limit is used in full); the shadow forecaster never answers.
 B. Overload of 12: research hits 4 min (AskNews 250 s); forecasts answer
-   after 11.5 min (slow but no hung calls, which would get their model
-   skipped for the run: 2 failures, #60); the shadow never answers.
-C. Late run: the run is already at minute 25.5 when 3 questions arrive, the
-   second starts just before minute 30 (the true worst case), the third is
-   left for the next run; forecasting ends after minute 45, so the shadows are
-   skipped.
+   after 8.5 min (slow, but before the minute-9 wait ends; no hung calls,
+   which would get their model skipped for the run: 2 failures, #60); the
+   shadow never answers.
+C. Worst case: the run is at minute 29.5 when 2 questions arrive; the first
+   starts just before minute 30, research hits 4 min, every planned forecast
+   hangs (cut at minute 9) and the quick forecast answers after 2.9 min, so
+   the whole 12 minutes are used; the second is left for the next run;
+   forecasting ends after minute 45, so the shadows are skipped.
+D. Quick forecast room, one run per question type: every planned forecast
+   hangs; the quick forecast (minutes 9-12) still submits within 12 minutes.
 
 Checks: every run ends by minute 48; no question starts after minute 30 and
 the ones left for the next run are the latest-closing; every started
@@ -58,15 +62,22 @@ class Scenario:
     asknews_seconds: float = 90
     flash_seconds: float = 300
     hang_one_forecast: bool = False  # per question, the first Flash call never answers
+    hang_planned: bool = False  # every Flash call in a question's first 9 forecasting minutes never answers
     run_minute_at_start: float = 0.0  # the run clock when the questions arrive
+    first_type: int = 0  # index in TYPES of the first question's type
 
 
 BURST = Scenario("A. Burst of 5 at every limit (given in shuffled order)", [178, 186, 170, 182, 174],
                  flash_lite_seconds=100, asknews_seconds=90, flash_seconds=300, hang_one_forecast=True)
 OVERLOAD = Scenario("B. Overload: 12 questions at once", [200 + 7 * ((i * 5) % 12) for i in range(12)],
-                    asknews_seconds=250, flash_seconds=11.5 * 60)
-LATE = Scenario("C. Late run: 3 questions arrive at minute 25.5", [120, 130, 140],
-                asknews_seconds=250, flash_seconds=11.9 * 60, run_minute_at_start=25.5)
+                    asknews_seconds=250, flash_seconds=8.5 * 60)
+WORST = Scenario("C. Worst case: 2 questions arrive at minute 29.5, planned forecasts hang", [120, 130],
+                 asknews_seconds=250, flash_seconds=2.9 * 60, hang_planned=True, run_minute_at_start=29.5)
+QUICK_ROOM = [
+    Scenario(f"D{i + 1}. Quick forecast room: {TYPES[i]}, every planned forecast hangs", [120],
+             asknews_seconds=90, flash_seconds=60, hang_planned=True, first_type=i)
+    for i in range(len(TYPES))
+]
 
 
 class VirtualClockLoop(asyncio.SelectorEventLoop):
@@ -114,6 +125,7 @@ class Timeline:
     failed: set = field(default_factory=set)
     time_limit: dict = field(default_factory=dict)  # post -> research stage cut
     shadows_skipped: bool = False
+    quick_ok: set = field(default_factory=set)  # posts whose log has an answered quick forecast
 
 
 def _question(post: int, kind: str, close: datetime, now: datetime) -> Any:
@@ -134,7 +146,10 @@ def run(scenario: Scenario) -> tuple[Timeline, list]:
     """One live-like run on the virtual clock."""
     timeline = Timeline()
     now = datetime.now(timezone.utc)
-    questions = [_question(70000 + i, TYPES[i % 4], now + timedelta(minutes=m), now) for i, m in enumerate(scenario.closes)]
+    questions = [
+        _question(70000 + i, TYPES[(i + scenario.first_type) % 4], now + timedelta(minutes=m), now)
+        for i, m in enumerate(scenario.closes)
+    ]
     loop = VirtualClockLoop()
     offset = scenario.run_minute_at_start
     minutes = lambda: offset + loop.time() / 60  # noqa: E731
@@ -153,6 +168,9 @@ def run(scenario: Scenario) -> tuple[Timeline, list]:
             await asyncio.sleep(scenario.flash_lite_seconds)
         elif model in GEMINI_FORECAST_MODELS:
             question = current_question_key.get()
+            research = timeline.research.get(int(question or 0))
+            if scenario.hang_planned and research and research[1] is not None and minutes() - research[1] < 8.9:
+                await asyncio.sleep(HUNG_SECONDS)  # a planned forecast that never answers
             if scenario.hang_one_forecast and question not in hung:
                 hung.add(question)
                 await asyncio.sleep(HUNG_SECONDS)  # a call that never answers
@@ -190,7 +208,10 @@ def run(scenario: Scenario) -> tuple[Timeline, list]:
             if path.endswith("_shadows.json"):
                 timeline.shadow_files += 1
             else:
-                timeline.log_saved[record["question"]["id_of_post"]] = minutes()
+                post = record["question"]["id_of_post"]
+                timeline.log_saved[post] = minutes()
+                if any(f.get("kind") == "quick" and f.get("status") == "ok" for f in record.get("forecasts", [])):
+                    timeline.quick_ok.add(post)
             return True
 
     def watch_info(message, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -245,7 +266,7 @@ def killed_at(timeline: Timeline, minute: float) -> set:
     return {p for p, t in timeline.forecast_done.items() if t <= minute and timeline.log_saved.get(p, 1e9) > minute}
 
 
-def check(timeline: Timeline, questions: list) -> tuple[bool, list[str]]:
+def check(scenario: Scenario, timeline: Timeline, questions: list) -> tuple[bool, list[str]]:
     posts = _closing_order(questions)
     started = [p for p in posts if p in timeline.research]
     cutoff = run_timing.START_CUTOFF_SECONDS / 60
@@ -268,6 +289,9 @@ def check(timeline: Timeline, questions: list) -> tuple[bool, list[str]]:
         ("Job killed at any minute 1-60: every submitted question's log already saved",
          not any(lost.values())),
     ]
+    if scenario.hang_planned:
+        checks.append(("Every planned forecast hung; the quick forecast submitted within 12 min",
+                       bool(timeline.forecast_done) and timeline.quick_ok == set(timeline.forecast_done)))
     return all(ok for _, ok in checks), [f"- {text}: **{'yes' if ok else 'NO'}**" for text, ok in checks]
 
 
@@ -293,7 +317,8 @@ def table(timeline: Timeline, questions: list) -> list[str]:
 
 def describe(s: Scenario) -> str:
     parts = [f"research: Flash-Lite {s.flash_lite_seconds:.0f} s, AskNews {s.asknews_seconds:.0f} s per call",
-             f"forecasts {s.flash_seconds / 60:.1f} min" + (", one hung per question" if s.hang_one_forecast else ""),
+             ("every planned forecast hangs, quick forecast " if s.hang_planned else "forecasts ")
+             + f"{s.flash_seconds / 60:.1f} min" + (", one hung per question" if s.hang_one_forecast else ""),
              "shadow forecaster never answers"]
     return "Forced: " + "; ".join(parts) + "."
 
@@ -301,9 +326,9 @@ def describe(s: Scenario) -> str:
 def report() -> tuple[bool, str]:
     lines = ["## Run timing rehearsal (virtual clock, recorded replies, 0 model calls)", ""]
     ok_all = True
-    for scenario in (BURST, OVERLOAD, LATE):
+    for scenario in (BURST, OVERLOAD, WORST, *QUICK_ROOM):
         timeline, questions = run(scenario)
-        ok, checks = check(timeline, questions)
+        ok, checks = check(scenario, timeline, questions)
         ok_all = ok_all and ok
         shadows = ("skipped (\"shadows skipped: time\")" if timeline.shadows_skipped
                    else f"{timeline.shadow_files} shadow file(s) saved at the end")
