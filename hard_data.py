@@ -30,6 +30,11 @@ from bot_helpers import PUBLIC_LOGGER_NAME
 logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
+# Build 6b: Yahoo Finance's public chart data (the endpoint the yfinance
+# package reads), for stocks, indices, commodities and FX. Switch YAHOO_ENABLED.
+YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+YAHOO_ENABLED = True
+_BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/{coin}/market_chart"
 HISTORY_DAYS = 730
 COIN_HISTORY_DAYS = 365  # the public CoinGecko API's limit
@@ -75,6 +80,37 @@ COIN_RULES: tuple[tuple[str, str], ...] = (
     (r"\bXRP\b", "ripple"),
 )
 _PRICE = r"\b(price|close|closing|trade|trading|value|worth)\b"
+
+# Build 6b: Yahoo Finance tickers, after the FRED and coin rules. Indices by
+# name; commodities, FX and stocks need a price/level word too.
+YAHOO_INDEX_RULES: tuple[tuple[str, str, str], ...] = (
+    (r"\bNikkei(?: 225)?\b", "^N225", "Nikkei 225"),
+    (r"\bFTSE 100\b", "^FTSE", "FTSE 100"),
+    (r"\bDAX\b", "^GDAXI", "DAX"),
+    (r"\bHang Seng\b", "^HSI", "Hang Seng Index"),
+    (r"\bRussell 2000\b", "^RUT", "Russell 2000"),
+    (r"\bEuro Stoxx 50\b", "^STOXX50E", "Euro Stoxx 50"),
+    (r"\bCAC 40\b", "^FCHI", "CAC 40"),
+)
+YAHOO_PRICE_RULES: tuple[tuple[str, str, str], ...] = (
+    (r"\bgold\b", "GC=F", "Gold futures (COMEX, USD/oz)"),
+    (r"\bsilver\b", "SI=F", "Silver futures (COMEX, USD/oz)"),
+    (r"\bcopper\b", "HG=F", "Copper futures (COMEX, USD/lb)"),
+    (r"\bnatural gas\b", "NG=F", "Natural gas futures (NYMEX, Henry Hub)"),
+    (r"\bEUR ?/ ?USD\b|\beuro\b.{0,30}\b(US )?dollar\b", "EURUSD=X", "EUR/USD exchange rate"),
+    (r"\bUSD ?/ ?JPY\b|\b(US )?dollar\b.{0,30}\byen\b", "JPY=X", "USD/JPY exchange rate"),
+    (r"\bGBP ?/ ?USD\b|\b(pound|sterling)\b.{0,30}\b(US )?dollar\b", "GBPUSD=X", "GBP/USD exchange rate"),
+    (r"\bUSD ?/ ?CNY\b|\b(US )?dollar\b.{0,30}\b(yuan|renminbi)\b", "CNY=X", "USD/CNY exchange rate"),
+    (r"\b(Apple)\b.{0,20}\b(stock|shares?)\b", "AAPL", "Apple Inc. (AAPL)"),
+    (r"\b(Microsoft)\b.{0,20}\b(stock|shares?)\b", "MSFT", "Microsoft (MSFT)"),
+    (r"\b(Nvidia|NVIDIA)\b.{0,20}\b(stock|shares?)\b", "NVDA", "NVIDIA (NVDA)"),
+    (r"\b(Tesla)\b.{0,20}\b(stock|shares?)\b", "TSLA", "Tesla (TSLA)"),
+    (r"\b(Amazon)\b.{0,20}\b(stock|shares?)\b", "AMZN", "Amazon (AMZN)"),
+    (r"\b(Alphabet|Google)\b.{0,20}\b(stock|shares?)\b", "GOOGL", "Alphabet (GOOGL)"),
+    (r"\b(Meta)\b.{0,20}\b(stock|shares?)\b", "META", "Meta Platforms (META)"),
+)
+# A ticker written out: "(NASDAQ: AAPL)", "(NYSE: KO)".
+_EXPLICIT_TICKER = re.compile(r"\((?:NASDAQ|Nasdaq|NYSE)\s*:\s*([A-Z][A-Z.]{0,5})\)")
 # Questions about differences, returns or comparisons aren't a series' level.
 _NOT_A_LEVEL = r"\b(exceed|outperform|returns?|difference|spread between|versus|vs\.?)\b"
 
@@ -95,6 +131,20 @@ def match_question(question: Any) -> Match | None:
             found = re.search(pattern, text, re.IGNORECASE if not pattern.startswith(r"\bXRP") else 0)
             if found:
                 return Match("coingecko", coin, f"{coin} price (USD)", found.group(0))
+    if not YAHOO_ENABLED:
+        return None
+    for pattern, ticker, title in YAHOO_INDEX_RULES:
+        found = re.search(pattern, text)
+        if found:
+            return Match("yahoo", ticker, title, found.group(0))
+    if re.search(_PRICE + r"|\b(exchange rate|rate|level)\b", text, re.IGNORECASE):
+        explicit = _EXPLICIT_TICKER.search(text)
+        if explicit:
+            return Match("yahoo", explicit.group(1), f"{explicit.group(1)} stock", explicit.group(0))
+        for pattern, ticker, title in YAHOO_PRICE_RULES:
+            found = re.search(pattern, text, re.IGNORECASE)
+            if found:
+                return Match("yahoo", ticker, title, found.group(0))
     return None
 
 
@@ -141,6 +191,26 @@ def fetch_coingecko(coin: str, get: Get = requests.get) -> dict:
     return {"latest": {"date": history[-1][0], "value": history[-1][1]}, "history": history}
 
 
+def fetch_yahoo(ticker: str, get: Get = requests.get) -> dict:
+    """About a year of daily closes from Yahoo Finance's public chart data."""
+    response = get(
+        YAHOO_URL.format(ticker=ticker),
+        params={"range": "1y", "interval": "1d"},
+        headers={"User-Agent": _BROWSER_UA},
+        timeout=TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    result = (response.json().get("chart", {}).get("result") or [None])[0] or {}
+    stamps = result.get("timestamp") or []
+    closes = ((result.get("indicators", {}).get("quote") or [{}])[0]).get("close") or []
+    history = [
+        [date.fromtimestamp(t).isoformat(), float(c)] for t, c in zip(stamps, closes) if c is not None
+    ]
+    if not history:
+        raise ValueError(f"Yahoo {ticker}: no closes")
+    return {"latest": {"date": history[-1][0], "value": history[-1][1]}, "history": history}
+
+
 def hard_data_for(question: Any, today: date | None = None, get: Get = requests.get) -> dict | None:
     """Match and fetch. None if nothing matches; a failure is saved, never raised."""
     match = match_question(question)
@@ -149,7 +219,12 @@ def hard_data_for(question: Any, today: date | None = None, get: Get = requests.
     today = today or date.today()
     found = {"source": match.source, "series": match.series, "title": match.title, "rule": match.rule}
     try:
-        data = fetch_fred(match.series, today, get) if match.source == "fred" else fetch_coingecko(match.series, get)
+        if match.source == "fred":
+            data = fetch_fred(match.series, today, get)
+        elif match.source == "coingecko":
+            data = fetch_coingecko(match.series, get)
+        else:
+            data = fetch_yahoo(match.series, get)
         found.update(data)
     except Exception as e:
         status = getattr(getattr(e, "response", None), "status_code", None)
@@ -183,6 +258,7 @@ _OFFICIAL_PUBLISHER = {
     "dogecoin": r"CoinGecko",
     "ripple": r"CoinGecko",
 }
+_SOURCE_LABEL = {"fred": "FRED", "coingecko": "CoinGecko", "yahoo": "Yahoo Finance"}
 # Other data sites a question may resolve on.
 _OTHER_SOURCES = (
     r"\b(Yahoo Finance|Google Finance|Bloomberg|Reuters|CNBC|MarketWatch|Investing\.com|"
@@ -228,7 +304,10 @@ def stand_in_reason(question: Any, found: dict) -> str | None:
     if intraday or what:
         what = f"an intraday {what.removeprefix('a ').removeprefix('an ')}" if intraday and what else (what or "an intraday value")
         return f"stand-in: {title}; the question asks about {what}, not this series' value"
-    publisher = _OFFICIAL_PUBLISHER.get(found["series"], "(?!)")
+    publisher = _OFFICIAL_PUBLISHER.get(found["series"], r"\bYahoo\b" if found.get("source") == "yahoo" else "(?!)")
+    # A futures price standing in for a spot price.
+    if found.get("source") == "yahoo" and found["series"].endswith("=F") and re.search(r"\bspot\b|\bLBMA\b", everything, re.IGNORECASE):
+        return f"stand-in: {title} is a futures price; the question asks about a spot price"
     if found.get("source") == "fred":
         # FRED ids (e.g. DGS10) only as written; a coin id is just the coin's name.
         named_ours = re.search(rf"\bFRED\b|\b{re.escape(found['series'])}\b", everything) or re.search(
@@ -237,7 +316,7 @@ def stand_in_reason(question: Any, found: dict) -> str | None:
     else:
         named_ours = re.search(publisher, everything, re.IGNORECASE)
     other = re.search(_OTHER_SOURCES, everything, re.IGNORECASE)
-    source = "FRED" if found.get("source") == "fred" else "CoinGecko"
+    source = _SOURCE_LABEL.get(found.get("source"), "the data source")
     if other and not named_ours:
         return f"stand-in: the question resolves on {other.group(0)}, not {source}"
     if found.get("source") == "coingecko" and not named_ours:
@@ -263,7 +342,7 @@ def official_line(question: Any, found: dict | None) -> OfficialLine | None:
     points = [(date.fromisoformat(d), float(v)) for d, v in found["history"]]
     year = [v for d, v in points if d >= latest_date - timedelta(days=365)] or [latest_value]
     month_ago = [(d, v) for d, v in points if d <= latest_date - timedelta(days=30)]
-    source = "FRED" if found.get("source") == "fred" else "CoinGecko"
+    source = _SOURCE_LABEL.get(found.get("source"), found.get("source", ""))
     parts = [
         f"OFFICIAL DATA ({source} {found['series']}, {found.get('title', '')}): "
         f"latest {_fmt(latest_value)} on {latest_date.isoformat()}",
@@ -287,6 +366,7 @@ def check_apis() -> None:
     for question_text, kind in (
         ("What will the 10-year Treasury yield be?", "numeric"),
         ("What will the price of Bitcoin be?", "numeric"),
+        ("What will the price of gold be?", "numeric"),
     ):
         question = type("Q", (), {"question_type": kind, "question_text": question_text})()
         found = hard_data_for(question) or {}
@@ -296,6 +376,14 @@ def check_apis() -> None:
             f"{latest.get('date', found.get('error', '?'))} | {latest.get('value', '')} | "
             f"{len(found.get('history', []))} points |"
         )
+    # Build 6a: can Actions read Wikipedia summaries?
+    from wikipedia import fetch_summary
+
+    try:
+        page = fetch_summary("Federal Reserve")
+        print(f"| wikipedia | Federal Reserve | {'ok' if page else 'no summary'} | {len(page[1].split()) if page else 0} words | |")
+    except Exception as e:
+        print(f"| wikipedia | Federal Reserve | {type(e).__name__} | | |")
 
 
 if __name__ == "__main__":

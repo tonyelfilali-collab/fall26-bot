@@ -327,6 +327,22 @@ Round 2 uses it: binary round 2 as before; numeric / multiple choice get a round
 `round2`: up to 2 more models, usable quota only) only after a follow-up search. Question log
 `followup` = {enabled, triggered, trigger, queries, counts}. Replay: frozen section, no search.
 
+## Wikipedia background and Yahoo Finance data (Build 6, 29 Sep 2026)
+
+- **6a Wikipedia** (`wikipedia.py`, switch `WIKIPEDIA_ENABLED`, default ON): the research planner
+  also names up to 3 entities (English Wikipedia titles); their REST summaries (free, no key; our
+  User-Agent) are added at the end of the dossier as "## Background (Wikipedia, retrieved <date>)",
+  at most ~800 tokens in all; the dossier is cut so the whole stays within ~6k. A failed or
+  disambiguation page is skipped. Question log `research_detail.wikipedia` = page titles.
+- **6b Yahoo Finance** (`hard_data.py`, switch `YAHOO_ENABLED`, default ON): after the FRED and
+  CoinGecko rules, indices by name (Nikkei 225, FTSE 100, DAX, Hang Seng, Russell 2000, Euro Stoxx 50,
+  CAC 40) and, with a price/level word, commodities (gold, silver, copper, natural gas futures), FX
+  (EUR/USD, USD/JPY, GBP/USD, USD/CNY), big stocks by name, or a ticker written "(NYSE: KO)". Data:
+  Yahoo's public chart endpoint (the one the yfinance package reads; called directly with `requests`,
+  so no pandas/yfinance dependency), ~1 year of daily closes. Same dossier line as FRED/CoinGecko;
+  stand-in warning rules apply, plus "futures price vs spot price". A block (e.g. HTTP 429) is saved
+  as an error: no line. The Credit check workflow also checks Yahoo (gold) and Wikipedia.
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:
