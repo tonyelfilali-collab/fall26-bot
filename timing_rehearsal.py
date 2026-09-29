@@ -1,34 +1,33 @@
 """
 Run timing rehearsal (architect, 29 Sep). The REAL bot code (research queue,
 planned research with its deadline, GeminiPool planning, forecasting stages,
-shadow phase) on a VIRTUAL clock: every wait is simulated, so a 30-minute run
-takes seconds. Recorded replies: 0 model calls, 0 AskNews calls, nothing
-submitted, the quota ledger in memory.
+log saving, shadow phase) on a VIRTUAL clock: every wait is simulated, so a
+45-minute run takes seconds. Recorded replies: 0 model calls, 0 AskNews calls,
+nothing submitted, the quota ledger and the question logs in memory.
 
-Forced slow research and timeouts:
-- every Flash-Lite call (research planner, dossier writer) takes 100 s and
-  every AskNews search 90 s, so each question's research hits the 4-minute
-  limit (in the dossier step) and is forecast with what was gathered;
-- in each question, the first Flash forecast never answers (a hung call), the
-  others answer after 5 minutes, so every question uses its full 12 minutes;
-- the shadow forecaster never answers.
+A. Burst of 5, given in shuffled order, at every limit: Flash-Lite calls take
+   100 s and AskNews 90 s (research hits 4 min, in the dossier step); in each
+   question one Flash forecast never answers, the others take 5 min (the
+   12-minute limit is used in full); the shadow forecaster never answers.
+B. Overload of 12: research hits 4 min (AskNews 250 s); forecasts answer
+   after 11.5 min (slow but no hung calls, which would get their model
+   skipped for the run: 2 failures, #60); the shadow never answers.
+C. Late run: the run is already at minute 25.5 when 3 questions arrive, the
+   second starts just before minute 30 (the true worst case), the third is
+   left for the next run; forecasting ends after minute 45, so the shadows are
+   skipped.
 
-Scenario A: a burst of 5 questions, given in shuffled order. Checks: the run
-ends within 35 minutes, every question is forecast, the soonest-closing
-question is done first (done in closing order), research <= 4 min and
-forecasting <= 12 min per question.
-Scenario B (overload): 12 questions; research hits its limit through a slow
-AskNews search (250 s), forecasts answer in 5 minutes (no hung calls, which
-would get their model skipped for the run: 2 failures, #60). Checks: no
-question starts after 40 minutes; the ones left for the next run are the
-latest-closing; every started question is forecast.
+Checks: every run ends by minute 48; no question starts after minute 30 and
+the ones left for the next run are the latest-closing; every started
+question is forecast, in closing order; research <= 4 min and forecasting
+<= 12 min per question; and a job killed at any minute from 1 to 60 leaves
+every submitted question's log saved (each log is saved at its submission).
 
     poetry run python timing_rehearsal.py
 """
 from __future__ import annotations
 
 import asyncio
-import functools
 import os
 import sys
 from dataclasses import dataclass, field
@@ -45,16 +44,29 @@ from gemini_budget import MemoryStore, current_question_key
 from llm_throttle import RequestPacer
 from replay import ReplayChainLlm, _RecordedAnswer
 
-FLASH_LITE_SECONDS = 100
-ASKNEWS_SECONDS = 90
-OVERLOAD_ASKNEWS_SECONDS = 250
-FLASH_SECONDS = 300
 HUNG_SECONDS = 10 * 3600
 TYPES = ("binary", "numeric", "discrete", "multiple_choice")
-# Minutes to close, in the (shuffled) order the questions are given.
-BURST_CLOSES = [178, 186, 170, 182, 174]
-OVERLOAD_CLOSES = [200 + 7 * ((i * 5) % 12) for i in range(12)]
-RUN_LIMIT_MINUTES = 35
+RUN_END_LIMIT_MINUTES = 48
+KILL_MINUTES = range(1, 61)
+
+
+@dataclass
+class Scenario:
+    name: str
+    closes: list[int]  # minutes to close, in the (shuffled) order given
+    flash_lite_seconds: float = 0
+    asknews_seconds: float = 90
+    flash_seconds: float = 300
+    hang_one_forecast: bool = False  # per question, the first Flash call never answers
+    run_minute_at_start: float = 0.0  # the run clock when the questions arrive
+
+
+BURST = Scenario("A. Burst of 5 at every limit (given in shuffled order)", [178, 186, 170, 182, 174],
+                 flash_lite_seconds=100, asknews_seconds=90, flash_seconds=300, hang_one_forecast=True)
+OVERLOAD = Scenario("B. Overload: 12 questions at once", [200 + 7 * ((i * 5) % 12) for i in range(12)],
+                    asknews_seconds=250, flash_seconds=11.5 * 60)
+LATE = Scenario("C. Late run: 3 questions arrive at minute 25.5", [120, 130, 140],
+                asknews_seconds=250, flash_seconds=11.9 * 60, run_minute_at_start=25.5)
 
 
 class VirtualClockLoop(asyncio.SelectorEventLoop):
@@ -94,11 +106,14 @@ class _HungShadow(GeneralLlm):
 @dataclass
 class Timeline:
     research: dict = field(default_factory=dict)  # post -> [start, end] (minutes)
-    forecast_done: dict = field(default_factory=dict)  # post -> minutes
+    forecast_done: dict = field(default_factory=dict)  # post -> minute submitted
+    log_saved: dict = field(default_factory=dict)  # post -> minute its log was saved
+    shadow_files: int = 0
     run_minutes: float = 0.0
     deferred: set = field(default_factory=set)
     failed: set = field(default_factory=set)
     time_limit: dict = field(default_factory=dict)  # post -> research stage cut
+    shadows_skipped: bool = False
 
 
 def _question(post: int, kind: str, close: datetime, now: datetime) -> Any:
@@ -115,14 +130,14 @@ def _question(post: int, kind: str, close: datetime, now: datetime) -> Any:
     return NumericQuestion(lower_bound=0.0, upper_bound=1000.0, open_upper_bound=True, cdf_size=201, **bounds, **common)
 
 
-def run(closes: list[int], overload: bool = False) -> tuple[Timeline, list]:
-    """One live-like run on the virtual clock; closes = minutes to close.
-    overload: slow AskNews only (Flash-Lite instant, no hung forecasts)."""
+def run(scenario: Scenario) -> tuple[Timeline, list]:
+    """One live-like run on the virtual clock."""
     timeline = Timeline()
     now = datetime.now(timezone.utc)
-    questions = [_question(70000 + i, TYPES[i % 4], now + timedelta(minutes=m), now) for i, m in enumerate(closes)]
+    questions = [_question(70000 + i, TYPES[i % 4], now + timedelta(minutes=m), now) for i, m in enumerate(scenario.closes)]
     loop = VirtualClockLoop()
-    minutes = lambda: loop.time() / 60  # noqa: E731
+    offset = scenario.run_minute_at_start
+    minutes = lambda: offset + loop.time() / 60  # noqa: E731
     hung: set = set()
 
     original_answer = _RecordedAnswer._mockable_direct_call_to_model
@@ -130,21 +145,22 @@ def run(closes: list[int], overload: bool = False) -> tuple[Timeline, list]:
     original_submit = main.FallBot2026._submit_if_still_open
     original_to_thread = asyncio.to_thread
     original_hard_data = main.hard_data_for
+    original_info = main.logger.info
 
     async def slow_answer(self, prompt):  # type: ignore[no-untyped-def]
         model = self.model.removeprefix("replay/")
-        if model in GEMINI_PARSER_MODELS and not overload:
-            await asyncio.sleep(FLASH_LITE_SECONDS)
+        if model in GEMINI_PARSER_MODELS:
+            await asyncio.sleep(scenario.flash_lite_seconds)
         elif model in GEMINI_FORECAST_MODELS:
             question = current_question_key.get()
-            if question not in hung and not overload:
+            if scenario.hang_one_forecast and question not in hung:
                 hung.add(question)
                 await asyncio.sleep(HUNG_SECONDS)  # a call that never answers
-            await asyncio.sleep(FLASH_SECONDS)
+            await asyncio.sleep(scenario.flash_seconds)
         return await original_answer(self, prompt)
 
     async def slow_asknews(query):  # type: ignore[no-untyped-def]
-        await asyncio.sleep(OVERLOAD_ASKNEWS_SECONDS if overload else ASKNEWS_SECONDS)
+        await asyncio.sleep(scenario.asknews_seconds)
         return []
 
     async def timed_research(question, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -162,16 +178,32 @@ def run(closes: list[int], overload: bool = False) -> tuple[Timeline, list]:
 
     async def timed_submit(self, question, report):  # type: ignore[no-untyped-def]
         timeline.forecast_done[question.id_of_post] = minutes()
-        return False
+        return True
 
     async def sync_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
         return func(*args, **kwargs)
+
+    class LogRecorder:
+        saved: list = []
+
+        def save(self, path: str, record: dict) -> bool:
+            if path.endswith("_shadows.json"):
+                timeline.shadow_files += 1
+            else:
+                timeline.log_saved[record["question"]["id_of_post"]] = minutes()
+            return True
+
+    def watch_info(message, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(message).startswith("shadows skipped: time"):
+            timeline.shadows_skipped = True
+        return original_info(message, *args, **kwargs)
 
     _RecordedAnswer._mockable_direct_call_to_model = slow_answer
     main.run_planned_research = timed_research
     main.FallBot2026._submit_if_still_open = timed_submit
     asyncio.to_thread = sync_to_thread
     main.hard_data_for = lambda question: None
+    main.logger.info = watch_info
     _RecordedAnswer.binary_percent = {}
     try:
         pool = bot_config._gemini_pool(MemoryStore(), llm_class=ReplayChainLlm)
@@ -184,10 +216,10 @@ def run(closes: list[int], overload: bool = False) -> tuple[Timeline, list]:
             predictions_per_research_report=3, required_successful_predictions=0,
         )
         bot.planner = pool
-        bot.question_log = None
-        bot.keep_records = True
+        bot.question_log = LogRecorder()
         bot.run_mode = "test_questions"
         bot.shadow_llm = _HungShadow()
+        bot.run_started = -offset * 60  # the virtual clock starts at 0
         queued, bot.seasonal_by_post = main.run_queue([], questions)
         reports = loop.run_until_complete(bot.forecast_questions(queued, return_exceptions=True))
         timeline.run_minutes = minutes()
@@ -200,6 +232,7 @@ def run(closes: list[int], overload: bool = False) -> tuple[Timeline, list]:
         main.FallBot2026._submit_if_still_open = original_submit
         asyncio.to_thread = original_to_thread
         main.hard_data_for = original_hard_data
+        main.logger.info = original_info
         loop.close()
 
 
@@ -207,35 +240,33 @@ def _closing_order(questions: list) -> list[int]:
     return [q.id_of_post for q in sorted(questions, key=lambda q: q.close_time)]
 
 
-def check_burst(timeline: Timeline, questions: list) -> tuple[bool, list[str]]:
-    posts = _closing_order(questions)
-    done_order = sorted(timeline.forecast_done, key=timeline.forecast_done.get)
-    research_ok = all(end - start <= run_timing.RESEARCH_LIMIT_SECONDS / 60 + 1e-6 for start, end in timeline.research.values())
-    stage_ok = all(
-        timeline.forecast_done[p] - timeline.research[p][1] <= run_timing.FORECAST_STAGES_LIMIT_SECONDS / 60 + 0.1
-        for p in timeline.forecast_done
-    )
-    checks = [
-        (f"Run ends within {RUN_LIMIT_MINUTES} min ({timeline.run_minutes:.1f} min)", timeline.run_minutes < RUN_LIMIT_MINUTES),
-        (f"Every question forecast ({len(timeline.forecast_done)} of {len(posts)})", set(timeline.forecast_done) == set(posts) and not timeline.failed),
-        ("Soonest-closing question done first; all done in closing order", done_order == posts),
-        ("Research hit the 4-min limit and stopped there, every question", research_ok and set(timeline.time_limit) == set(posts)),
-        ("Forecasting stages within 12 min, every question", stage_ok),
-    ]
-    return all(ok for _, ok in checks), [f"- {text}: **{'yes' if ok else 'NO'}**" for text, ok in checks]
+def killed_at(timeline: Timeline, minute: float) -> set:
+    """Questions submitted by `minute` whose log was NOT saved by then."""
+    return {p for p, t in timeline.forecast_done.items() if t <= minute and timeline.log_saved.get(p, 1e9) > minute}
 
 
-def check_overload(timeline: Timeline, questions: list) -> tuple[bool, list[str]]:
+def check(timeline: Timeline, questions: list) -> tuple[bool, list[str]]:
     posts = _closing_order(questions)
     started = [p for p in posts if p in timeline.research]
-    latest = set(posts[len(started):])
+    cutoff = run_timing.START_CUTOFF_SECONDS / 60
+    lost = {m: killed_at(timeline, m) for m in KILL_MINUTES}
     checks = [
-        (f"No question starts after {run_timing.START_CUTOFF_SECONDS // 60} min "
-         f"(last start {max(s for s, _ in timeline.research.values()):.1f} min)",
-         all(s < run_timing.START_CUTOFF_SECONDS / 60 for s, _ in timeline.research.values())),
-        (f"Left for the next run: {len(timeline.deferred)}, the latest-closing ones", bool(timeline.deferred) and timeline.deferred == latest),
-        (f"Every started question forecast ({len(timeline.forecast_done)} of {len(started)})", set(timeline.forecast_done) == set(started)),
-        ("Started in closing order", started == posts[: len(started)] and sorted(started, key=lambda p: timeline.research[p][0]) == started),
+        (f"Run ends by minute {RUN_END_LIMIT_MINUTES} (ends at {timeline.run_minutes:.1f})",
+         timeline.run_minutes <= RUN_END_LIMIT_MINUTES),
+        (f"No question starts after minute {cutoff:.0f} (last start {max(s for s, _ in timeline.research.values()):.1f})",
+         all(s < cutoff for s, _ in timeline.research.values())),
+        (f"Left for the next run: {len(timeline.deferred)}, the latest-closing ones",
+         timeline.deferred == set(posts[len(started):])),
+        (f"Every started question forecast ({len(timeline.forecast_done)} of {len(started)}), in closing order",
+         set(timeline.forecast_done) == set(started) and not (timeline.failed - timeline.deferred)
+         and sorted(timeline.forecast_done, key=timeline.forecast_done.get) == started),
+        ("Research at most 4 min, every question",
+         all(end - start <= run_timing.RESEARCH_LIMIT_SECONDS / 60 + 1e-6 for start, end in timeline.research.values())),
+        ("Forecasting at most 12 min after research, every question",
+         all(timeline.forecast_done[p] - timeline.research[p][1] <= run_timing.FORECAST_STAGES_LIMIT_SECONDS / 60 + 0.1
+             for p in timeline.forecast_done)),
+        ("Job killed at any minute 1-60: every submitted question's log already saved",
+         not any(lost.values())),
     ]
     return all(ok for _, ok in checks), [f"- {text}: **{'yes' if ok else 'NO'}**" for text, ok in checks]
 
@@ -243,53 +274,47 @@ def check_overload(timeline: Timeline, questions: list) -> tuple[bool, list[str]
 def table(timeline: Timeline, questions: list) -> list[str]:
     by_post = {q.id_of_post: q for q in questions}
     first_close = min(q.close_time for q in questions)
-    lines = ["| Question | Type | Closes (min after the first) | Research (min) | Research cut in | Forecast done (min) |", "|---|---|---|---|---|---|"]
+    lines = ["| Question | Type | Closes (min after the first) | Research (run minute) | Research cut in | Submitted | Log saved |",
+             "|---|---|---|---|---|---|---|"]
     for post in _closing_order(questions):
         q = by_post[post]
         research = timeline.research.get(post)
+        done = timeline.forecast_done.get(post)
+        saved = timeline.log_saved.get(post)
         lines.append(
             f"| {post} | {q.question_type} | {int((q.close_time - first_close).total_seconds() // 60)} | "
             + (f"{research[0]:.1f} - {research[1]:.1f}" if research else "not started")
             + f" | {timeline.time_limit.get(post, '-')} | "
-            + (f"{timeline.forecast_done[post]:.1f}" if post in timeline.forecast_done else ("next run" if post in timeline.deferred else "-"))
-            + " |"
+            + (f"{done:.1f}" if done is not None else ("next run" if post in timeline.deferred else "-"))
+            + f" | {f'{saved:.1f}' if saved is not None else '-'} |"
         )
     return lines
 
 
+def describe(s: Scenario) -> str:
+    parts = [f"research: Flash-Lite {s.flash_lite_seconds:.0f} s, AskNews {s.asknews_seconds:.0f} s per call",
+             f"forecasts {s.flash_seconds / 60:.1f} min" + (", one hung per question" if s.hang_one_forecast else ""),
+             "shadow forecaster never answers"]
+    return "Forced: " + "; ".join(parts) + "."
+
+
 def report() -> tuple[bool, str]:
-    burst, burst_questions = run(BURST_CLOSES)
-    ok_a, lines_a = check_burst(burst, burst_questions)
-    overload, overload_questions = run(OVERLOAD_CLOSES, overload=True)
-    ok_b, lines_b = check_overload(overload, overload_questions)
-    text = "\n".join([
-        "## Run timing rehearsal (virtual clock, recorded replies, 0 model calls)",
-        "",
-        f"Forced: Flash-Lite calls {FLASH_LITE_SECONDS} s and AskNews {ASKNEWS_SECONDS} s each (research hits the "
-        f"4-min limit); in each question one Flash forecast never answers, the others take {FLASH_SECONDS // 60} min "
-        "(the 12-min limit is used in full); the shadow forecaster never answers.",
-        "",
-        "### A. Burst of 5 (given in shuffled order)",
-        "",
-        *table(burst, burst_questions),
-        "",
-        *lines_a,
-        f"- Whole run: **{burst.run_minutes:.1f} min** (shadow phase ends by minute "
-        f"{run_timing.SHADOW_PHASE_END_SECONDS // 60})",
-        "",
-        "### B. Overload: 12 questions at once",
-        "",
-        f"Research hits the 4-min limit through a {OVERLOAD_ASKNEWS_SECONDS} s AskNews search; forecasts take "
-        f"{FLASH_SECONDS // 60} min.",
-        "",
-        *table(overload, overload_questions),
-        "",
-        *lines_b,
-        f"- Whole run: **{overload.run_minutes:.1f} min** (the last started question finishes; shadows skipped). "
-        f"Worst case: a question starting just before minute {run_timing.START_CUTOFF_SECONDS // 60} with "
-        f"4-min research and 12-min forecasting ends by minute {run_timing.START_CUTOFF_SECONDS // 60 + 16}.",
-    ])
-    return ok_a and ok_b, text
+    lines = ["## Run timing rehearsal (virtual clock, recorded replies, 0 model calls)", ""]
+    ok_all = True
+    for scenario in (BURST, OVERLOAD, LATE):
+        timeline, questions = run(scenario)
+        ok, checks = check(timeline, questions)
+        ok_all = ok_all and ok
+        shadows = ("skipped (\"shadows skipped: time\")" if timeline.shadows_skipped
+                   else f"{timeline.shadow_files} shadow file(s) saved at the end")
+        lines += [f"### {scenario.name}", "", describe(scenario), "", *table(timeline, questions), "", *checks,
+                  f"- Shadows: {shadows}. Whole run: **{timeline.run_minutes:.1f} min**", ""]
+    lines.append(
+        f"Worst case: a question starting just before minute {run_timing.START_CUTOFF_SECONDS // 60} ends by "
+        f"{run_timing.START_CUTOFF_SECONDS // 60 + 16}; shadows start only before minute "
+        f"{run_timing.SHADOW_START_BEFORE_SECONDS // 60} and end by {run_timing.SHADOW_PHASE_END_SECONDS // 60}."
+    )
+    return ok_all, "\n".join(lines)
 
 
 if __name__ == "__main__":

@@ -141,3 +141,47 @@ def test_shadow_runs_only_after_the_live_submission(monkeypatch):
     bot = _bot(_Recording())
     asyncio.run(bot.forecast_questions(QUESTIONS[:1], return_exceptions=True))
     assert events == ["submitted", "shadow"]
+
+
+class _Recorder:
+    """A question-log writer that keeps a copy of what each save wrote."""
+
+    def __init__(self):
+        self.files: dict[str, dict] = {}
+        self.saved: list[str] = []
+
+    def save(self, path, record):
+        import copy
+
+        self.files[path] = copy.deepcopy(record)
+        self.saved.append(path)
+        return True
+
+
+def test_log_saved_at_submission_shadow_in_its_own_file():
+    bot = _bot(replay.ReplayLlm())
+    bot.question_log = _Recorder()
+    _run(bot)
+    logs = [p for p in bot.question_log.saved if not p.endswith("_shadows.json")]
+    shadows = [p for p in bot.question_log.saved if p.endswith("_shadows.json")]
+    assert len(logs) == 4 and len(shadows) == 4
+    assert bot.question_log.saved[:4] == logs  # every log before any shadow file: nothing overwritten
+    for path in logs:
+        assert "shadow_model" not in bot.question_log.files[path]  # saved before the shadow ran
+        extra = bot.question_log.files[path.removesuffix(".json") + "_shadows.json"]
+        assert extra["log"] == path and extra["shadow_model"]["status"] == "ok"
+        assert main.SHADOW_VARIANT in extra["shadow"]
+
+
+def test_shadows_skipped_after_minute_45(caplog, monkeypatch):
+    monkeypatch.setattr(main, "START_CUTOFF_SECONDS", 3600)  # let the questions start at minute 46
+    bot = _bot(replay.ReplayLlm())
+    bot.question_log = _Recorder()
+    import time
+
+    bot.run_started = time.monotonic() - 46 * 60  # the run "started" 46 minutes ago
+    with caplog.at_level("INFO", logger="fall26"):
+        _run(bot)
+    assert not [p for p in bot.question_log.saved if p.endswith("_shadows.json")]
+    assert len(bot.question_log.saved) == 4
+    assert "shadows skipped: time" in caplog.text

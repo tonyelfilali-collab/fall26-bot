@@ -16,11 +16,10 @@ def test_capped_and_shadow_budget():
     assert run_timing.capped(None, 30.0) == 30.0
     assert run_timing.capped(100.0, 30.0) == 30.0
     assert run_timing.capped(10.0, 30.0) == 10.0
-    end = run_timing.SHADOW_PHASE_END_SECONDS
     assert run_timing.shadow_seconds(0, 240) == 240
-    assert run_timing.shadow_seconds(end - 60, 240) == 60
-    assert run_timing.shadow_seconds(end - 29, 240) == 0.0  # under 30 s left: skipped
-    assert run_timing.shadow_seconds(end + 600, 240) == 0.0
+    assert run_timing.shadow_seconds(44 * 60, 240) == 180  # before minute 45: runs, ends by minute 47
+    assert run_timing.shadow_seconds(45 * 60, 240) == 0.0  # from minute 45: skipped
+    assert run_timing.shadow_seconds(60 * 60, 240) == 0.0
     assert run_timing.shadow_seconds(0, 0.2) == 0.2  # a short limit is kept, not skipped
 
 

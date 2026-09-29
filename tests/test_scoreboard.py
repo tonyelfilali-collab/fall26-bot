@@ -50,3 +50,20 @@ def test_score_records_and_report():
 
 def test_empty_report():
     assert "none resolved yet" in scoreboard.report_markdown([])
+
+
+def test_shadow_files_are_merged_into_their_log():
+    import scoreboard
+
+    log = "questions/tournament/2026-10-01/123_120000.json"
+    files = {
+        log: {"question": {"id_of_post": 123}, "submitted": True, "shadow": {"mean": 0.4}},
+        log.removesuffix(".json") + "_shadows.json": {
+            "question": {"id_of_post": 123}, "log": log,
+            "shadow_model": {"status": "ok"}, "shadow": {"free-shadow": 0.6, "live+free-shadow": 0.5},
+        },
+        "questions/tournament/2026-10-01/999_120000_shadows.json": {"shadow_model": {"status": "ok"}},  # no log: ignored
+    }
+    [record] = scoreboard.merge_shadow_files(files)
+    assert record["shadow_model"] == {"status": "ok"}
+    assert record["shadow"] == {"mean": 0.4, "free-shadow": 0.6, "live+free-shadow": 0.5}

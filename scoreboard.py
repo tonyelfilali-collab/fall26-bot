@@ -153,11 +153,32 @@ def _github(path: str, token: str, method: str = "GET", body: dict | None = None
     return response.json()
 
 
+SHADOWS_SUFFIX = "_shadows.json"
+
+
+def merge_shadow_files(files: dict[str, dict]) -> list[dict]:
+    """Question logs (path -> record) with each '<log>_shadows.json' (the
+    end-of-run shadow forecaster, run timing) merged into its log."""
+    records = {path: record for path, record in files.items() if not path.endswith(SHADOWS_SUFFIX)}
+    for path, extra in files.items():
+        if not path.endswith(SHADOWS_SUFFIX):
+            continue
+        record = records.get(path.removesuffix(SHADOWS_SUFFIX) + ".json")
+        if record is None:
+            continue
+        if "shadow_model" in extra:
+            record["shadow_model"] = extra["shadow_model"]
+        record.setdefault("shadow", {}).update(extra.get("shadow") or {})
+    return list(records.values())
+
+
 def all_tournament_records(token: str) -> list[dict]:
-    """Every tournament question log (every run's attempt)."""
+    """Every tournament question log (every run's attempt), shadow files merged in."""
     tree = _github("git/trees/HEAD?recursive=1", token)["tree"]
     paths = [t["path"] for t in tree if t["path"].startswith("questions/tournament/") and t["path"].endswith(".json")]
-    return [json.loads(base64.b64decode(_github(f"contents/{path}", token)["content"])) for path in paths]
+    return merge_shadow_files(
+        {path: json.loads(base64.b64decode(_github(f"contents/{path}", token)["content"])) for path in paths}
+    )
 
 
 def latest_submitted_records(token: str, records: list[dict] | None = None) -> list[dict]:

@@ -61,6 +61,12 @@ def record_path(mode: str, question: Any, started: datetime) -> str:
     return f"questions/{mode}/{started:%Y-%m-%d}/{post}_{started:%H%M%S}.json"
 
 
+def shadows_path(log_path: str) -> str:
+    """The end-of-run shadow results of a question log: '<log>_shadows.json'
+    next to it (the log itself is never overwritten)."""
+    return log_path.removesuffix(".json") + "_shadows.json"
+
+
 # Several questions finish at once, and GitHub rejects clashing writes to the
 # same branch (409/422) or is briefly unavailable (5xx): try again.
 SAVE_ATTEMPTS = 4
