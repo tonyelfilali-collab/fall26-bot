@@ -29,7 +29,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Spend guards | `spend.py` | ON (credits only) | Per-question cap 2x tier cost, daily cap 2x target, key backstop, never re-buy, fail closed | #81 |
 | Health check start | `health_dispatch.py` | ON | First tournament run after 06:00 UTC starts health.yml | #84 |
 | MiniBench discovery | `minibench.py` | ON | Slug + remembered rounds + 20-id scan every run; newest running round | #41, #90 |
-| Run timing | `run_timing.py` | ON | One run queue, research soonest-closing first; research 4 min; forecasting stages 12 min; no new question after 40 min; shadows at the run's end (until minute 33) | this PR |
+| Run timing | `run_timing.py` | ON | One run queue, research soonest-closing first; research 4 min; forecasting stages 12 min; no new question after 30 min; shadows at the run's end only before minute 45 (end by 47); log saved at submission, shadows in `<log>_shadows.json` | #96, this PR |
 
 
 Findings from Task 1 (checked 2026-09-27).
@@ -398,19 +398,23 @@ Architect, Tier B: a burst of questions must never push a run past the workflow'
   `round2_skipped`, `followup.skipped`). The existing close-time limits still apply when shorter.
   The last-minute backup chain (Nemotron / Flash-Lite) keeps its own limits. Non-Gemini lineups:
   each forecast at most 12 min.
-- **Start cutoff: 40 min.** A question whose research turn comes after 40 min into the run is not
-  started (public log "not started, the run is past 40 min"); it waits for the next run, gets no
-  question log and no retry backoff. The run goes red only if it closes within 25 min, as before.
+- **Start cutoff: 30 min** (was 40 in #96). A question whose research turn comes after 30 min into
+  the run is not started (public log "not started, the run is past 30 min"); it waits for the next
+  run, gets no question log and no retry backoff. The run goes red only if it closes within 25 min.
+- **Logs:** each question's log is saved right after its forecast is submitted (or fails), so a job
+  killed later still leaves it.
 - **Shadows at the end of the run:** the Nemotron shadow forecasts run all together after every
-  question is done, each within min(240 s, time until minute 33 of the run); under 30 s left =
-  skipped (`shadow_model.skipped: "run time"`, left out of the Scoreboard's answer rate). Question
-  logs are saved after the shadows (the saver can't overwrite a file), so a question's log appears
-  at the end of the run.
+  question is done, only if the run is before minute 45, each within min(240 s, time until minute
+  47). Otherwise none run (public log "shadows skipped: time"). Each result goes in its own file
+  next to the log, `<log>_shadows.json` (`log`, `shadow_model`, `shadow` = free-shadow and
+  live+free-shadow); the Scoreboard merges it into the log (`scoreboard.merge_shadow_files`).
 - **Rehearsal** (`timing_rehearsal.py`, Test Bot `timing-rehearsal`; unit test): the real bot code on
-  a virtual clock, 0 model calls. Burst of 5 with slow research and one hung forecast per question:
-  33.0 min, done in closing order. Overload of 12: 10 start (last at 36 min), the 2 latest-closing
-  wait for the next run. Worst case in general: a question starting just before minute 40 ends by
-  minute 56.
+  a virtual clock, 0 model calls. A: burst of 5 at every limit (slow research, one hung forecast per
+  question): 36.0 min, closing order. B: overload of 12, 11.5-min forecasts: 8 start (last at 28),
+  the 4 latest-closing wait, 47.0 min. C: late run (questions arrive at minute 25.5; one starts at
+  29.5): 45.4 min, shadows skipped. In each, a job killed at any minute 1-60 leaves every submitted
+  question's log saved. Worst case: a question starting just before minute 30 ends by 46; with
+  shadows the run ends by 47.
 - A model call cut by these limits counts as a failed attempt (quota ledger, #60): 2 in a run and
   that model is skipped for the rest of the run.
 

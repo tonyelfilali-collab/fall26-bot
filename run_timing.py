@@ -10,10 +10,13 @@ past the workflow's 60-minute limit.
    round 2): at most 12 minutes per question, counted from the end of its
    research. The last-minute backup chain (Nemotron / Flash-Lite) keeps its
    own limits.
-4. Shadow forecasts run at the end of the run, all together, and only while
-   the run is under SHADOW_PHASE_END (they never make a run longer).
-5. No new question starts (gets its research turn) after 40 minutes into the
-   run; the rest wait for the next run.
+4. Shadow forecasts run at the end of the run, all together, only if the run
+   is before minute 45 (otherwise skipped: "shadows skipped: time"), and end
+   by minute 47. Each question's log is saved as soon as it is submitted; the
+   shadow results go in a separate file at the end (nothing is overwritten).
+5. No new question starts (gets its research turn) after 30 minutes into the
+   run; the rest wait for the next run. Worst case: a question starting just
+   before minute 30 ends by 30 + 4 + 12 = 46; with shadows, the run ends by 47.
 
 All times are event-loop seconds (loop.time(), the same clock as
 time.monotonic() in a normal run), so a rehearsal can run on a virtual clock.
@@ -26,12 +29,11 @@ from typing import Any
 
 RESEARCH_LIMIT_SECONDS = 4 * 60
 FORECAST_STAGES_LIMIT_SECONDS = 12 * 60
-START_CUTOFF_SECONDS = 40 * 60
-# The shadow phase ends by this point of the run (a burst of 5 at the limits
-# is 5 x 4 min research + 12 min forecasting = 32 min).
-SHADOW_PHASE_END_SECONDS = 33 * 60
-# A shadow forecast with less time than this left is skipped.
-MIN_SHADOW_SECONDS = 30
+START_CUTOFF_SECONDS = 30 * 60
+# Shadow forecasts start only before this point of the run...
+SHADOW_START_BEFORE_SECONDS = 45 * 60
+# ...and end by this one (the run then ends by minute 48 at the latest).
+SHADOW_PHASE_END_SECONDS = 47 * 60
 # Research that ignores its deadline (a call that can't be interrupted) is
 # cut this long after the limit.
 RESEARCH_GRACE_SECONDS = 15
@@ -47,10 +49,11 @@ def capped(timeout: float | None, left: float) -> float:
 
 
 def shadow_seconds(elapsed: float, limit: float) -> float:
-    """Seconds each end-of-run shadow forecast may take (0 = skip them: less
-    than MIN_SHADOW_SECONDS of the shadow phase is left)."""
-    left = SHADOW_PHASE_END_SECONDS - elapsed
-    return min(limit, left) if left >= MIN_SHADOW_SECONDS else 0.0
+    """Seconds each end-of-run shadow forecast may take (0 = skip them: the
+    run is at or past SHADOW_START_BEFORE)."""
+    if elapsed >= SHADOW_START_BEFORE_SECONDS:
+        return 0.0
+    return min(limit, SHADOW_PHASE_END_SECONDS - elapsed)
 
 
 def research_key(question: Any) -> tuple:

@@ -133,7 +133,7 @@ from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from spend import SpendGuard, guard_tier, unknown_cost_alert, utc_day
 from stat_baseline import random_walk_baseline
-from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, to_jsonable, utc_now
+from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
 # Only this logger's messages reach the public Actions log in full; see
@@ -1036,7 +1036,7 @@ class FallBot2026(ForecastBot):
                 question.id_of_post
             ] = question.close_time
             if question.id_of_post in self.__dict__.get("deferred_posts", set()):
-                # Run timing: never started (the run is past 40 min); nothing
+                # Run timing: never started (the run is past 30 min); nothing
                 # to log, and not a failure for the retry backoff.
                 self.__dict__.get("_question_records", {}).pop(id(question), None)
                 self.__dict__.get("_hard_data_tasks", {}).pop(id(question), None)
@@ -1048,7 +1048,8 @@ class FallBot2026(ForecastBot):
                 "left for the next run"
             )
             await self._attach_hard_data(question, record, hard_data_task)
-            self._finish_later(question, record, started)
+            await self._save_record(question, record, started)
+            self._shadow_later(question, record, started)
             raise
         submitted = await self._submit_if_still_open(question, report)
         if submitted and isinstance(question, BinaryQuestion):
@@ -1094,30 +1095,55 @@ class FallBot2026(ForecastBot):
             minutes=report.minutes_taken,
             list_price_cost=report.price_estimate,
         )
-        self._finish_later(question, record, started)
+        # Saved at once: a job killed later still leaves this question's log.
+        await self._save_record(question, record, started)
+        self._shadow_later(question, record, started)
         return report
 
-    def _finish_later(self, question: MetaculusQuestion, record: dict, started: datetime) -> None:
-        """Run timing: the shadow forecast and the question log wait for the
-        end of the run (the log is written once, with the shadow in it)."""
-        self.__dict__.setdefault("_pending_finish", []).append((question, record, started))
+    def _shadow_later(self, question: MetaculusQuestion, record: dict, started: datetime) -> None:
+        """Run timing: the shadow forecast waits for the end of the run."""
+        if id(question) in self.__dict__.get("_shadow_research", {}):
+            self.__dict__.setdefault("_pending_shadows", []).append((question, record, started))
 
     async def _finish_run(self) -> None:
-        """End of the run: every pending shadow forecast at once, within the
-        shadow time budget (none after SHADOW_PHASE_END), then the logs."""
-        pending = self.__dict__.pop("_pending_finish", [])
+        """End of the run: every pending shadow forecast at once, only if the
+        run is before minute 45 (ending by minute 47); each result goes in the
+        question's '<log>_shadows.json' file."""
+        pending = self.__dict__.pop("_pending_shadows", [])
         if not pending:
             return
-        seconds = shadow_seconds(self._run_elapsed(), SHADOW_FORECAST_TIMEOUT_SECONDS)
+        elapsed = self._run_elapsed()
+        seconds = shadow_seconds(elapsed, SHADOW_FORECAST_TIMEOUT_SECONDS)
+        if seconds <= 0:
+            for question, _, _ in pending:
+                self.__dict__.get("_shadow_research", {}).pop(id(question), None)
+                self.__dict__.get("_live_predictions", {}).pop(id(question), None)
+            logger.info(f"shadows skipped: time (run at minute {int(elapsed // 60)}, {len(pending)} question(s))")
+            return
         results = await asyncio.gather(
             *[self._finish_shadow_forecast(question, record, seconds) for question, record, _ in pending],
             return_exceptions=True,
         )
-        for (question, _, _), result in zip(pending, results):
+        for (question, record, started), result in zip(pending, results):
             if isinstance(result, BaseException):
                 logger.warning(f"Question {question.id_of_post}: shadow forecaster failed ({type(result).__name__})")
-        for question, record, started in pending:
-            await self._save_record(question, record, started)
+                continue
+            await self._save_shadows(question, record, started)
+
+    async def _save_shadows(self, question, record: dict, started: datetime) -> None:  # type: ignore[no-untyped-def]
+        """The shadow forecaster's result in its own file next to the log."""
+        if self.question_log is None or "shadow_model" not in record:
+            return
+        variants = {k: v for k, v in (record.get("shadow") or {}).items() if SHADOW_VARIANT in k}
+        path = record_path(self.run_mode, question, started)
+        payload = {
+            "question": {"id_of_post": question.id_of_post, "question_type": record["question"].get("question_type")},
+            "log": path,
+            "shadow_model": record["shadow_model"],
+            "shadow": variants,
+            "saved_at": utc_now(),
+        }
+        await asyncio.to_thread(self.question_log.save, shadows_path(path), payload)
 
     def _consistency_shadow(self, question: MetaculusQuestion, record: dict, prediction) -> None:  # type: ignore[no-untyped-def]
         """Sibling binary questions (differ in one number or date) must go the
@@ -1239,7 +1265,7 @@ class FallBot2026(ForecastBot):
 
     async def _research_turn(self, question: MetaculusQuestion) -> str:
         if self._run_elapsed() >= START_CUTOFF_SECONDS:
-            # Run timing: no new question after 40 min; the next run takes it.
+            # Run timing: no new question after 30 min; the next run takes it.
             self.__dict__.setdefault("deferred_posts", set()).add(question.id_of_post)
             logger.warning(
                 f"Question {question.id_of_post}: not started, the run is past "
@@ -1362,25 +1388,23 @@ class FallBot2026(ForecastBot):
 
     async def _finish_shadow_forecast(self, question: MetaculusQuestion, record: dict, timeout: float) -> None:
         """At the end of the run (the live forecast submitted or not): run the
-        shadow in its own task (hard time limit `timeout`; 0 = skipped, the
-        run is too long), save it and 'live median with it added'. A failure
-        is only logged."""
+        shadow in its own task (hard time limit `timeout`), keep it and 'live
+        median with it added' in the record (saved as '<log>_shadows.json'). A
+        failure is only logged."""
         research = self.__dict__.get("_shadow_research", {}).pop(id(question), None)
         live = self.__dict__.get("_live_predictions", {}).pop(id(question), None)
         if research is None:
             return
-        if timeout <= 0:
-            # No "status": the Scoreboard's answer rate leaves it out.
-            record["shadow_model"] = {
-                "model": getattr(self.shadow_llm, "model", str(self.shadow_llm)),
-                "skipped": "run time",
-            }
-            logger.info(f"Question {question.id_of_post}: shadow forecaster: skipped (run time)")
-            return
+        # The log is already saved: the record is back only while the shadow
+        # notes how its answer was read.
+        records = self.__dict__.setdefault("_question_records", {})
+        records[id(question)] = record
         try:
             status, value, seconds = await asyncio.create_task(self._shadow_forecast(question, research, timeout))
         except Exception as e:  # never raised by _shadow_forecast, but be safe
             status, value, seconds = f"failed: {describe_exception(e)}"[:200], None, None
+        finally:
+            records.pop(id(question), None)
         shadow = record.setdefault("shadow_model", {})
         shadow.update(model=getattr(self.shadow_llm, "model", str(self.shadow_llm)), status=status, seconds=seconds)
         stats = self.__dict__.setdefault("shadow_stats", {"asked": 0, "answered": 0})
@@ -2110,7 +2134,7 @@ class FallBot2026(ForecastBot):
 
 
 if __name__ == "__main__":
-    # Run timing: the run clock (for the 40-minute start cutoff and the shadow
+    # Run timing: the run clock (for the 30-minute start cutoff and the shadow
     # phase) starts with the process; loop.time() is time.monotonic().
     RUN_STARTED = time.monotonic()
     configure_public_logging()
@@ -2378,7 +2402,7 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error(f"Forecasting could not run, {describe_exception(e)}")
                 forecast_reports.append(e)
-        # A question deferred by the 40-minute cutoff was never tried: no backoff.
+        # A question deferred by the 30-minute cutoff was never tried: no backoff.
         deferred = template_bot.__dict__.get("deferred_posts", set())
         attempted = [post for post in attempted if post not in deferred]
         failed = set(template_bot.__dict__.get("unforecast_close_times", {})) - deferred
