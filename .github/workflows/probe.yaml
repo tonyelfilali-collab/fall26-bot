@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       part:
-        description: "a: Search grounding on 2.5 Flash-Lite and 2.5 Flash (2 calls). b: gemini-3-flash on the 4 test questions (4 calls). c: gemma-4-31b, 1 binary question with a ~6k dossier (1 call). all: a+b+c (7 calls)."
+        description: "a: Search grounding on 2.5 Flash-Lite and 2.5 Flash (2 calls). b: gemini-3-flash on the 4 test questions (4 calls). c: gemma-4-31b, 1 binary question with a ~6k dossier (1 call). all: a+b+c (7 calls). flash: 3.6 and 3.8 Flash, reasoning high vs default, one binary test question (4 calls, live quota ledger, non-reserve only)."
         type: choice
-        options: [all, a, b, c]
+        options: [all, a, b, c, flash]
         default: all
 
 # Shared with every workflow that calls Gemini, so they never run at the same time.
