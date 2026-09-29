@@ -265,6 +265,32 @@ total within ~6,000 tokens (`research.with_official_line`).
 - Research waits at most 45 s for the fetch; a failure or no match = no line.
 - Question log: `official_data` (line, exact), `official_current_value` (exact only).
 
+## Credits readiness (29 Sep 2026; credits lineup still OFF)
+
+- **4a pre-flight** (`preflight.py`, Credits pre-flight workflow): every `ensemble.py` model id vs
+  OpenRouter's public list (exists, reasoning, prices); free models must be $0.
+- **4b cost table** (`cost_table.py`, same workflow): real prices x prompt tokens measured from
+  question logs + ASSUMED 8k output per forecast. `ensemble.COST_TABLE`; tier cost = its most
+  expensive column (full $1.02, standard $0.39, lean $0.26 on 28 Sep).
+- **4c free first:** the Flash 3.6 slot tries the AI Studio key first (`CREDITS_FREE_FIRST`),
+  OpenRouter only when it can't answer; planner/dossier/parser/summarizer on the free Flash-Lite pool.
+- **4d spend guards** (`spend.py`), all fail closed: each paid call's real OpenRouter cost (LiteLLM
+  passes OpenRouter's `usage.cost` through) goes to `fall26-data/status/spend.json` (per UTC day, per
+  question). A success with no cost (LiteLLM reports 0) is charged the estimate and counted "cost
+  unknown" (alert issue, once a day). A failed call is charged the estimate unless rejected before
+  generating (HTTP 400/401/402/403/404/429). A paid call with no question context is refused.
+  Per-question cap = 2x tier cost (each running call reserves an estimate: real prices, 7.5k prompt,
+  ASSUMED 8k output); at the cap no new paid forecast starts. A timeout means that model is not tried
+  again on the question. Each credits run, before forecasting (`guard_tier`): Lean if the ledger is
+  missing/unreadable (that run; an unreadable ledger is never overwritten), if today's spend reached 2x
+  the target daily spend (rest of the UTC day), if the key's own usage since the day's first run
+  exceeds the ledger's day total by more than max(20%, $0.50) (rest of the day), or if the key's usage
+  can't be read (that run); each with an alert issue (title carries the date; not reopened while open).
+  Unknown credit -> Lean. Paid models: 2 tries of the chain, 5 s apart; a reached cap is never retried.
+  Finished forecasts are kept 3 days (`status/finished_forecasts.json`) and reused on a retry run.
+  Rehearsals: Test Bot `replay-credits` + `rehearsal` = runaway / retry-run / unknown-cost /
+  missing-ledger / key-mismatch.
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:
