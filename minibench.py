@@ -3,14 +3,16 @@ Which MiniBench round is current. MiniBench runs in rounds of a few weeks
 (round 33125 closes about 9 Oct 2026), each its own tournament. MiniBench
 rounds are unlisted, so the API's tournament list doesn't show them.
 
-1. The 'minibench' slug, if its tournament is running now (Metaculus moves the
-   slug to the new round).
-2. Otherwise the round remembered in fall26-data (status/minibench.json), if
-   it is running.
-3. Otherwise a new round with a new id only: look up the next tournament ids
-   above the last known round, one a second, at most SCAN_LIMIT; the first
-   running MiniBench is used and remembered, so later runs need one call.
-4. Otherwise the slug's own id (or the slug itself): nothing running yet.
+Every run (29 Sep: a new round must be found within one run, ~10 minutes):
+1. The 'minibench' slug, if its tournament is running now.
+2. The rounds remembered in fall26-data (status/minibench.json): the current
+   one and a "next" one found before it started.
+3. A small scan of the next SCAN_WINDOW tournament ids above the highest id
+   seen so far (tournament ids only grow). A MiniBench round found there,
+   running or not yet started, is remembered as the next round.
+The NEWEST running MiniBench round wins: a new round can start while the old
+one is still "running" by its dates (its questions are over by then), and the
+slug may stay on the old one. Nothing running: the slug's own id (or the slug).
 
 Read-only on Metaculus. A lookup that fails falls back to the slug, so the
 live run carries on as before.
@@ -33,12 +35,10 @@ logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 API = "https://www.metaculus.com/api"
 MINIBENCH_SLUG = "minibench"
 STATUS_PATH = "status/minibench.json"
-# Tournament ids are shared with other projects (33124 and 33126 don't exist,
-# for example), so a new round can be a few dozen ids further on.
-SCAN_LIMIT = 60
-SCAN_PAUSE_SECONDS = 1.0
-# Between rounds, scan at most once an hour (runs are every 10 minutes).
-SCAN_EVERY = timedelta(hours=1)
+# Each run looks at this many ids above the highest tournament id seen so far
+# (ids are shared with other projects, and some don't exist, e.g. 33124).
+SCAN_WINDOW = 20
+SCAN_PAUSE_SECONDS = 0.25
 
 # fetch(path) -> parsed JSON, or None if the call failed.
 Fetch = Callable[[str], "dict | list | None"]
@@ -93,10 +93,9 @@ def _update(store, saved: dict, **changes) -> None:
         logger.warning("MiniBench: status could not be saved")
 
 
-def _remember(store, saved: dict, tournament: dict) -> None:
-    if saved.get("id") != tournament["id"]:
-        _update(store, saved, id=tournament["id"], slug=tournament.get("slug"),
-                close_date=tournament.get("close_date"))
+def _closed(tournament: dict, now: datetime) -> bool:
+    close = _time(tournament.get("close_date"))
+    return close is not None and close <= now
 
 
 def current_minibench(
@@ -112,25 +111,43 @@ def current_minibench(
         saved = store.load() or {}
     except Exception:
         saved = {}
+    running: dict[int, str] = {}
     by_slug = _tournament(fetch, MINIBENCH_SLUG)
     if by_slug and is_running(by_slug, now):
-        _remember(store, saved, by_slug)
-        return by_slug["id"], f"slug '{MINIBENCH_SLUG}'"
-    remembered_id = saved.get("id")
-    if remembered_id and remembered_id != (by_slug or {}).get("id"):
-        remembered = _tournament(fetch, remembered_id)
-        if remembered and is_minibench(remembered) and is_running(remembered, now):
-            return remembered["id"], "remembered round"
-    known = [i for i in ((by_slug or {}).get("id"), remembered_id) if isinstance(i, int)]
-    last_scan = _time(saved.get("last_scan"))
-    if known and (last_scan is None or now - last_scan >= SCAN_EVERY):
-        _update(store, saved, last_scan=now.isoformat())
-        for candidate in range(max(known) + 1, max(known) + 1 + SCAN_LIMIT):
+        running[by_slug["id"]] = f"slug '{MINIBENCH_SLUG}'"
+    for key, how in ((saved.get("id"), "remembered round"), (saved.get("next_id"), "remembered next round")):
+        if isinstance(key, int) and key not in running and key != (by_slug or {}).get("id"):
+            found = _tournament(fetch, key)
+            if found and is_minibench(found) and is_running(found, now):
+                running[key] = how
+    known = [i for i in ((by_slug or {}).get("id"), saved.get("id"), saved.get("next_id"), saved.get("max_seen"))
+             if isinstance(i, int)]
+    changes: dict = {}
+    if known:
+        max_seen = max(known)
+        next_id = saved.get("next_id")
+        for candidate in range(max_seen + 1, max_seen + 1 + SCAN_WINDOW):
             pause(SCAN_PAUSE_SECONDS)
             found = _tournament(fetch, candidate)
-            if found and is_minibench(found) and is_running(found, now):
-                _remember(store, {**saved, "last_scan": now.isoformat()}, found)
-                return found["id"], f"id scan (new round, new id; scanned up to {candidate})"
+            if found is None:
+                continue
+            changes["max_seen"] = candidate
+            if is_minibench(found) and not _closed(found, now):
+                next_id = candidate
+                changes.update(next_id=candidate, next_start=found.get("start_date"))
+                if is_running(found, now):
+                    running[candidate] = f"id scan (new round, new id {candidate})"
+        if next_id and next_id != saved.get("next_id"):
+            logger.info(f"MiniBench: next round found: tournament {next_id} (starts {changes.get('next_start')})")
+    if running:
+        newest = max(running)
+        if saved.get("id") != newest:
+            changes.update(id=newest)
+        if changes:
+            _update(store, saved, **changes)
+        return newest, running[newest]
+    if changes:
+        _update(store, saved, **changes)
     if by_slug:
         return by_slug["id"], f"slug '{MINIBENCH_SLUG}' (no round running now)"
     return MINIBENCH_SLUG, "slug only (lookup failed)"
