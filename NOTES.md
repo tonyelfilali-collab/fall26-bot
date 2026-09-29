@@ -291,6 +291,18 @@ total within ~6,000 tokens (`research.with_official_line`).
   Rehearsals: Test Bot `replay-credits` + `rehearsal` = runaway / retry-run / unknown-cost /
   missing-ledger / key-mismatch.
 
+## Related-question consistency shadow (29 Sep 2026)
+
+Zero cost, never submitted (`consistency.py`). After each submitted binary forecast, the question
+goes into an index of our open binary forecasts (`fall26-data/status/binary_forecasts.json`, live
+tournament runs only). Siblings = same tournament, titles identical except ONE number or ONE date.
+Direction from the words before it: above/exceed/at least... -> a higher threshold never gets a
+higher probability; below/under/at most... -> never lower; by/before/until a date -> a later
+deadline never lower; otherwise no direction (logged only). The isotonic (pool adjacent violators)
+adjustment of our submitted forecasts is saved as shadow `consistent` (scored by the Scoreboard);
+the group and violation count go to the question log (`consistency`), counts only in the public log.
+The value is computed when the question is submitted (siblings submitted later don't update it).
+
 ## Free news fallback (27 Sep 2026)
 
 `free_news.py`, used by `FallBot2026._asknews_with_free_fallback`:
