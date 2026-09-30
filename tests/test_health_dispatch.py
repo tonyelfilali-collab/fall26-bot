@@ -59,10 +59,20 @@ def test_lab_due_once_a_pacific_day_in_its_last_3_hours():
     evening = datetime(2026, 10, 6, 21, 10, tzinfo=pt).astimezone(timezone.utc)
     assert not hd.lab_due(datetime(2026, 10, 6, 20, 50, tzinfo=pt).astimezone(timezone.utc), [])
     assert hd.lab_due(evening, [])
-    same_day = {"created_at": datetime(2026, 10, 6, 21, 5, tzinfo=pt).astimezone(timezone.utc).isoformat()}
+    bot = {"triggering_actor": {"login": "github-actions[bot]"}}
+    same_day = {"created_at": datetime(2026, 10, 6, 21, 5, tzinfo=pt).astimezone(timezone.utc).isoformat(), **bot}
     assert not hd.lab_due(evening, [same_day])
-    yesterday = {"created_at": datetime(2026, 10, 5, 22, 0, tzinfo=pt).astimezone(timezone.utc).isoformat()}
+    yesterday = {"created_at": datetime(2026, 10, 5, 22, 0, tzinfo=pt).astimezone(timezone.utc).isoformat(), **bot}
     assert hd.lab_due(evening, [yesterday])
+
+
+def test_manual_lab_runs_dont_count():
+    # 30 Sep: two manual proof runs at 03:26 Pacific kept that night's lab from starting.
+    manual = [{"created_at": "2026-09-29T10:27:45Z", "triggering_actor": {"login": "tonyelfilali-collab"}},
+              {"created_at": "2026-09-29T10:26:44Z", "actor": {"login": "tonyelfilali-collab"}}]
+    night = datetime(2026, 9, 30, 5, 2, tzinfo=timezone.utc)  # 22:02 Pacific, 29 Sep
+    assert hd.lab_due(night, manual)
+    assert not hd.lab_due(night, manual + [{"created_at": "2026-09-30T04:02:00Z", "triggering_actor": {"login": "github-actions[bot]"}}])
 
 
 def test_scoreboard_lab_section_without_results(monkeypatch):

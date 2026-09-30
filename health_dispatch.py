@@ -35,8 +35,16 @@ def should_dispatch(now: datetime, runs: list[dict]) -> bool:
     )
 
 
+def started_by_bot(run: dict) -> bool:
+    """A run the bot itself started (the tournament run's GITHUB_TOKEN:
+    github-actions[bot]), not a manual test run."""
+    who = (run.get("triggering_actor") or run.get("actor") or {}).get("login", "")
+    return who.endswith("[bot]")
+
+
 def lab_due(now: datetime, runs: list[dict]) -> bool:
-    """The last 3 hours of the Pacific day, and no lab run yet that Pacific day."""
+    """The last 3 hours of the Pacific day, and no lab run started by the bot
+    yet that Pacific day (manual test runs don't count, architect 30 Sep)."""
     from zoneinfo import ZoneInfo
 
     pacific = ZoneInfo("America/Los_Angeles")
@@ -44,6 +52,8 @@ def lab_due(now: datetime, runs: list[dict]) -> bool:
     if local.hour < LAB_FROM_PACIFIC_HOUR:
         return False
     for r in runs:
+        if not started_by_bot(r):
+            continue
         created = datetime.fromisoformat(r.get("created_at", "").replace("Z", "+00:00")) if r.get("created_at") else None
         if created and created.astimezone(pacific).date() == local.date():
             return False
