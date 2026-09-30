@@ -13,7 +13,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
 | Reserve | `GEMINI_FREE_RESERVE` | 20% | Held back for a question's first forecast, emergencies, research | #9 |
 | `EXTRA_FORECASTS_ENABLED` | `bot_config.py` | ON | Up to 5 (binary) / 6 (numeric, MC) forecasts when non-reserve quota is spare; 25 questions/day expected while MiniBench is active | #85, #89 |
-| `PAID_FLASH_FALLBACK` | `bot_config.py` | OFF | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call; caps $0.15/question, $1.00/UTC day; fail closed | this PR |
+| `PAID_FLASH_FALLBACK` | `bot_config.py` | **ON** (Tony, 30 Sep; key limit $8) | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call; caps $0.15/question, $1.00/UTC day; fail closed | this PR |
 | Backup chain | `BACKUP_FORECASTS`, `BACKUP_FORECAST_MODEL` | 2 x Nemotron Ultra `:free` | No Flash answer and (closing within 45 min or all Flash out of quota): Nemotron x2 first, Flash-Lite only if Nemotron gives nothing | #67 |
 | Emergency window | `main.EMERGENCY_WINDOW` | 45 min | When the backup chain may use the Flash-Lite reserve | #59, #67 |
 | `STRETCH_K` | `forecast_safety.py` | 1.0 (off) | Log-odds stretch of the binary median (shadows 1.2 / 1.5 are logged) | #16, #44 |
@@ -425,7 +425,7 @@ Architect, Tier B: a burst of questions must never push a run past the workflow'
 - A model call cut by these limits counts as a failed attempt (quota ledger, #60): 2 in a run and
   that model is skipped for the rest of the run.
 
-## Paid-Flash fallback (30 Sep 2026, OFF)
+## Paid-Flash fallback (30 Sep 2026, ON)
 
 `bot_config.PAID_FLASH_FALLBACK` (default False = no spend). When ON, every Flash forecasting chain of the
 live gemini-free pool (planned slots, round 2, quick forecast) keeps its free Google Flash models first and
@@ -441,6 +441,11 @@ Flash-Lite (parser, research, emergency) never gets it. Spend guards (#81, `spen
   ledger (max(20%, $0.50)) -> none for the rest of the UTC day; each with an alert issue.
 - The lineup is marked billed (`free_only` False) only when ON. The OpenRouter key limit is the ceiling.
 - Rehearsal: `paid_flash_rehearsal.py` (Test Bot `paid-flash-rehearsal`; unit test).
+- ON since the switch PR (Tony, 30 Sep): the lineup allows exactly ONE paid model (`Lineup.allowed_paid` =
+  `PAID_FLASH_MODEL`); any other paid model fails `get_lineup`'s guard. Each run also reads the key's
+  remaining limit: under $2 (`spend.KEY_LOW_DOLLARS`) -> an alert issue (once a UTC day) so Tony can raise
+  the limit or let the bot fall back to free models. OpenRouter's docs don't say whether a key that
+  reached its limit still serves its `:free` models (Nemotron backup and shadow use the same key).
 - **Before switching ON:** create `fall26-data/status/spend.json` as `{}` (missing = blocked by design);
   CLAUDE.md's zero-spend rules ("never call a paid model") must be changed by Tony/the architect.
 - OpenRouter docs (https://openrouter.ai/docs/api-reference/limits, 30 Sep): the `:free` daily limit

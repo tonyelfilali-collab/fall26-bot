@@ -48,6 +48,8 @@ DAILY_CAP_FACTOR = 2.0
 KEY_MISMATCH_FRACTION = 0.20
 KEY_MISMATCH_DOLLARS = 0.50
 KEEP_DAYS = 7
+# Paid-Flash fallback: an alert when the OpenRouter key's remaining limit is below this.
+KEY_LOW_DOLLARS = 2.00
 FINISHED_KEEP = timedelta(days=3)
 # Estimate for one paid forecast (reservation, and the charge when the real
 # cost is unknown or the call failed after it may have been billed).
@@ -299,6 +301,21 @@ def paid_fallback_guard(spend: SpendGuard, key_usage: float | None, notify: Noti
     if spend.blocked:
         logger.warning(f"Paid Flash fallback blocked: {spend.blocked}")
     return spend.blocked is None
+
+
+def key_limit_alert(spend: SpendGuard | None, remaining: float | None, notify: Notify, today: str | None = None) -> bool:
+    """An alert issue (once a day) when the key's remaining limit is under
+    KEY_LOW_DOLLARS, so Tony can top up or let the bot fall back to free models."""
+    if remaining is None or remaining >= KEY_LOW_DOLLARS:
+        return False
+    today = today or utc_day()
+    logger.warning(f"OpenRouter key limit low: ${remaining:.2f} left")
+    _alert(spend, "key-low", today, notify, f"OpenRouter key limit low (${remaining:.2f} left)",
+           f"The OpenRouter key has ${remaining:.2f} of its limit left (alert under ${KEY_LOW_DOLLARS:.2f}). "
+           "Tony: raise the key limit to keep the paid Flash fallback, or do nothing and the bot falls back to "
+           "free models when it runs out (paid Flash calls are then refused; the free Google Flash chain and "
+           "the other backups go on).")
+    return True
 
 
 def unknown_cost_alert(spend: SpendGuard | None, notify: Notify, today: str | None = None) -> None:

@@ -132,7 +132,7 @@ from gemini_budget import current_question_key
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
-from spend import SpendGuard, guard_tier, paid_fallback_guard, unknown_cost_alert, utc_day
+from spend import SpendGuard, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from stat_baseline import random_walk_baseline
 from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
 
@@ -2315,6 +2315,9 @@ if __name__ == "__main__":
         # checks before any paid call (ledger readable, key usage vs ledger).
         allowed = paid_fallback_guard(lineup.planner.spend, ensemble.openrouter_key_usage(), ensemble.open_alert_issue)
         print(f"Paid Flash fallback: ON, {'allowed' if allowed else 'blocked: ' + str(lineup.planner.spend.blocked)}")
+        # Remaining key limit under $2: an alert issue (Tony decides on a top-up).
+        credit = ensemble.openrouter_credit()
+        key_limit_alert(lineup.planner.spend, credit[0] if credit else None, ensemble.open_alert_issue)
     template_bot.only_model = args.only_model
     # Build 1b: the free shadow forecaster (never submitted) on the live and
     # the free test lineups; the replay model in replay (0 calls).

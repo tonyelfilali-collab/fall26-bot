@@ -2,6 +2,8 @@
 guards when on, and the replay rehearsal. No real calls."""
 from __future__ import annotations
 
+import pytest
+
 import bot_config
 import paid_flash_rehearsal
 import spend as spend_mod
@@ -17,13 +19,36 @@ def _chain_models(llm):
     return names
 
 
-def test_off_by_default_no_paid_model_anywhere():
-    assert bot_config.PAID_FLASH_FALLBACK is False
-    lineup = bot_config.get_lineup("gemini-free")  # the free-only guard passes
-    assert lineup.free_only and lineup.planner.paid_flash is None and lineup.planner.spend is None
+def test_switched_on_only_the_paid_flash_model_is_allowed(monkeypatch):
+    assert bot_config.PAID_FLASH_FALLBACK is True  # ON: Tony, 30 Sep
+    lineup = bot_config.get_lineup("gemini-free")  # the guard passes: only PAID_FLASH_MODEL is paid
+    assert not lineup.free_only and lineup.allowed_paid == (bot_config.PAID_FLASH_MODEL,)
+    paid = {m for m in lineup.llm_model_names() if not bot_config.is_free_model(m)}
+    assert paid == {bot_config.PAID_FLASH_MODEL}
+    # Any other paid model is still refused: a pool whose paid slot is Opus fails the guard.
+    original = bot_config.enable_paid_flash
+    monkeypatch.setattr(bot_config, "enable_paid_flash",
+                        lambda pool, spend: original(pool, spend, model="openrouter/anthropic/claude-opus-5.5"))
+    with pytest.raises(ValueError, match="claude-opus-5.5"):
+        bot_config.get_lineup("gemini-free")
+
+
+def test_switched_off_no_paid_model_anywhere(monkeypatch):
+    monkeypatch.setattr(bot_config, "PAID_FLASH_FALLBACK", False)
+    lineup = bot_config._gemini_free_lineup()
+    assert lineup.free_only and lineup.allowed_paid == () and lineup.planner.paid_flash is None
     assert all(bot_config.is_free_model(m) for m in lineup.llm_model_names())
-    for chain in [*lineup.planner.plan(seasonal=True), lineup.planner.quick_forecaster()]:
-        assert all(bot_config.is_free_model(m) for m in _chain_models(chain))
+
+
+def test_key_limit_alert_under_2_dollars_once_a_day():
+    alerts = []
+    notify = lambda title, body: alerts.append(title)  # noqa: E731
+    guard = SpendGuard(MemoryStore({}))
+    assert not spend_mod.key_limit_alert(guard, 2.50, notify)
+    assert not spend_mod.key_limit_alert(guard, None, notify)  # unknown: the fail-closed checks cover it
+    assert spend_mod.key_limit_alert(guard, 1.75, notify, today="2026-10-02")
+    spend_mod.key_limit_alert(guard, 1.50, notify, today="2026-10-02")  # same day: no second issue
+    assert len(alerts) == 1 and "1.75" in alerts[0]
 
 
 def test_on_every_flash_chain_ends_with_the_paid_slot():

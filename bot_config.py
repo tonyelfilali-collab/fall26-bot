@@ -122,7 +122,7 @@ EXTRA_FORECASTS_ENABLED = True
 # or no free quota), the slot tries OpenRouter's paid Gemini 3.6 Flash once,
 # under the spend guards: per-question cap, daily cap, cost unknown ->
 # charged the estimate, fail closed. The OpenRouter key limit is the ceiling.
-PAID_FLASH_FALLBACK = False
+PAID_FLASH_FALLBACK = True  # ON: Tony, 30 Sep (key limit $8)
 PAID_FLASH_MODEL = ensemble.FLASH_36
 PAID_FLASH_QUESTION_CAP = 0.15  # dollars
 PAID_FLASH_DAILY_CAP = 1.00  # dollars, per UTC day
@@ -178,6 +178,9 @@ class Lineup:
     # Plans each question's forecasters (rounds, budget): GeminiPool for
     # gemini-free, CreditsPlanner for credits. None = the library's default.
     planner: GeminiPool | CreditsPlanner | None = None
+    # The only paid model(s) a free lineup may call (gemini-free with the
+    # paid-Flash fallback ON: PAID_FLASH_MODEL). Every other paid model is refused.
+    allowed_paid: tuple[str, ...] = ()
 
     def llm_model_names(self) -> list[str]:
         """Model names of the LLMs and their backups (AskNews is not an LLM)."""
@@ -548,6 +551,7 @@ def _gemini_free_lineup() -> Lineup:
         parser_validation_samples=1,
         summarize_research=False,
         free_only=not PAID_FLASH_FALLBACK,
+        allowed_paid=(PAID_FLASH_MODEL,) if PAID_FLASH_FALLBACK else (),
         test_only=False,
         planner=pool,
     )
@@ -796,8 +800,8 @@ def get_lineup(name: str | None = None, free_model: str | None = None) -> Lineup
         lineup = _free_lineup(free_model)
     else:
         lineup = _LINEUPS[name or ACTIVE_LINEUP]()
-    if lineup.free_only:
-        paid = [name for name in lineup.llm_model_names() if not is_free_model(name)]
+    if lineup.free_only or lineup.allowed_paid:
+        paid = [name for name in lineup.llm_model_names() if not is_free_model(name) and name not in lineup.allowed_paid]
         if paid:
-            raise ValueError(f"Free lineup contains models that can be charged: {paid}")
+            raise ValueError(f"Lineup contains models that can be charged: {paid}")
     return lineup
