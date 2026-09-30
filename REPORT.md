@@ -231,3 +231,29 @@ Credit check stayed at $0 (limit $1). No revert needed.
   16/20 per model a day; Flash-Lite reserve never used outside a question's last 45 min.
 - Stooq: its CSV URL serves a JavaScript bot challenge and robots.txt disallows all but Google/Bing:
   not used (stopped as instructed).
+
+## First real questions: review (30 Sep 2026)
+
+Six real seasonal questions so far (45516 before question logs existed). Forecast values are left out here
+(public repo); the full table with them is in fall26-data .
+
+| Question | Type | Forecast on | Answered (model, seconds) | Failed attempts | Longest Flash attempt | Backup | Research | Reading | Current value (numeric) | Official data | Shadows (Nemotron) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 45516 | discrete | 27 Sep | 3 x 3.8-flash (~15-25 s each) | 3 (503) | - | - | AskNews 402, no research | - | - | - | - |
+| 45847 NZ election: Labour-National seat margin | discrete | 28 Sep | emergency: 3.1-flash-lite 37.3 s | 1 | - | flash-lite | AskNews 8 in 1 calls, free 0 | direct | - | - | 2 variants (no shadow model yet) |
+| 45844 Trump demolishes Kennedy Center before 2027 | binary | 29 Sep | emergency: nemotron-ultra 132.3 s; emergency: nemotron-ultra 60.9 s | 8 | 0.1 s | window: nemotron | AskNews 8 in 1 calls, free 0 | direct,direct | - | - | 7 variants (ok) |
+| 45848 Bundibugyo ebola >100 cases outside DRC in 2026 | binary | 29 Sep | planned: 3.5-flash 51.5 s | 4 | 73.9 s | - | AskNews 23 in 3 calls, free 0 | direct | - | - | 7 variants (ok) |
+| 45845 UK cabinet departures before 2027 | multiple_choice | 30 Sep | planned: 3.5-flash 34.5 s | 5 | 132.1 s | - | AskNews 24 in 3 calls, free 0 | direct | - | - | 3 variants (ok) |
+| 45868 VIX highest intraday value 1 Oct-24 Dec 2026 | numeric | 30 Sep | planned: 3.5-flash 41.5 s; planned: 3.6-flash 97.7 s | 4 | 105.3 s | - | AskNews 23 in 3 calls, free 0 | direct,direct | 16.04 Units (2026-09-30) | stand-in (fred VIXCLS: daily close, question asks intraday max) | 5 variants (ok, 87.5 s) |
+
+Findings:
+- **Flash is the problem:** 4 of the 6 got at least one Flash answer, always from a *later* model in the free
+  chain (3.8 on 27 Sep; 3.5 on 29-30 Sep; 3.6 once on 30 Sep 14:12). 45847 and 45844 were saved by the backups
+  (Flash-Lite, Nemotron). Most questions ended with a single forecast (the 5-6 planned mostly failed on 503).
+- No live Flash attempt took over 6 minutes (longest 132 s, a failed chain). Nemotron answered in 61-132 s.
+- Research: AskNews works again (23-24 articles in 3 calls on the last three questions; 402 on 27 Sep).
+- Unit check: nothing flagged or dropped. 45868 (VIX intraday max): current value 16.04 read from the
+  dossier; FRED VIXCLS shown as a stand-in (daily close vs intraday max), so not used by the unit check.
+- Every answer was read directly (no parser call). The follow-up search never triggered (single forecasts).
+- To review: 45868's forecast puts about 19% above the upper bound 40 (both Flash models: median 29,
+  90th percentile 48, with the VIX at 16). The combining kept what the models said; it's the models' view.
