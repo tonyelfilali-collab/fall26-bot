@@ -13,6 +13,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
 | Reserve | `GEMINI_FREE_RESERVE` | 20% | Held back for a question's first forecast, emergencies, research | #9 |
 | `EXTRA_FORECASTS_ENABLED` | `bot_config.py` | ON | Up to 5 (binary) / 6 (numeric, MC) forecasts when non-reserve quota is spare; 25 questions/day expected while MiniBench is active | #85, #89 |
+| `PAID_FLASH_FALLBACK` | `bot_config.py` | OFF | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call; caps $0.15/question, $1.00/UTC day; fail closed | this PR |
 | Backup chain | `BACKUP_FORECASTS`, `BACKUP_FORECAST_MODEL` | 2 x Nemotron Ultra `:free` | No Flash answer and (closing within 45 min or all Flash out of quota): Nemotron x2 first, Flash-Lite only if Nemotron gives nothing | #67 |
 | Emergency window | `main.EMERGENCY_WINDOW` | 45 min | When the backup chain may use the Flash-Lite reserve | #59, #67 |
 | `STRETCH_K` | `forecast_safety.py` | 1.0 (off) | Log-odds stretch of the binary median (shadows 1.2 / 1.5 are logged) | #16, #44 |
@@ -423,6 +424,29 @@ Architect, Tier B: a burst of questions must never push a run past the workflow'
   shadows the run ends by 47.
 - A model call cut by these limits counts as a failed attempt (quota ledger, #60): 2 in a run and
   that model is skipped for the rest of the run.
+
+## Paid-Flash fallback (30 Sep 2026, OFF)
+
+`bot_config.PAID_FLASH_FALLBACK` (default False = no spend). When ON, every Flash forecasting chain of the
+live gemini-free pool (planned slots, round 2, quick forecast) keeps its free Google Flash models first and
+ends with ONE paid attempt on OpenRouter `google/gemini-3.6-flash` (high reasoning, 300 s). It is reached
+when the whole free chain can't answer: 503, 429, timeout, or no free quota (the #74 "free first" shape).
+Flash-Lite (parser, research, emergency) never gets it. Spend guards (#81, `spend.py`), all fail closed:
+- per-question cap $0.15 (`PAID_FLASH_QUESTION_CAP`; each running call reserves the estimate, ~$0.036:
+  at most 4 paid calls at once per question), daily cap $1.00 per UTC day (`PAID_FLASH_DAILY_CAP`,
+  checked on every call, running calls included), a refused call raises `SpendCapReached` (no guess);
+- cost unknown -> charged the estimate (+ alert); failed after it may have been billed -> the estimate;
+- each run, before forecasting (`spend.paid_fallback_guard`): ledger `status/spend.json` unreadable or
+  MISSING -> no paid call this run; key usage unreadable -> none this run; key spent more than our
+  ledger (max(20%, $0.50)) -> none for the rest of the UTC day; each with an alert issue.
+- The lineup is marked billed (`free_only` False) only when ON. The OpenRouter key limit is the ceiling.
+- Rehearsal: `paid_flash_rehearsal.py` (Test Bot `paid-flash-rehearsal`; unit test).
+- **Before switching ON:** create `fall26-data/status/spend.json` as `{}` (missing = blocked by design);
+  CLAUDE.md's zero-spend rules ("never call a paid model") must be changed by Tony/the architect.
+- OpenRouter docs (https://openrouter.ai/docs/api-reference/limits, 30 Sep): the `:free` daily limit
+  (50 or 1,000 requests) "is selected by all-time credits purchased, independently of is_free_tier":
+  spending the $10 does not lower it. But "If your account has a negative credit balance, you may see
+  402 errors, including for free models."
 
 ## Replay lab (29 Sep 2026)
 

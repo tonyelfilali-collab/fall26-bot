@@ -122,10 +122,15 @@ class ThrottledLlm(GeneralLlm):
                 return await self._hand_over(prompt, reason)
         if self._spend is not None:
             refusal = self._spend.refusal(self.model)
-            if refusal in ("cap", "no question"):
+            if refusal in ("cap", "no question", "daily cap", "blocked"):
                 from spend import SpendCapReached
 
-                why = "question spend cap reached" if refusal == "cap" else "no question to charge it to"
+                why = {
+                    "cap": "question spend cap reached",
+                    "no question": "no question to charge it to",
+                    "daily cap": "daily spend cap reached",
+                    "blocked": f"paid calls blocked ({self._spend.blocked})",
+                }[refusal]
                 logger.warning(f"{self.model}: {why}, no new paid forecast")
                 self._spend.refused += 1
                 raise SpendCapReached(f"{self.model}: {why}")
