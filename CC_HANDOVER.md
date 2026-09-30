@@ -66,8 +66,10 @@ instructions; explain in plain, short language.
 - **Answer-reading fixes only** (architect, 28 Sep): may be merged without the architect if unit
   tests + a real-regression rerun (no new failures) + a real Test Bot on 4 types + the next live
   run are all green. Prompt or model changes still need the architect.
-- Zero spend. OpenRouter: $10 bought only to raise the free limit; never a paid model; never
-  top-up; under 600 free requests/day; if usage is ever above $0, stop everything and report.
+- Zero spend, one exception (Tony, 30 Sep): never a paid model EXCEPT google/gemini-3.6-flash via
+  PAID_FLASH_FALLBACK within its caps ($0.15/question, $1.00/UTC day); key limit $8; never top-up;
+  under 600 free requests/day; if key usage is ever above the spend ledger or above $1.00 in a UTC
+  day, stop everything and report.
 
 ## 3. Watchers to restart in a new session
 
