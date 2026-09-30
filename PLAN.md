@@ -361,6 +361,9 @@ Done when: shadow forecasts are being saved; the scoring script works on the fir
 Step 11 (Tuning). Using resolved questions in fall26-data, fit the stretch factor k and the clip limits by cross-validation, separately per question type where there's enough data. Report the log score before and after. Change the live settings only if cross-validation shows an improvement.
 ```
 
+**Tuning candidates** (at ~150 resolved questions; each decided only by Scoreboard / Replay lab data, never switched on before):
+- Blend with the random-walk baseline for official-data numeric questions (architect, 30 Sep, after 45868: VIX high, ~19% of our forecast above 40 with the VIX at 16). Caveat: the random-walk shadow models the value at the end date, so for "highest / lowest value over a period" questions it is the wrong shape (45868: its 10th percentile 7.1 is below the VIX's starting level). Such questions would need a max/min-of-walk version, or be left out.
+
 ---
 
 ### Later (only after Steps 1–11 are solid)
