@@ -44,19 +44,55 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         uses: actions/checkout@v7
       - uses: actions/setup-python@v7
+        id: python
         if: steps.gate.outputs.enabled == 'true'
         with:
           python-version: "3.11"
-      - name: Install poetry
+      # Install fix (architect, 1 Oct): Poetry and the project's .venv are
+      # cached between runs (key: exact Python version + lock file), so on a
+      # cache hit no package is downloaded and a PyPI outage can't stop the run.
+      - name: Restore Poetry (cache)
+        id: poetry-cache
         if: steps.gate.outputs.enabled == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ~/.local
+          key: poetry-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-v1
+      - name: Install poetry
+        if: steps.gate.outputs.enabled == 'true' && steps.poetry-cache.outputs.cache-hit != 'true'
         uses: snok/install-poetry@v1
         with:
           virtualenvs-create: true
           virtualenvs-in-project: true
           installer-parallel: true
-      - name: Install dependencies
+      - name: Use the cached Poetry
+        if: steps.gate.outputs.enabled == 'true' && steps.poetry-cache.outputs.cache-hit == 'true'
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/poetry" config virtualenvs.create true
+          "$HOME/.local/bin/poetry" config virtualenvs.in-project true
+          echo "Poetry: cache hit (install skipped)"
+      - name: Restore dependencies (cache)
+        id: venv-cache
         if: steps.gate.outputs.enabled == 'true'
-        run: poetry install --no-interaction --no-root
+        uses: actions/cache@v6
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('poetry.lock', 'pyproject.toml') }}
+      - name: Install dependencies
+        if: steps.gate.outputs.enabled == 'true' && steps.venv-cache.outputs.cache-hit != 'true'
+        run: |
+          # Cache miss: up to 3 tries, 20 s apart (PyPI timeouts, 1 Oct).
+          for attempt in 1 2 3; do
+            poetry install --no-interaction --no-root && exit 0
+            echo "Install failed (attempt $attempt of 3)"
+            if [ "$attempt" -lt 3 ]; then sleep 20; fi
+          done
+          exit 1
+      - name: Dependencies from cache
+        if: steps.gate.outputs.enabled == 'true' && steps.venv-cache.outputs.cache-hit == 'true'
+        run: |
+          echo "Dependencies: cache hit (install skipped)"
       - name: Run bot
         if: steps.gate.outputs.enabled == 'true'
         run: |
