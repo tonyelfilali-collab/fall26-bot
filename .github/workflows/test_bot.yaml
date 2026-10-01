@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       lineup:
-        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls. 'burst-rehearsal': 3 simulated days of MiniBench bursts, 0 model calls. 'timing-rehearsal': run time limits on a virtual clock (burst of 5 at every limit; overload of 12), 0 model calls."
+        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls. 'burst-rehearsal': 3 simulated days of MiniBench bursts, 0 model calls. 'timing-rehearsal': run time limits on a virtual clock (burst of 5 at every limit; overload of 12), 0 model calls. 'paid-flash-rehearsal': the paid-Flash fallback (switched on for the rehearsal only) with every free Flash 503, caps and Nemotron backup, 0 model calls."
         type: choice
-        options: [free, replay, replay-credits, replay-gemini, burst-rehearsal, timing-rehearsal, real-regression, gemini-free]
+        options: [free, replay, replay-credits, replay-gemini, burst-rehearsal, timing-rehearsal, paid-flash-rehearsal, real-regression, gemini-free]
         default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
@@ -82,6 +82,10 @@ jobs:
           fi
           if [ "$LINEUP" = "timing-rehearsal" ]; then
             poetry run python timing_rehearsal.py
+            exit $?
+          fi
+          if [ "$LINEUP" = "paid-flash-rehearsal" ]; then
+            poetry run python paid_flash_rehearsal.py
             exit $?
           fi
           if [ "$LINEUP" = "real-regression" ]; then

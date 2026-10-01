@@ -116,6 +116,16 @@ GEMINI_MAX_FORECASTS_PER_QUESTION = 3
 # expected today: max(7-day average per day, 4) x the share of the Pacific
 # quota day left, + 2. Distinct models first, then repeats; never the reserve.
 EXTRA_FORECASTS_ENABLED = True
+
+# Paid-Flash fallback for the live gemini-free lineup (architect, 30 Sep;
+# OFF = no spend). When a free Flash chain can't answer (503, 429, timeout,
+# or no free quota), the slot tries OpenRouter's paid Gemini 3.6 Flash once,
+# under the spend guards: per-question cap, daily cap, cost unknown ->
+# charged the estimate, fail closed. The OpenRouter key limit is the ceiling.
+PAID_FLASH_FALLBACK = False
+PAID_FLASH_MODEL = ensemble.FLASH_36
+PAID_FLASH_QUESTION_CAP = 0.15  # dollars
+PAID_FLASH_DAILY_CAP = 1.00  # dollars, per UTC day
 EXTRA_FORECASTS_MAX_BINARY = 5
 EXTRA_FORECASTS_MAX_OTHER = 6
 EXTRA_FORECASTS_QUOTA_FACTOR = 4
@@ -227,6 +237,13 @@ class GeminiPool:
     extra_forecasts: bool = EXTRA_FORECASTS_ENABLED
     # Why the last plan() chose its number of forecasts (for the question log).
     last_plan: dict = field(default_factory=dict)
+    # Paid-Flash fallback (PAID_FLASH_FALLBACK): builds the paid slot put at the
+    # end of every Flash forecasting chain, and its spend guard. None = off.
+    paid_flash: Callable[[], ThrottledLlm] | None = None
+    spend: SpendGuard | None = None
+
+    def _paid_tail(self) -> ThrottledLlm | None:
+        return self.paid_flash() if self.paid_flash is not None else None
 
     def _forecaster(self, model: str, **kwargs) -> ThrottledLlm:
         return self.llm_class(
@@ -245,8 +262,9 @@ class GeminiPool:
         )
 
     def _chain(self, models: list[str], allow_reserve: bool) -> ThrottledLlm:
-        """models[0] (booked) with the rest behind it as backups."""
-        llm: ThrottledLlm | None = None
+        """models[0] (booked) with the rest behind it as backups (and the paid
+        Flash slot last, when the fallback is on)."""
+        llm: ThrottledLlm | None = self._paid_tail()
         for position, model in reversed(list(enumerate(models))):
             llm = self._forecaster(
                 model, backup=llm, booked=position == 0, allow_reserve=allow_reserve
@@ -265,6 +283,8 @@ class GeminiPool:
 
     def save(self) -> None:
         self.ledger.save()
+        if self.spend is not None:
+            self.spend.save()
 
     def forecast_quota_left_fraction(self) -> float:
         """Today's forecast quota left (all forecasting models, reserve included)."""
@@ -302,6 +322,9 @@ class GeminiPool:
         model has usable budget, 1 forecast from the reserve. Empty if the
         day's quota is gone.
         """
+        if self.spend is not None:
+            # Paid-Flash fallback: this question's hard cap.
+            self.spend.set_cap(current_question_key.get(), PAID_FLASH_QUESTION_CAP)
         models = (only_model,) if only_model else GEMINI_FORECAST_MODELS
         ranked = sorted(
             models,
@@ -395,14 +418,14 @@ class GeminiPool:
             GEMINI_FORECAST_MODELS,
             key=lambda m: (-self.ledger.total_left(m), GEMINI_FORECAST_MODELS.index(m)),
         )
-        llm: ThrottledLlm | None = None
+        llm: ThrottledLlm | None = self._paid_tail()
         for model in reversed(ranked):
             llm = self._forecaster(model, backup=llm, allow_reserve=True)
         assert llm is not None
         return llm
 
     def unplanned_forecaster(self) -> ThrottledLlm:
-        llm: ThrottledLlm | None = None
+        llm: ThrottledLlm | None = self._paid_tail()
         for model in reversed(GEMINI_FORECAST_MODELS):
             llm = self._forecaster(model, backup=llm)
         assert llm is not None
@@ -492,8 +515,23 @@ def _gemini_pool(store, llm_class: type = ThrottledLlm) -> GeminiPool:  # type: 
     )
 
 
+def enable_paid_flash(pool: GeminiPool, spend: SpendGuard, llm_class: type = ThrottledLlm, model: str = PAID_FLASH_MODEL) -> None:
+    """Paid-Flash fallback: every Flash forecasting chain of `pool` ends with
+    one paid OpenRouter Gemini 3.6 Flash attempt (high reasoning), charged to
+    `spend` with the per-question and daily caps."""
+    spend.daily_cap = PAID_FLASH_DAILY_CAP
+    pacer = RequestPacer(600)
+    pool.spend = spend
+    pool.paid_flash = lambda: llm_class(
+        model=model, pacer=pacer, spend=spend, temperature=None, timeout=300,
+        allowed_tries=1, extra_body=HIGH_REASONING,
+    )
+
+
 def _gemini_free_lineup() -> Lineup:
     pool = _gemini_pool(make_store(GEMINI_LEDGER_PATH))
+    if PAID_FLASH_FALLBACK:
+        enable_paid_flash(pool, SpendGuard(make_store(SPEND_PATH)))
     parser = pool.parser()
     return Lineup(
         name="gemini-free",
@@ -509,7 +547,7 @@ def _gemini_free_lineup() -> Lineup:
         predictions_per_research_report=GEMINI_MAX_FORECASTS_PER_QUESTION,
         parser_validation_samples=1,
         summarize_research=False,
-        free_only=True,
+        free_only=not PAID_FLASH_FALLBACK,
         test_only=False,
         planner=pool,
     )

@@ -132,7 +132,7 @@ from gemini_budget import current_question_key
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
-from spend import SpendGuard, guard_tier, unknown_cost_alert, utc_day
+from spend import SpendGuard, guard_tier, paid_fallback_guard, unknown_cost_alert, utc_day
 from stat_baseline import random_walk_baseline
 from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
 
@@ -2310,6 +2310,11 @@ if __name__ == "__main__":
     elif isinstance(lineup.planner, CreditsPlanner):
         # Step 6: pick this run's spending tier from the remaining credit.
         lineup.planner.seasonal_tier = choose_spending_tier(lineup.planner.spend)
+    elif isinstance(lineup.planner, GeminiPool) and lineup.planner.spend is not None:
+        # Paid-Flash fallback (bot_config.PAID_FLASH_FALLBACK): fail-closed
+        # checks before any paid call (ledger readable, key usage vs ledger).
+        allowed = paid_fallback_guard(lineup.planner.spend, ensemble.openrouter_key_usage(), ensemble.open_alert_issue)
+        print(f"Paid Flash fallback: ON, {'allowed' if allowed else 'blocked: ' + str(lineup.planner.spend.blocked)}")
     template_bot.only_model = args.only_model
     # Build 1b: the free shadow forecaster (never submitted) on the live and
     # the free test lineups; the replay model in replay (0 calls).
@@ -2522,6 +2527,9 @@ if __name__ == "__main__":
                 with open(summary_path, "a", encoding="utf-8") as f:
                     f.write(table + "\n\n")
     runaway_ok = False
+    if isinstance(lineup.planner, GeminiPool) and lineup.planner.spend is not None:
+        # Paid-Flash fallback: any paid call with unknown cost opens an alert.
+        unknown_cost_alert(lineup.planner.spend, ensemble.open_alert_issue)
     if isinstance(lineup.planner, CreditsPlanner) and lineup.planner.spend is not None:
         guard = lineup.planner.spend
         # 4d: a run with any unknown-cost paid call opens an alert (once a day).

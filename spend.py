@@ -115,6 +115,10 @@ class SpendGuard:
         self.paid_calls = 0
         self.refused = 0
         self.unknown_cost_calls = 0
+        # Paid-Flash fallback (gemini-free, OFF by default): a daily dollar cap
+        # checked on every call, and a run-level block (fail closed).
+        self.daily_cap: float | None = None
+        self.blocked: str | None = None
 
     # ------------------------------------------------------------ reading
 
@@ -137,8 +141,14 @@ class SpendGuard:
         if question is None:
             logger.warning(f"{model}: paid call with no question context, refused")
             return "no question"
+        if self.blocked:
+            return "blocked"
         if (question, model) in self.timed_out:
             return "timed out earlier on this question"
+        if self.daily_cap is not None:
+            committed = self.day_spent() + sum(self.in_flight.values())
+            if committed + estimate_cost(model) > self.daily_cap + 1e-9:
+                return "daily cap"
         cap = self.caps.get(question)
         if cap is not None:
             committed = self.question_spent(question) + self.in_flight.get(question, 0.0)
@@ -256,6 +266,39 @@ def guard_tier(tier: str, target: float, spend: SpendGuard | None, key_usage: fl
         logger.warning(f"Lean tier for the rest of the UTC day ({spend.lean_days[today]})")
         return "lean"
     return tier
+
+
+def paid_fallback_guard(spend: SpendGuard, key_usage: float | None, notify: Notify, today: str | None = None) -> bool:
+    """
+    Paid-Flash fallback (gemini-free), once per run before forecasting: the
+    same fail-closed checks as guard_tier. Paid calls are blocked for this run
+    when the spend ledger can't be loaded or the key's usage can't be read,
+    and for the rest of the UTC day when the key spent more than our ledger
+    (by max(20%, $0.50)). The daily dollar cap is checked on every call.
+    Returns whether paid calls are allowed; each block opens an alert (once a day).
+    """
+    today = today or utc_day()
+    if spend.load_failed:
+        spend.blocked = "spend ledger could not be loaded"
+        _alert(None, "ledger", today, notify, "spend ledger could not be loaded",
+               f"fall26-data/{SPEND_PATH} could not be read, so no paid Flash call is made until it can.")
+    elif key_usage is None:
+        spend.blocked = "OpenRouter key usage could not be read"
+        _alert(spend, "key-unreadable", today, notify, "OpenRouter key usage could not be read",
+               "The backstop check (key usage vs our ledger) could not run, so this run made no paid Flash call.")
+    else:
+        start = spend.key_day_start.setdefault(today, key_usage)
+        key_today, ledger = key_usage - start, spend.day_spent(today)
+        if key_today - ledger > max(KEY_MISMATCH_FRACTION * ledger, KEY_MISMATCH_DOLLARS) and today not in spend.lean_days:
+            spend.lean_days[today] = "key usage above ledger"
+            _alert(spend, "key-mismatch", today, notify, "key usage above our spend ledger",
+                   f"The OpenRouter key spent about ${key_today:.2f} since the day's first run, but our ledger "
+                   f"has ${ledger:.2f}. No paid Flash call until midnight UTC.")
+        if today in spend.lean_days:
+            spend.blocked = f"blocked for the day ({spend.lean_days[today]})"
+    if spend.blocked:
+        logger.warning(f"Paid Flash fallback blocked: {spend.blocked}")
+    return spend.blocked is None
 
 
 def unknown_cost_alert(spend: SpendGuard | None, notify: Notify, today: str | None = None) -> None:
