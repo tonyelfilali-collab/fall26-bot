@@ -48,6 +48,8 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   - Always: state the tier in the PR description; check the next live cron run after each
     merge; revert at once if it's red; stop an item after 2 failures; add a progress-log row.
   - Never merge more than one forecast-path PR between two live runs.
+- `main` requires the "Validate workflows" check (ruleset; YAML parse + actionlint on every PR). Never
+  merge with `--admin` to get around it.
 - Master switch: repository variable `BOT_ENABLED`. Real-question workflows exit at once unless
   it is `true`. Emergency stop = set it to `false`.
 - Logs are public: never log research, reasoning or forecast values. Use the `fall26` logger
