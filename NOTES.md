@@ -254,7 +254,9 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   successful tournament run for 3 hours, or if a check can't run. **Warning** if any Gemini model
   (forecasters and parsers) has under 20% of its daily quota left (architect, 27 Sep: warning
   only), if AskNews returns 402, or if any tournament run in the last 24 h had a JSON log or
-  ledger save failure. Manual option
+  ledger save failure. Since 1 Oct also **red** if any workflow's state (Actions API) isn't "active"
+  (named; "deleted" = file removed, not counted) and a **warning** if main's last commit is older than
+  21 days (standing rule: a notes PR at least every 21 days). Manual option
   "simulate miss". On pull requests that change the health check it runs with a simulated miss,
   so that run is **expected to be red**.
 - 07:00 UK is 23:00 Pacific, the end of Google's quota day, so the quota warning will be common.
@@ -731,7 +733,7 @@ All run on `ubuntu-24.04` (pinned; `ubuntu-latest` moves to Ubuntu 26 on 19 Oct 
 | Review recent forecasts | `review_bot.yaml` | schedule Mondays 06:00 UTC; manual | Never spends or forecasts (read-only). The schedule also needs `REVIEW_BOT_ENABLED` and `BOT_ENABLED` both `true` |
 | Credit check | `credit_check.yaml` | manual only | No: reads the key's limit/usage, runs no model |
 | Tournament info | `tournament_info.yaml` | manual only | No: read-only Metaculus API |
-| Keepalive | `keepalive.yaml` | schedule Mondays 05:00 UTC; manual | No: calls GitHub's "enable workflow" API for every workflow (no commit; since 1 Oct main requires the "Validate workflows" check, so a direct push is rejected) |
+| Keepalive | `keepalive.yaml` | schedule daily 05:00 UTC; manual | No: calls GitHub's "enable workflow" API for every workflow (no commit; since 1 Oct main requires the "Validate workflows" check, so a direct push is rejected) |
 | Workflow lint | `workflow_lint.yml` | every pull request | No: YAML parse + actionlint (with shellcheck); job "Validate workflows" is a required check on main (ruleset "main: workflows must validate") |
 
 Extra safety in code: while `bot_config.USE_CREDIT_KEY_LINEUP` is `False`, `main.py` refuses to run

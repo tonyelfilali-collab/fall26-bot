@@ -4,12 +4,12 @@ name: Keepalive
 # activity. Since 1 Oct, main requires the "Validate workflows" check
 # (repository ruleset), so a direct push (the old empty commit) would be
 # rejected. Instead, this calls GitHub's "enable workflow" API for every
-# workflow once a week: it switches a paused workflow back on, and widely
+# workflow once a day: it switches a paused workflow back on, and widely
 # used keepalive actions report that it also resets the 60-day counter.
 # No commit; it forecasts nothing and spends nothing.
 on:
   schedule:
-    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+    - cron: "0 5 * * *" # daily 05:00 UTC (architect, 1 Oct: a pause could stop the bot)
   workflow_dispatch:
 
 permissions:

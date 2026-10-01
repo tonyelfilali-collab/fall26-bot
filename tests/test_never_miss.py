@@ -234,3 +234,27 @@ def test_health_simulated_miss_is_red(monkeypatch):
 )
 def test_health_runs_at_7am_uk_time(cron, when, expected):
     assert health_check.is_uk_7am_trigger(cron, when) is expected
+
+
+def test_health_red_when_a_workflow_is_not_active():
+    report = health_check.Report()
+    health_check.check_workflow_states([
+        {"name": "Forecast on new AI tournament questions", "state": "disabled_inactivity"},
+        {"name": "Daily health check", "state": "active"},
+        {"name": "old.yml", "state": "deleted"},  # file removed: can't run, not counted
+    ], report)
+    assert report.red == ["Workflow(s) not active: Forecast on new AI tournament questions (disabled_inactivity). "
+                          "Re-enable: run Keepalive, or the Actions tab"]
+    ok = health_check.Report()
+    health_check.check_workflow_states([{"name": "A", "state": "active"}, {"name": "B", "state": "active"}], ok)
+    assert not ok.red and ok.ok == ["All 2 workflows active"]
+
+
+def test_health_warns_when_main_is_older_than_21_days():
+    now = datetime(2026, 11, 1, 7, tzinfo=timezone.utc)
+    stale = health_check.Report()
+    health_check.check_main_activity(now - timedelta(days=22), now, stale)
+    assert not stale.red and "22 days old" in stale.warnings[0]
+    fresh = health_check.Report()
+    health_check.check_main_activity(now - timedelta(days=3), now, fresh)
+    assert not fresh.warnings and fresh.ok

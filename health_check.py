@@ -6,12 +6,15 @@ emails Tony) if:
   forecast by its close is skipped);
 - an open seasonal or MiniBench question closes within 60 minutes without our
   forecast;
-- there has been no successful tournament run for 3 hours.
+- there has been no successful tournament run for 3 hours;
+- any workflow is not "active" (e.g. paused for inactivity), named.
 Warns (yellow, not red) if MiniBench has had no open question for 3 days
 (e.g. a new round the bot can't find), if any Gemini model has less than 20% of its daily
 quota left (07:00 UK is the end of Google's quota day, so this is normal on
-busy days), if AskNews still returns 402, or if any tournament run in the last
-24 hours could not save a question's JSON log or the quota ledger.
+busy days), if AskNews still returns 402, if any tournament run in the last
+24 hours could not save a question's JSON log or the quota ledger, or if main's
+last commit is older than 21 days (standing rule: a notes PR at least every
+21 days, so GitHub never pauses the workflows).
 
     poetry run python health_check.py [--simulate-miss] [--cron "0 6 * * *"]
 """
@@ -187,6 +190,40 @@ def recent_annotation_titles(since: datetime) -> list[str]:
     return titles
 
 
+def workflows() -> list[dict]:
+    return _github("actions/workflows?per_page=100")["workflows"]
+
+
+def check_workflow_states(found: list[dict], report: Report) -> None:
+    """Red if any workflow isn't active (a paused workflow can stop the bot).
+    'deleted' (its file was removed) can't run or be re-enabled: not counted."""
+    bad = [f"{w.get('name')} ({w.get('state')})" for w in found if w.get("state") not in ("active", "deleted")]
+    if bad:
+        report.red.append(
+            "Workflow(s) not active: " + ", ".join(bad) + ". Re-enable: run Keepalive, or the Actions tab"
+        )
+    else:
+        report.ok.append(f"All {sum(w.get('state') == 'active' for w in found)} workflows active")
+
+
+MAIN_ACTIVITY_DAYS = 21
+
+
+def main_last_commit() -> datetime:
+    return _parse_time(_github("commits/main")["commit"]["committer"]["date"])
+
+
+def check_main_activity(last_commit: datetime, now: datetime, report: Report) -> None:
+    age = now - last_commit
+    if age > timedelta(days=MAIN_ACTIVITY_DAYS):
+        report.warnings.append(
+            f"main's last commit is {age.days} days old (rule: a notes PR at least every {MAIN_ACTIVITY_DAYS} days, "
+            "so GitHub never pauses the workflows)"
+        )
+    else:
+        report.ok.append(f"main's last commit is {age.days} day(s) old")
+
+
 def open_questions(minibench_id: int | str) -> dict:
     from forecasting_tools import MetaculusClient
 
@@ -292,6 +329,8 @@ def run(simulate_miss: bool) -> Report:
         ),
         ("AskNews", lambda: check_asknews_status(asknews_status(), report)),
         ("log failures", lambda: check_log_failures(recent_annotation_titles(now - timedelta(hours=24)), report)),
+        ("workflow states", lambda: check_workflow_states(workflows(), report)),
+        ("main activity", lambda: check_main_activity(main_last_commit(), now, report)),
     ]
     for name, check in checks:
         try:
