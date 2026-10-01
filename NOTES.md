@@ -731,7 +731,8 @@ All run on `ubuntu-24.04` (pinned; `ubuntu-latest` moves to Ubuntu 26 on 19 Oct 
 | Review recent forecasts | `review_bot.yaml` | schedule Mondays 06:00 UTC; manual | Never spends or forecasts (read-only). The schedule also needs `REVIEW_BOT_ENABLED` and `BOT_ENABLED` both `true` |
 | Credit check | `credit_check.yaml` | manual only | No: reads the key's limit/usage, runs no model |
 | Tournament info | `tournament_info.yaml` | manual only | No: read-only Metaculus API |
-| Keepalive | `keepalive.yaml` | schedule Mondays 05:00 UTC; manual | No: one empty commit to `main` so schedules never pause |
+| Keepalive | `keepalive.yaml` | schedule Mondays 05:00 UTC; manual | No: calls GitHub's "enable workflow" API for every workflow (no commit; since 1 Oct main requires the "Validate workflows" check, so a direct push is rejected) |
+| Workflow lint | `workflow_lint.yml` | every pull request | No: YAML parse + actionlint (with shellcheck); job "Validate workflows" is a required check on main (ruleset "main: workflows must validate") |
 
 Extra safety in code: while `bot_config.USE_CREDIT_KEY_LINEUP` is `False`, `main.py` refuses to run
 any mode except `test_questions`, and the free lineup rejects any non-`:free` model.
