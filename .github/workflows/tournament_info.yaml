@@ -32,7 +32,12 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
       - name: Show tournament info
-        run: poetry run python tournament_info.py $([ "$AUDIT" = "true" ] && echo --audit)
+        run: |
+          if [ "$AUDIT" = "true" ]; then
+            poetry run python tournament_info.py --audit
+          else
+            poetry run python tournament_info.py
+          fi
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           AUDIT: ${{ inputs.audit }}
