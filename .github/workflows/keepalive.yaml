@@ -1,26 +1,39 @@
 name: Keepalive
 
 # GitHub pauses scheduled workflows in a public repo after 60 days with no
-# commits. This makes one empty commit a week so the schedules never switch
-# off. It forecasts nothing and spends nothing.
+# activity. Since 1 Oct, main requires the "Validate workflows" check
+# (repository ruleset), so a direct push (the old empty commit) would be
+# rejected. Instead, this calls GitHub's "enable workflow" API for every
+# workflow once a week: it switches a paused workflow back on, and widely
+# used keepalive actions report that it also resets the 60-day counter.
+# No commit; it forecasts nothing and spends nothing.
 on:
   schedule:
     - cron: "0 5 * * 1" # Mondays 05:00 UTC
   workflow_dispatch:
 
 permissions:
-  contents: write
+  actions: write
+  contents: read
 
 jobs:
   keepalive:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-      - name: Empty commit
+      - name: Enable every workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit --allow-empty -m "Keepalive: keep scheduled workflows active"
-          git push
+          failed=0
+          for id in $(gh api "repos/$REPO/actions/workflows" --paginate --jq '.workflows[].id'); do
+            name=$(gh api "repos/$REPO/actions/workflows/$id" --jq '.name')
+            if gh api -X PUT "repos/$REPO/actions/workflows/$id/enable" >/dev/null; then
+              echo "enabled: $name"
+            else
+              echo "FAILED: $name"
+              failed=1
+            fi
+          done
+          exit "$failed"
