@@ -133,7 +133,7 @@ from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from spend import SpendGuard, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
-from stat_baseline import random_walk_baseline
+from window_baseline import fetch_full_history, window_baseline
 from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
@@ -413,6 +413,8 @@ _in_shadow: contextvars.ContextVar = contextvars.ContextVar("in_shadow", default
 # Build 2c: how long research waits for the official data fetch (it runs
 # beside research and is usually done first).
 HARD_DATA_WAIT_SECONDS = 45
+# The window baseline's full-history fetch (after submission; a shadow only).
+WINDOW_HISTORY_WAIT_SECONDS = 60
 # The shadow forecaster (never submitted): its hard time limit, and its name
 # in the question log's "shadow" variants.
 SHADOW_FORECAST_TIMEOUT_SECONDS = 240
@@ -1183,17 +1185,25 @@ class FallBot2026(ForecastBot):
         if found is None:
             return
         record["hard_data"] = found
-        # Build 2b: the zero-call random-walk baseline, a shadow only.
+        # The empirical window baseline (architect, 1 Oct; replaces the
+        # random walk of build 2b), a shadow only: the series' full history,
+        # every past window of the question's length, the statistic it asks for.
         if "latest" in found and isinstance(question, NumericQuestion):
             try:
-                baseline = random_walk_baseline(question, found)
+                history = await asyncio.wait_for(asyncio.to_thread(fetch_full_history, found), WINDOW_HISTORY_WAIT_SECONDS)
+                distribution, detail = window_baseline(question, found, history)
             except Exception as e:
-                baseline = None
-                logger.warning(f"Question {question.id_of_post}: random-walk baseline failed ({type(e).__name__})")
-            if baseline is not None:
-                distribution, detail = baseline
-                record.setdefault("shadow", {})["random-walk"] = to_jsonable(distribution)
-                found["baseline"] = detail
+                distribution, detail = None, {"skipped": f"failed ({type(e).__name__})"}
+            if distribution is not None:
+                record.setdefault("shadow", {})["window"] = to_jsonable(distribution)
+            found["window_baseline"] = detail
+            logger.info(
+                f"Question {question.id_of_post}: window baseline: "
+                + (f"none, {detail['skipped']}" if distribution is None else
+                   f"{detail['statistic']} over {detail['window_days']} days, {detail['windows']} windows "
+                   f"({'within 25% of today' if detail['similar_level'] else 'all levels'})"
+                   + (f"; stand-in: {detail['warning']}" if detail.get("warning") else ""))
+            )
         logger.info(
             f"Question {question.id_of_post}: hard data {found['source']} {found['series']}: "
             + ("fetched" if "latest" in found else f"fetch failed ({found.get('error')})")
@@ -1326,7 +1336,7 @@ class FallBot2026(ForecastBot):
         official data, ONE line first in the dossier (series, latest value
         and date, 1-year min/max, 30-day change, and a warning when the series
         is only a stand-in). Only an exact match's latest value is given to
-        the unit check. The random-walk range is never added (a shadow).
+        the unit check. The window baseline is never added (a shadow).
         """
         task = self.__dict__.get("_hard_data_tasks", {}).get(id(question))
         if task is None:

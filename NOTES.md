@@ -24,7 +24,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Official data line | `hard_data.py` (no switch) | ON | FRED / CoinGecko line in the dossier; exact match feeds the unit check; stand-in warning | #62, #68 |
 | `YAHOO_ENABLED` | `hard_data.py` | ON, but Yahoo answers 429 | Stocks/indices/commodities/FX via Yahoo; blocked, skipped gracefully (stocks not covered) | #87 |
 | Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
-| Zero-cost shadows | `shadow.py`, `stat_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, random-walk | #27, #44, #63 |
+| Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct) | #27, #44, #63, this PR |
 | Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
 | Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; Gemini only spare, never reserve | #92 |
 | Spend guards | `spend.py` | ON (credits only) | Per-question cap 2x tier cost, daily cap 2x target, key backstop, never re-buy, fail closed | #81 |
@@ -294,7 +294,7 @@ total within ~6,000 tokens (`research.with_official_line`).
   Finance, Bloomberg, Coinbase...) and not FRED / the series id / the official publisher; or a
   coin question doesn't name CoinGecko; or the latest value is outside the question's range
   (units may differ).
-- The random-walk range (2b) is never in the dossier: it stays a shadow until scored.
+- The window baseline (replaced the 2b random walk, 1 Oct) is never in the dossier: it stays a shadow until scored.
 - Research waits at most 45 s for the fetch; a failure or no match = no line.
 - Question log: `official_data` (line, exact), `official_current_value` (exact only).
 
@@ -424,6 +424,26 @@ Architect, Tier B: a burst of questions must never push a run past the workflow'
   shadows the run ends by 47.
 - A model call cut by these limits counts as a failed attempt (quota ledger, #60): 2 in a run and
   that model is skipped for the rest of the run.
+
+## Empirical window baseline (1 Oct 2026, shadow only)
+
+`window_baseline.py`, called after submission (`main._attach_hard_data`), replaces the random walk (2b,
+end value only) for numeric questions matched to official data. Shadow `window` in the question log,
+scored by the Scoreboard, never submitted. Old logs keep their `random-walk` shadow (still scored).
+- Data: the series' full daily history (FRED: every observation, fetched only here and not saved in the
+  log; CoinGecko's public API: the last 365 days only). Fetch limit 60 s; a failure is only logged.
+- Windows: one per past start day, the question's length (open date to resolve date). Windows starting
+  within +/-25% of today's value if there are at least 30, else all windows; fewer than 30 in all: none.
+- Statistic from the wording (same words as the stand-in rule): END, MAXIMUM or MINIMUM over the
+  window; an average gets no baseline. Scaled to today: ratio x today for prices, coins and the VIX;
+  change + today for rates and percentages (a ratio near zero would explode).
+- 9 percentiles -> PCHIP + 5% uniform -> platform checks, like a model forecast.
+- Detail in the private log (`hard_data.window_baseline`: statistic, days, windows, similar or all,
+  percentiles, warning). Public log: statistic, days, window count, and for an intraday max/min the
+  stand-in warning (daily closes: the true maximum is a little higher).
+- 45868 (VIX intraday high, 86 days, real FRED history 1990-2026): 4,997 similar windows; median 21.4,
+  10%: 17.1, 90%: 33.1, P(>40) 5.5% (live: 28.7 / 19.9 / above 40 / 19.3%; random walk: 16.4 / 7.1 / 36.9 / 7.6%).
+  Raw check: 5.5% of the 4,991 windows starting with the VIX at 12-20 closed above 40 within 86 days.
 
 ## Paid-Flash fallback (30 Sep 2026, ON)
 

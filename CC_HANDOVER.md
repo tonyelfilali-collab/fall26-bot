@@ -46,7 +46,7 @@ instructions; explain in plain, short language.
   binary stretch-1.2/1.5, mean, geo-mean-odds, trimmed-mean; MC mean; numeric mean-cdf,
   uniform-2%; **Nemotron shadow forecaster** (#61, `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`,
   runs only AFTER the live forecast is submitted or failed, 240 s limit, no parser calls; variants
-  `free-shadow` and `live+free-shadow`, answer rate in the scoreboard); **random-walk baseline**
+  `free-shadow` and `live+free-shadow`, answer rate in the scoreboard); **window baseline** (replaced the random-walk baseline on 1 Oct)
   (#63) for numeric questions with official data.
 - **Official data (#62):** FRED (secret `FRED_API_KEY`) + CoinGecko public, rule-matched, saved
   in the question log only (`hard_data`). Nothing reaches the forecasters yet (2c not approved).
