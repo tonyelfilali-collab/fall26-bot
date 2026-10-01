@@ -42,7 +42,12 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
       - name: Run the replay lab
-        run: poetry run python lab.py $([ "$SYNTHETIC" = "true" ] && echo --synthetic)
+        run: |
+          if [ "$SYNTHETIC" = "true" ]; then
+            poetry run python lab.py --synthetic
+          else
+            poetry run python lab.py
+          fi
         env:
           SYNTHETIC: ${{ inputs.synthetic }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}

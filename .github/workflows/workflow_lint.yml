@@ -1,0 +1,47 @@
+name: Workflow lint
+
+# Every pull request (architect, 1 Oct): each workflow file must parse as
+# YAML and pass actionlint (with shellcheck on the run: scripts). The check
+# "Validate workflows" is required on main (repository ruleset), so a PR with
+# an invalid workflow can't merge. A broken workflow file stops that workflow
+# from starting at all.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Validate workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: YAML parse
+        run: |
+          python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet pyyaml
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = 0
+          for path in sorted(glob.glob(".github/workflows/*.y*ml")):
+              try:
+                  yaml.safe_load(open(path))
+                  print(f"ok      {path}")
+              except yaml.YAMLError as e:
+                  bad += 1
+                  print(f"INVALID {path}: {e}")
+          sys.exit(1 if bad else 0)
+          PY
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          file="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL --retry 3 -o "$file" "$base/$file"
+          curl -sSfL --retry 3 -o checksums.txt "$base/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          grep " $file\$" checksums.txt | sha256sum -c -
+          tar xzf "$file" actionlint
+          ./actionlint -color
