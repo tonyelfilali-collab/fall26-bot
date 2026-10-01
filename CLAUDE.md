@@ -48,6 +48,9 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   - Always: state the tier in the PR description; check the next live cron run after each
     merge; revert at once if it's red; stop an item after 2 failures; add a progress-log row.
   - Never merge more than one forecast-path PR between two live runs.
+- Standing rule: a small notes PR (e.g. a progress-log row) merges into `main` at least every 21 days,
+  so GitHub never pauses the workflows. Health warns when main's last commit is older than 21 days
+  and goes red if any workflow isn't "active"; Keepalive re-enables every workflow daily.
 - `main` requires the "Validate workflows" check (ruleset; YAML parse + actionlint on every PR). Never
   merge with `--admin` to get around it.
 - Master switch: repository variable `BOT_ENABLED`. Real-question workflows exit at once unless

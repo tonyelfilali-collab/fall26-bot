@@ -151,6 +151,9 @@ the filter above skips it. The first version of this command missed it and print
   second run cancels the older waiting one (28 Sep: a test cancelled a test). Since #71, Test Bot
   runs without the Gemini key have their own group; anything using the Gemini key (gemini-free
   Test Bot, Model probe) still shares the live group: queue one at a time, only when nothing waits.
+- **Standing rule (architect, 1 Oct): a notes PR merges into main at least every 21 days** (a paused
+  workflow could stop the bot). Health warns past 21 days and goes red if any workflow isn't
+  "active" (named); Keepalive calls "enable" on every workflow daily (05:00 UTC).
 - **Parse every edited workflow YAML before pushing** (`poetry run python -c "import yaml; yaml.safe_load(open(f))"`):
   1 Oct, `run: echo "Dependencies: cache hit"` (a ": " in a plain value) broke the YAML; merged, the
   live workflow would not have started at all. Workflows now cache Poetry + .venv (#112): the first run
