@@ -1,0 +1,9 @@
+name: Lint test (throwaway, deliberate syntax error)
+on:
+  workflow_dispatch:
+jobs:
+  broken:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Broken
+        run: echo "Dependencies: cache hit"
