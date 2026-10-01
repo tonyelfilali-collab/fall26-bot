@@ -151,6 +151,10 @@ the filter above skips it. The first version of this command missed it and print
   second run cancels the older waiting one (28 Sep: a test cancelled a test). Since #71, Test Bot
   runs without the Gemini key have their own group; anything using the Gemini key (gemini-free
   Test Bot, Model probe) still shares the live group: queue one at a time, only when nothing waits.
+- **Parse every edited workflow YAML before pushing** (`poetry run python -c "import yaml; yaml.safe_load(open(f))"`):
+  1 Oct, `run: echo "Dependencies: cache hit"` (a ": " in a plain value) broke the YAML; merged, the
+  live workflow would not have started at all. Workflows now cache Poetry + .venv (#112): the first run
+  on a branch is a miss that saves, the next ones skip both installs.
 - Metaculus leaderboard pages sit behind a Cloudflare check (403); don't get around it — ask Tony
   to open them in his browser.
 
