@@ -133,6 +133,7 @@ from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from spend import SpendGuard, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
+from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, window_baseline
 from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
 
@@ -646,6 +647,10 @@ class FallBot2026(ForecastBot):
         notepad = await self._get_notepad(question)
         notepad.total_research_reports_attempted += 1
         record = self._record_for(question)
+        # Paid-Flash fallback: paid only until the question has 3 real forecasts.
+        spend = getattr(self.planner, "spend", None)
+        if spend is not None and spend.answered_count is None:
+            spend.answered_count = self.ok_forecasts
         research = await self.run_research(question)
         record["research"] = {"fetched_at": utc_now(), "text": research}
         summary_report = await self.summarize_research(question, research)
@@ -708,6 +713,7 @@ class FallBot2026(ForecastBot):
                 raw_output=prediction.reasoning,
                 parsed=to_jsonable(prediction.prediction_value),
             )
+            self._count_ok(question)
             return prediction
 
         # The full set must be done 15 minutes before the close (and by minute
@@ -950,9 +956,19 @@ class FallBot2026(ForecastBot):
                 "parsed": match.get("value"), "seconds": 0,
             })
             reused.append(prediction)
+            self._count_ok(question)
         if reused:
             logger.info(f"Question {question.id_of_post}: {len(reused)} finished forecast(s) reused, not bought again")
         return remaining, reused
+
+    def _count_ok(self, question: MetaculusQuestion) -> None:
+        counts = self.__dict__.setdefault("_ok_forecasts", {})
+        key = str(question.id_of_post)
+        counts[key] = counts.get(key, 0) + 1
+
+    def ok_forecasts(self, question_key: str) -> int:
+        """Real forecasts finished so far for a question (this run)."""
+        return self.__dict__.get("_ok_forecasts", {}).get(question_key, 0)
 
     def _store_finished(self, question: MetaculusQuestion, record: dict) -> None:
         finished = getattr(self.planner, "finished", None)
@@ -1016,6 +1032,8 @@ class FallBot2026(ForecastBot):
         seasonal = self.seasonal_by_post.get(question.id_of_post)
         if seasonal is not None:
             _question_seasonal.set(seasonal)
+        # Paid-Flash fallback: MiniBench has the lower daily paid cap.
+        spend_question_seasonal.set(self.forecasting_seasonal)
         # Run timing: join the research queue at once, before anything slow.
         queue = self._queue()
         queue.join(id(question), research_key(question))

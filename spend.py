@@ -31,6 +31,7 @@ Alerts are GitHub issues, one per kind per day (see ensemble.open_alert_issue).
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -59,6 +60,11 @@ ESTIMATE_OUTPUT_TOKENS = 8000  # ASSUMED, as in the 4b cost table
 PRE_GENERATION_REJECTIONS = (400, 401, 402, 403, 404, 429)
 
 Notify = Callable[[str, str], Any]  # (title, body)
+
+
+# Paid-Flash fallback: whether the question in this task is seasonal (True),
+# MiniBench (False) or unknown (None: the stricter MiniBench daily cap).
+question_seasonal: contextvars.ContextVar = contextvars.ContextVar("question_seasonal", default=None)
 
 
 class SpendCapReached(RuntimeError):
@@ -117,10 +123,17 @@ class SpendGuard:
         self.paid_calls = 0
         self.refused = 0
         self.unknown_cost_calls = 0
-        # Paid-Flash fallback (gemini-free, OFF by default): a daily dollar cap
-        # checked on every call, and a run-level block (fail closed).
+        # Paid-Flash fallback (gemini-free): a daily dollar cap checked on every
+        # call (MiniBench: a lower one), a run-level block (fail closed), a
+        # per-model estimate (measured), and paid calls only until a question
+        # has `forecast_target` real forecasts (finished + paid running).
         self.daily_cap: float | None = None
+        self.minibench_daily_cap: float | None = None
         self.blocked: str | None = None
+        self.estimates: dict[str, float] = {}
+        self.forecast_target: int | None = None
+        self.answered_count: Callable[[str], int] | None = None
+        self.running_calls: dict[str, int] = {}
 
     # ------------------------------------------------------------ reading
 
@@ -129,6 +142,9 @@ class SpendGuard:
 
     def day_spent(self, day: str | None = None) -> float:
         return self.days.get(day or utc_day(), 0.0)
+
+    def estimate(self, model: str) -> float:
+        return self.estimates.get(model.removeprefix("replay/"), estimate_cost(model))
 
     def set_cap(self, question: str | None, dollars: float) -> None:
         if question:
@@ -147,21 +163,28 @@ class SpendGuard:
             return "blocked"
         if (question, model) in self.timed_out:
             return "timed out earlier on this question"
+        if self.forecast_target is not None and self.answered_count is not None:
+            if self.answered_count(question) + self.running_calls.get(question, 0) >= self.forecast_target:
+                return "enough forecasts"
         if self.daily_cap is not None:
+            cap = self.daily_cap
+            if question_seasonal.get() is not True and self.minibench_daily_cap is not None:
+                cap = self.minibench_daily_cap  # MiniBench (or unknown): the lower daily cap
             committed = self.day_spent() + sum(self.in_flight.values())
-            if committed + estimate_cost(model) > self.daily_cap + 1e-9:
+            if committed + self.estimate(model) > cap + 1e-9:
                 return "daily cap"
         cap = self.caps.get(question)
         if cap is not None:
             committed = self.question_spent(question) + self.in_flight.get(question, 0.0)
-            if committed + estimate_cost(model) > cap + 1e-9:
+            if committed + self.estimate(model) > cap + 1e-9:
                 return "cap"
         return None
 
     def start(self, model: str) -> None:
         question = current_question_key.get()
         if question is not None:
-            self.in_flight[question] = self.in_flight.get(question, 0.0) + estimate_cost(model)
+            self.in_flight[question] = self.in_flight.get(question, 0.0) + self.estimate(model)
+            self.running_calls[question] = self.running_calls.get(question, 0) + 1
         self.paid_calls += 1
 
     def finish(self, model: str, succeeded: bool, cost: float | None = None, error: BaseException | None = None,
@@ -170,9 +193,10 @@ class SpendGuard:
         unknown or the call failed after it may have been billed; nothing when
         it was rejected before generating."""
         question = current_question_key.get()
-        estimate = estimate_cost(model)
+        estimate = self.estimate(model)
         if question is not None:
             self.in_flight[question] = max(0.0, self.in_flight.get(question, 0.0) - estimate)
+            self.running_calls[question] = max(0, self.running_calls.get(question, 0) - 1)
         if succeeded:
             if cost is None or cost <= 0:
                 charge = estimate

@@ -51,24 +51,68 @@ def test_key_limit_alert_under_2_dollars_once_a_day():
     assert len(alerts) == 1 and "1.75" in alerts[0]
 
 
-def test_on_every_flash_chain_ends_with_the_paid_slot():
+def test_paid_slot_on_the_first_3_chains_only():
     pool = bot_config._gemini_pool(MemoryStore())
+    pool.extra_forecasts = True
+    pool.questions_per_day = 0.0
     bot_config.enable_paid_flash(pool, SpendGuard(MemoryStore({})))
     token = current_question_key.set("123")
     try:
-        chains = [*pool.plan(seasonal=True), pool.quick_forecaster(), pool.unplanned_forecaster()]
+        planned = pool.plan(seasonal=True, binary=True)  # spare quota: 5 slots
+        quick = [pool.quick_forecaster(), pool.unplanned_forecaster()]
     finally:
         current_question_key.reset(token)
-    for chain in chains:
+    assert len(planned) == 5
+    for index, chain in enumerate(planned):
         models = _chain_models(chain)
-        assert models[-1] == bot_config.PAID_FLASH_MODEL
-        assert all(m.startswith("gemini/") for m in models[:-1])  # free Flash first
-    assert pool.spend.caps["123"] == bot_config.PAID_FLASH_QUESTION_CAP
-    assert pool.spend.daily_cap == bot_config.PAID_FLASH_DAILY_CAP
+        assert (models[-1] == bot_config.PAID_FLASH_MODEL) == (index < 3), (index, models)
+        assert all(m.startswith("gemini/") for m in models if m != bot_config.PAID_FLASH_MODEL)  # free first
+    assert all(_chain_models(c)[-1] == bot_config.PAID_FLASH_MODEL for c in quick)
+    spend = pool.spend
+    assert spend.caps["123"] == bot_config.PAID_FLASH_QUESTION_CAP == 0.09
+    assert spend.daily_cap == 1.00 and spend.minibench_daily_cap == 0.50 and spend.forecast_target == 3
+    assert spend.estimate(bot_config.PAID_FLASH_MODEL) == 0.03
     # Flash-Lite (parser, emergency) never gets the paid slot.
     assert bot_config.PAID_FLASH_MODEL not in _chain_models(pool.parser())
     for chain in pool.emergency_forecasters():
         assert bot_config.PAID_FLASH_MODEL not in _chain_models(chain)
+
+
+def test_paid_stops_at_3_forecasts_and_minibench_daily_cap():
+    guard = SpendGuard(MemoryStore({}))
+    pool = bot_config._gemini_pool(MemoryStore())
+    bot_config.enable_paid_flash(pool, guard)
+    answered = {"9": 0}
+    guard.answered_count = lambda q: answered.get(q, 0)
+    model = bot_config.PAID_FLASH_MODEL
+    token = current_question_key.set("9")
+    seasonal = spend_mod.question_seasonal.set(True)
+    try:
+        guard.set_cap("9", bot_config.PAID_FLASH_QUESTION_CAP)
+        answered["9"] = 1  # one free forecast already finished
+        guard.start(model)
+        guard.start(model)  # two paid running: 1 + 2 = 3
+        assert guard.refusal(model) == "enough forecasts"
+        guard.finish(model, True, cost=0.025)
+        answered["9"] = 2  # main counts the finished paid forecast: 2 done + 1 running = 3
+        assert guard.refusal(model) == "enough forecasts"
+        guard.finish(model, False, error=RuntimeError("bad answer"))  # the other paid call failed: 2 done
+        assert guard.refusal(model) is None  # one more paid call may fill the third forecast
+    finally:
+        current_question_key.reset(token)
+        spend_mod.question_seasonal.reset(seasonal)
+    day = spend_mod.utc_day()
+    for flag, expected in ((False, "daily cap"), (None, "daily cap"), (True, None)):
+        fresh = SpendGuard(MemoryStore({}))
+        bot_config.enable_paid_flash(bot_config._gemini_pool(MemoryStore()), fresh)
+        fresh.days[day] = 0.49  # 0.49 + 0.03 > 0.50: MiniBench refused; seasonal still allowed
+        token = current_question_key.set("7")
+        seasonal = spend_mod.question_seasonal.set(flag)
+        try:
+            assert fresh.refusal(model) == expected, flag
+        finally:
+            current_question_key.reset(token)
+            spend_mod.question_seasonal.reset(seasonal)
 
 
 def test_daily_cap_and_block_refuse_paid_calls():

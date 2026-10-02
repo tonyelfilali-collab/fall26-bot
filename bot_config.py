@@ -124,8 +124,16 @@ EXTRA_FORECASTS_ENABLED = True
 # charged the estimate, fail closed. The OpenRouter key limit is the ceiling.
 PAID_FLASH_FALLBACK = True  # ON: Tony, 30 Sep (key limit $8)
 PAID_FLASH_MODEL = ensemble.FLASH_36
-PAID_FLASH_QUESTION_CAP = 0.15  # dollars
-PAID_FLASH_DAILY_CAP = 1.00  # dollars, per UTC day
+PAID_FLASH_QUESTION_CAP = 0.09  # dollars (architect, 2 Oct; was 0.15)
+PAID_FLASH_DAILY_CAP = 1.00  # dollars, per UTC day (seasonal questions)
+PAID_FLASH_MINIBENCH_DAILY_CAP = 0.50  # MiniBench: paid only while the day's paid spend is under this
+# Paid Flash only fills a question up to this many real forecasts (finished +
+# paid running); extra (spare-quota) slots beyond it are free Flash only.
+PAID_FLASH_TARGET_FORECASTS = 3
+# Reserved per paid call (and charged when the cost is unknown): measured on
+# 1 Oct, 7 calls $0.0227-0.0289 (median 6,426 output tokens), so 3 x $0.03 fits
+# the $0.09 cap. The assumed-8k-token estimate would be $0.036.
+PAID_FLASH_ESTIMATE = 0.03
 EXTRA_FORECASTS_MAX_BINARY = 5
 EXTRA_FORECASTS_MAX_OTHER = 6
 EXTRA_FORECASTS_QUOTA_FACTOR = 4
@@ -264,10 +272,10 @@ class GeminiPool:
             **kwargs,
         )
 
-    def _chain(self, models: list[str], allow_reserve: bool) -> ThrottledLlm:
+    def _chain(self, models: list[str], allow_reserve: bool, paid: bool = True) -> ThrottledLlm:
         """models[0] (booked) with the rest behind it as backups (and the paid
-        Flash slot last, when the fallback is on)."""
-        llm: ThrottledLlm | None = self._paid_tail()
+        Flash slot last, when the fallback is on and `paid`)."""
+        llm: ThrottledLlm | None = self._paid_tail() if paid else None
         for position, model in reversed(list(enumerate(models))):
             llm = self._forecaster(
                 model, backup=llm, booked=position == 0, allow_reserve=allow_reserve
@@ -350,7 +358,8 @@ class GeminiPool:
         spare = [m for m in ranked if m not in chosen]
         chains = [
             # The first forecast may use the reserve, so every question gets one.
-            self._chain([model, *spare], allow_reserve=index == 0)
+            # Paid Flash only on the first 3 slots (extra slots: free only).
+            self._chain([model, *spare], allow_reserve=index == 0, paid=index < PAID_FLASH_TARGET_FORECASTS)
             for index, model in enumerate(chosen)
         ]
         # Build 4: past the distinct models, repeats (most usable quota first),
@@ -360,7 +369,8 @@ class GeminiPool:
             if self.ledger.usable_left(repeat) <= 0:
                 break
             self.ledger.book(repeat)
-            chains.append(self._chain([repeat, *[m for m in ranked if m != repeat]], allow_reserve=False))
+            chains.append(self._chain([repeat, *[m for m in ranked if m != repeat]], allow_reserve=False,
+                                      paid=len(chains) < PAID_FLASH_TARGET_FORECASTS))
         self.last_plan["count"] = len(chains)
         return chains
 
@@ -523,6 +533,9 @@ def enable_paid_flash(pool: GeminiPool, spend: SpendGuard, llm_class: type = Thr
     one paid OpenRouter Gemini 3.6 Flash attempt (high reasoning), charged to
     `spend` with the per-question and daily caps."""
     spend.daily_cap = PAID_FLASH_DAILY_CAP
+    spend.minibench_daily_cap = PAID_FLASH_MINIBENCH_DAILY_CAP
+    spend.forecast_target = PAID_FLASH_TARGET_FORECASTS
+    spend.estimates[model.removeprefix("replay/")] = PAID_FLASH_ESTIMATE
     pacer = RequestPacer(600)
     pool.spend = spend
     pool.paid_flash = lambda: llm_class(

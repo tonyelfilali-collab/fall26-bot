@@ -13,7 +13,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
 | Reserve | `GEMINI_FREE_RESERVE` | 20% | Held back for a question's first forecast, emergencies, research | #9 |
 | `EXTRA_FORECASTS_ENABLED` | `bot_config.py` | ON | Up to 5 (binary) / 6 (numeric, MC) forecasts when non-reserve quota is spare; 25 questions/day expected while MiniBench is active | #85, #89 |
-| `PAID_FLASH_FALLBACK` | `bot_config.py` | **ON** (Tony, 30 Sep; key limit $8) | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call; caps $0.15/question, $1.00/UTC day; fail closed | this PR |
+| `PAID_FLASH_FALLBACK` | `bot_config.py` | **ON** (Tony, 30 Sep; key limit $8) | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call, only until the question has 3 real forecasts (extra slots free only); caps $0.09/question, $1.00/UTC day (MiniBench only under $0.50); fail closed | this PR |
 | Backup chain | `BACKUP_FORECASTS`, `BACKUP_FORECAST_MODEL` | 2 x Nemotron Ultra `:free` | No Flash answer and (closing within 45 min or all Flash out of quota): Nemotron x2 first, Flash-Lite only if Nemotron gives nothing | #67 |
 | Emergency window | `main.EMERGENCY_WINDOW` | 45 min | When the backup chain may use the Flash-Lite reserve | #59, #67 |
 | `STRETCH_K` | `forecast_safety.py` | 1.0 (off) | Log-odds stretch of the binary median (shadows 1.2 / 1.5 are logged) | #16, #44 |
@@ -463,6 +463,14 @@ Flash-Lite (parser, research, emergency) never gets it. Spend guards (#81, `spen
   ledger (max(20%, $0.50)) -> none for the rest of the UTC day; each with an alert issue.
 - The lineup is marked billed (`free_only` False) only when ON. The OpenRouter key limit is the ceiling.
 - Rehearsal: `paid_flash_rehearsal.py` (Test Bot `paid-flash-rehearsal`; unit test).
+- **Rules of 2 Oct (architect):** paid Flash only fills a question up to 3 real forecasts in total
+  (`PAID_FLASH_TARGET_FORECASTS`: forecasts finished this run + paid calls running; refusal "enough
+  forecasts"); the paid slot is only on a question's first 3 planned chains (spare-quota slots are free
+  only); per-question cap $0.09; MiniBench may use paid Flash only while the UTC day's paid spend is under
+  $0.50 (`PAID_FLASH_MINIBENCH_DAILY_CAP`; unknown tournament = MiniBench), seasonal up to $1.00. The guard
+  reserves a measured $0.03 per call (`PAID_FLASH_ESTIMATE`; 1 Oct: 7 calls $0.0227-0.0289, median 6,426
+  output tokens), so 3 x $0.03 = the $0.09 cap. High reasoning kept. A free answer that arrives while paid
+  calls are already running can still make a 4th forecast (bounded by the cap).
 - ON since the switch PR (Tony, 30 Sep): the lineup allows exactly ONE paid model (`Lineup.allowed_paid` =
   `PAID_FLASH_MODEL`); any other paid model fails `get_lineup`'s guard. Each run also reads the key's
   remaining limit: under $2 (`spend.KEY_LOW_DOLLARS`) -> an alert issue (once a UTC day) so Tony can raise
