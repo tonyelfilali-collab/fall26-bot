@@ -4,7 +4,7 @@ gemini-free pool and bot code with the fallback on for this run only, recorded
 replies (0 model calls, nothing submitted, both ledgers in memory).
 
 Rules: paid Flash only fills a question up to 3 real forecasts (extra slots are
-free only); per-question cap $0.09 (3 x the measured $0.03 per call); daily cap
+free only); per-question cap $0.10 (3 x the measured $0.03 per call fit); daily cap
 $1.00, MiniBench only while the day's paid spend is under $0.50.
 
 A. Every free Flash call answers 503: exactly 3 forecasts per question, all paid.
@@ -150,7 +150,7 @@ def report() -> tuple[bool, str]:
     by = {i["post"]: i for phase in ("A", "B", "C", "D") for i in out[phase]}
     cap = bot_config.PAID_FLASH_QUESTION_CAP
     checks = [
-        ("A: every free Flash 503 -> exactly 3 forecasts per question, all paid, each <= $0.09",
+        (f"A: every free Flash 503 -> exactly 3 forecasts per question, all paid, each <= ${cap:.2f}",
          all(i["forecasts"] == 3 and i["paid"] == 3 and i["spent"] <= cap + 1e-9 for i in out["A"])),
         ("B: one free Flash forecast answers -> 1 free + 2 paid = 3",
          all(i["forecasts"] == 3 and i["free"] == 1 and i["paid"] == 2 for i in out["B"])),

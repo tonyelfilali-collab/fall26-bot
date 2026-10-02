@@ -69,7 +69,7 @@ def test_paid_slot_on_the_first_3_chains_only():
         assert all(m.startswith("gemini/") for m in models if m != bot_config.PAID_FLASH_MODEL)  # free first
     assert all(_chain_models(c)[-1] == bot_config.PAID_FLASH_MODEL for c in quick)
     spend = pool.spend
-    assert spend.caps["123"] == bot_config.PAID_FLASH_QUESTION_CAP == 0.09
+    assert spend.caps["123"] == bot_config.PAID_FLASH_QUESTION_CAP == 0.10
     assert spend.daily_cap == 1.00 and spend.minibench_daily_cap == 0.50 and spend.forecast_target == 3
     assert spend.estimate(bot_config.PAID_FLASH_MODEL) == 0.03
     # Flash-Lite (parser, emergency) never gets the paid slot.
@@ -150,3 +150,26 @@ def test_fail_closed_run_check():
 def test_replay_rehearsal_passes():
     ok, text = paid_flash_rehearsal.report()
     assert ok, text
+
+
+def test_cap_fits_3_paid_calls_but_not_4_and_a_dearer_call_still_fits():
+    guard = SpendGuard(MemoryStore({}))
+    bot_config.enable_paid_flash(bot_config._gemini_pool(MemoryStore()), guard)
+    model = bot_config.PAID_FLASH_MODEL
+    token = current_question_key.set("5")
+    try:
+        guard.set_cap("5", bot_config.PAID_FLASH_QUESTION_CAP)
+        for _ in range(3):
+            assert guard.refusal(model) is None
+            guard.start(model)
+        assert guard.refusal(model) == "cap"  # a 4th reservation ($0.12) passes $0.10
+        # Two dear calls finished ($0.033 each): the 3rd still fits ($0.066 + $0.03 <= $0.10).
+        fresh = SpendGuard(MemoryStore({}))
+        bot_config.enable_paid_flash(bot_config._gemini_pool(MemoryStore()), fresh)
+        fresh.set_cap("5", bot_config.PAID_FLASH_QUESTION_CAP)
+        for _ in range(2):
+            fresh.start(model)
+            fresh.finish(model, True, cost=0.033)
+        assert fresh.refusal(model) is None
+    finally:
+        current_question_key.reset(token)
