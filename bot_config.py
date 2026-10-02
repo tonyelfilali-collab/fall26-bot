@@ -124,7 +124,7 @@ EXTRA_FORECASTS_ENABLED = True
 # charged the estimate, fail closed. The OpenRouter key limit is the ceiling.
 PAID_FLASH_FALLBACK = True  # ON: Tony, 30 Sep (key limit $8)
 PAID_FLASH_MODEL = ensemble.FLASH_36
-PAID_FLASH_QUESTION_CAP = 0.09  # dollars (architect, 2 Oct; was 0.15)
+PAID_FLASH_QUESTION_CAP = 0.10  # dollars (architect, 2 Oct: 0.09, then 0.10 so a dearer call keeps the 3rd forecast)
 PAID_FLASH_DAILY_CAP = 1.00  # dollars, per UTC day (seasonal questions)
 PAID_FLASH_MINIBENCH_DAILY_CAP = 0.50  # MiniBench: paid only while the day's paid spend is under this
 # Paid Flash only fills a question up to this many real forecasts (finished +
@@ -132,7 +132,7 @@ PAID_FLASH_MINIBENCH_DAILY_CAP = 0.50  # MiniBench: paid only while the day's pa
 PAID_FLASH_TARGET_FORECASTS = 3
 # Reserved per paid call (and charged when the cost is unknown): measured on
 # 1 Oct, 7 calls $0.0227-0.0289 (median 6,426 output tokens), so 3 x $0.03 fits
-# the $0.09 cap. The assumed-8k-token estimate would be $0.036.
+# the $0.10 cap (a 4th, $0.12, can't start). The assumed-8k-token estimate would be $0.036.
 PAID_FLASH_ESTIMATE = 0.03
 EXTRA_FORECASTS_MAX_BINARY = 5
 EXTRA_FORECASTS_MAX_OTHER = 6
