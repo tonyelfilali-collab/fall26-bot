@@ -67,7 +67,8 @@ instructions; explain in plain, short language.
   tests + a real-regression rerun (no new failures) + a real Test Bot on 4 types + the next live
   run are all green. Prompt or model changes still need the architect.
 - Zero spend, one exception (Tony, 30 Sep): never a paid model EXCEPT google/gemini-3.6-flash via
-  PAID_FLASH_FALLBACK within its caps ($0.15/question, $1.00/UTC day); key limit $8; never top-up;
+  PAID_FLASH_FALLBACK within its caps ($0.10/question, $1.00/UTC day, MiniBench paid only while the day's paid spend is under $0.50,
+  paid only until a question has 3 real forecasts); key limit $8; never top-up;
   under 600 free requests/day; if key usage is ever above the spend ledger or above $1.00 in a UTC
   day, stop everything and report.
 
@@ -125,13 +126,14 @@ Helper used after merges (wait for the first live run created after a time and s
 R=tonyelfilali-collab/fall26-bot; after="<ISO time of merge>"; until id=$(gh run list -R $R --workflow run_bot_on_tournament.yaml --created ">$after" -L 20 --json databaseId,createdAt --jq 'sort_by(.createdAt) | .[0].databaseId // empty') && [ -n "$id" ]; do sleep 30; done; gh run watch $id -R $R >/dev/null; gh run view $id -R $R --json conclusion,url -q '.conclusion+" "+.url'
 ```
 
-## 4. OpenRouter usage check ($0, key limit $1)
+## 4. OpenRouter usage check (key limit $8; used = spend ledger)
 
 Run the **Credit check** workflow (reads the key's info; runs no model) and read the table:
 ```bash
 R=tonyelfilali-collab/fall26-bot; gh workflow run credit_check.yaml -R $R; sleep 8; id=$(gh run list -R $R -w credit_check.yaml -L1 --json databaseId -q '.[0].databaseId'); gh run watch $id -R $R >/dev/null; gh run view $id -R $R --log | cut -f3- | grep -E "^[^ ]+ \| (Limit|Used|Remaining|Free tier)" | cut -d' ' -f2- | sort -u
 ```
-Expected: Limit 1, Used 0, Free tier key false. (Each log line starts with a timestamp;
+Expected: Limit 8, Used = the spend ledger total (fall26-data `status/spend.json`, sum of `days`), Free tier
+key false. If Used is above the ledger: stop everything and tell the architect. (Each log line starts with a timestamp;
 the filter above skips it. The first version of this command missed it and printed nothing.) The same run also checks FRED and CoinGecko.
 
 ## 5. Lessons (also in saved memory)

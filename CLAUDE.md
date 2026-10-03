@@ -14,7 +14,8 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
 - Until the credit key arrives, `OPENROUTER_API_KEY` is a $0 key: use only `:free` models,
   and only on the bot-testing-area (id 32977).
 - OpenRouter: $10 was bought to raise the free limit. Never call a paid model, EXCEPT
-  google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its caps ($0.15/question, $1.00/UTC day).
+  google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its caps ($0.10/question, $1.00/UTC day, MiniBench paid only while the day's paid spend is under $0.50,
+  paid only until a question has 3 real forecasts).
   Every other paid model stays refused. Never enable top-up. The key limit ($8) is the hard ceiling.
   Keep free-model use under 600 requests a day. If the key's usage (Credit check workflow) is ever
   above what the spend ledger (fall26-data `status/spend.json`) accounts for, or above $1.00 in a
