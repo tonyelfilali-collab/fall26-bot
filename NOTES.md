@@ -1,6 +1,6 @@
 # NOTES
 
-## What's live (switches and settings, 29 Sep 2026)
+## What's live (switches and settings, 3 Oct 2026)
 
 Every on/off switch and key setting, its current value, what it does, and the PR. Change one = a PR
 (the tier rules in CLAUDE.md apply). Emergency stop: repo variable `BOT_ENABLED` = `false`.
@@ -13,7 +13,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
 | Reserve | `GEMINI_FREE_RESERVE` | 20% | Held back for a question's first forecast, emergencies, research | #9 |
 | `EXTRA_FORECASTS_ENABLED` | `bot_config.py` | ON | Up to 5 (binary) / 6 (numeric, MC) forecasts when non-reserve quota is spare; 25 questions/day expected while MiniBench is active | #85, #89 |
-| `PAID_FLASH_FALLBACK` | `bot_config.py` | **ON** (Tony, 30 Sep; key limit $8) | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call, only until the question has 3 real forecasts (extra slots free only); caps $0.10/question, $1.00/UTC day (MiniBench only under $0.50); fail closed | this PR |
+| `PAID_FLASH_FALLBACK` | `bot_config.py` | **ON** (Tony, 30 Sep; key limit $8) | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call, only until the question has 3 real forecasts (extra slots free only); caps $0.10/question, $1.00/UTC day (MiniBench only under $0.50); fail closed | #104, #108, #120, #122 |
 | Backup chain | `BACKUP_FORECASTS`, `BACKUP_FORECAST_MODEL` | 2 x Nemotron Ultra `:free` | No Flash answer and (closing within 45 min or all Flash out of quota): Nemotron x2 first, Flash-Lite only if Nemotron gives nothing | #67 |
 | Emergency window | `main.EMERGENCY_WINDOW` | 45 min | When the backup chain may use the Flash-Lite reserve | #59, #67 |
 | `STRETCH_K` | `forecast_safety.py` | 1.0 (off) | Log-odds stretch of the binary median (shadows 1.2 / 1.5 are logged) | #16, #44 |
@@ -24,13 +24,13 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Official data line | `hard_data.py` (no switch) | ON | FRED / CoinGecko line in the dossier; exact match feeds the unit check; stand-in warning | #62, #68 |
 | `YAHOO_ENABLED` | `hard_data.py` | ON, but Yahoo answers 429 | Stocks/indices/commodities/FX via Yahoo; blocked, skipped gracefully (stocks not covered) | #87 |
 | Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
-| Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct) | #27, #44, #63, this PR |
+| Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct) | #27, #44, #63, #110 |
 | Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
 | Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; Gemini only spare, never reserve | #92 |
 | Spend guards | `spend.py` | ON (credits only) | Per-question cap 2x tier cost, daily cap 2x target, key backstop, never re-buy, fail closed | #81 |
 | Health check start | `health_dispatch.py` | ON | First tournament run after 06:00 UTC starts health.yml | #84 |
 | MiniBench discovery | `minibench.py` | ON | Slug + remembered rounds + 20-id scan every run; newest running round | #41, #90 |
-| Run timing | `run_timing.py` | ON | One run queue, research soonest-closing first; research 4 min; forecasting stages 12 min (planned forecasts waited for until minute 9); no new question after 30 min; shadows at the run's end only before minute 45 (end by 47); log saved at submission, shadows in `<log>_shadows.json` | #96, this PR |
+| Run timing | `run_timing.py` | ON | One run queue, research soonest-closing first; research 4 min; forecasting stages 12 min (planned forecasts waited for until minute 9); no new question after 30 min; shadows at the run's end only before minute 45 (end by 47); log saved at submission, shadows in `<log>_shadows.json` | #96, #98, #99 |
 
 
 Findings from Task 1 (checked 2026-09-27).
