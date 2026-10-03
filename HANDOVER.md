@@ -8,8 +8,8 @@ For the next architect chat. Replaces v2 (28 Sep). Written by the session-3 arch
    - `https://raw.githubusercontent.com/tonyelfilali-collab/fall26-bot/main/CLAUDE.md` (rules, merge tiers)
    - `.../main/NOTES.md` ("What's live" table at the top: every switch, value and PR)
    - `.../main/PLAN.md` (progress log at the bottom; tuning candidates in Step 11; switch-on checklist)
-   - `.../main/claude/ARCHITECT_LOG.md` (session-3 decisions) and `.../main/CC_HANDOVER.md` (Claude Code's side)
-3. Project file `claude_ARCHITECT_LOG.md`: session-2 decisions (not in the repo).
+   - `.../main/CC_HANDOVER.md` (Claude Code's side)
+3. Project files `ARCHITECT_LOG.md` (session-3 decisions) and `claude_ARCHITECT_LOG.md` (session-2). Since 3 Oct this handover and the architect log are kept private: Claude project files, and fall26-data `notes/` (not in the public repo).
 4. Background only: ARCHITECT_BRIEF.md, R1–R3, and the six leaderboard screenshots (section 5 lists the scores).
 
 Repo (public): `tonyelfilali-collab/fall26-bot`. Data (private): `tonyelfilali-collab/fall26-data`.
@@ -195,7 +195,7 @@ All from v2 still stand (personas, forced reasoning templates, best-of-k, stacki
 
 ## 12. Opening message for the next architect chat (Tony pastes this)
 
-> You are the lead architect for my Metaculus Fall 2026 FutureEval forecasting bot. Read HANDOVER.md (v3) in the project files fully first. Then read the live repo files raw (they're newer than any project copy): CLAUDE.md, NOTES.md ("What's live"), PLAN.md (progress log at the bottom), claude/ARCHITECT_LOG.md and CC_HANDOVER.md, from https://raw.githubusercontent.com/tonyelfilali-collab/fall26-bot/main/. The project file claude_ARCHITECT_LOG.md has session-2 decisions. ARCHITECT_BRIEF, R1–R3 and the leaderboard screenshots are background.
+> You are the lead architect for my Metaculus Fall 2026 FutureEval forecasting bot. Read HANDOVER.md (v3) in the project files fully first. Then read the live repo files raw (they're newer than any project copy): CLAUDE.md, NOTES.md ("What's live"), PLAN.md (progress log at the bottom) and CC_HANDOVER.md, from https://raw.githubusercontent.com/tonyelfilali-collab/fall26-bot/main/. The project files ARCHITECT_LOG.md (session 3) and claude_ARCHITECT_LOG.md (session 2) have the decisions. ARCHITECT_BRIEF, R1–R3 and the leaderboard screenshots are background.
 >
 > How we work: I'm a UK novice. Give me short, plain, click-by-click steps and one paste-ready box for each Claude Code message. If I say I'm confused, re-explain simply and briefly. Claude Code merges by the tier rules; Tier C needs you to say merge (or pre-approve with gates). Check PRs and run pages yourself and read raw code for anything important. Hard rules: zero spend except the paid Gemini 3.6 Flash fallback within its caps ($8 key limit), no human in the loop, GitHub Actions only, one change per PR, measure before shipping anything risky. Be honest about our chances and push back on bad ideas, with evidence; say when you're guessing.
 >
