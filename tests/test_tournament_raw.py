@@ -14,7 +14,8 @@ def test_raw_row_kinds_and_ours():
     assert tournament_info.raw_row({"id": 2, "group_of_questions": {"questions": []}})["kind"] == "group_of_questions"
     assert tournament_info.raw_row({"id": 3, "conditional": {}})["kind"] == "conditional"
     assert tournament_info.raw_row({"id": 4, "notebook": {}})["kind"] == "notebook"
-    assert tournament_info.raw_row({"id": 5, "question": {"type": "binary"}})["ours"] is False
+    assert tournament_info.raw_row({"id": 5, "question": {"type": "binary"}})["ours"] is None  # field missing: unknown
+    assert tournament_info.raw_row({"id": 6, "question": {"type": "binary", "my_forecasts": {"latest": None}}})["ours"] is False
 
 
 def test_raw_posts_reads_every_page(monkeypatch):
@@ -26,6 +27,7 @@ def test_raw_posts_reads_every_page(monkeypatch):
     def get(url, params, headers, timeout):
         seen.append(params)
         assert "statuses" not in params and "forecast_type" not in params  # no filters
+        assert params["with_cp"] == "true"  # asks for our forecasts
         return SimpleNamespace(raise_for_status=lambda: None, json=lambda: pages[params["offset"]])
 
     rows = tournament_info.raw_posts(33121, get=get)

@@ -119,7 +119,8 @@ def raw_posts(tournament: str | int, get=requests.get) -> list[dict]:  # type: i
     forecast it. Independent of the library's parsing and filters."""
     rows, offset = [], 0
     while True:
-        response = get(f"{API}/posts/", params={"tournaments": tournament, "limit": 100, "offset": offset},
+        # with_cp only adds data (our forecasts, the community prediction); it filters nothing.
+        response = get(f"{API}/posts/", params={"tournaments": tournament, "limit": 100, "offset": offset, "with_cp": "true"},
                        headers=_auth(), timeout=30)
         response.raise_for_status()
         data = response.json()
@@ -144,14 +145,15 @@ def raw_row(post: dict) -> dict:
         kind = "notebook"
     else:
         kind = "unknown"
-    mine = question.get("my_forecasts") or {}
+    mine = question.get("my_forecasts")
     return {
         "id": post.get("id"),
         "kind": kind,
         "state": post.get("status") or question.get("status"),
         "opens": question.get("open_time") or post.get("open_time"),
         "closes": question.get("scheduled_close_time") or post.get("scheduled_close_time"),
-        "ours": bool(mine.get("latest")) if question else None,
+        # None: the API didn't say (no my_forecasts field), not "no".
+        "ours": bool(mine.get("latest")) if isinstance(mine, dict) else None,
     }
 
 
