@@ -3,7 +3,12 @@ Read-only facts about our target tournaments, for the "Tournament info"
 workflow: each tournament's id, slug and dates, and the open/close times of
 its currently open questions. Forecasts nothing, spends nothing.
 --audit: every question of each tournament (any state), its open/close
-times, and whether our bot forecast it: to rule out a silent miss.
+times, and whether our bot forecast it: to rule out a silent miss. Plus a RAW
+count (architect, 4 Oct) that doesn't use the library: /api/posts/ called
+directly, no status or type filter, every page, every post type (a type the
+library can't read would show up here and not in the audit). And newer
+MiniBench rounds (the next tournament ids). Ids, types, states and times
+only, never forecasts.
 
     poetry run python tournament_info.py [--audit]
 """
@@ -104,6 +109,89 @@ def audit_lines(slug_or_id: str | int) -> list[str]:
     return lines
 
 
+def _auth() -> dict:
+    return {"Authorization": f"Token {os.environ['METACULUS_TOKEN']}"}
+
+
+def raw_posts(tournament: str | int, get=requests.get) -> list[dict]:  # type: ignore[no-untyped-def]
+    """Every post of a tournament, straight from /api/posts/ (no status or
+    type filter, all pages), reduced to id / type / state / times / whether we
+    forecast it. Independent of the library's parsing and filters."""
+    rows, offset = [], 0
+    while True:
+        # with_cp only adds data (our forecasts, the community prediction); it filters nothing.
+        response = get(f"{API}/posts/", params={"tournaments": tournament, "limit": 100, "offset": offset, "with_cp": "true"},
+                       headers=_auth(), timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        results = data.get("results", [])
+        for post in results:
+            rows.append(raw_row(post))
+        if not data.get("next") or not results:
+            return rows
+        offset += len(results)
+
+
+def raw_row(post: dict) -> dict:
+    """One post: its kind (question type, group, conditional, notebook, ...)."""
+    question = post.get("question") or {}
+    if question:
+        kind = question.get("type") or "question (no type)"
+    elif post.get("group_of_questions") is not None:
+        kind = "group_of_questions"
+    elif post.get("conditional") is not None:
+        kind = "conditional"
+    elif post.get("notebook") is not None:
+        kind = "notebook"
+    else:
+        kind = "unknown"
+    mine = question.get("my_forecasts")
+    return {
+        "id": post.get("id"),
+        "kind": kind,
+        "state": post.get("status") or question.get("status"),
+        "opens": question.get("open_time") or post.get("open_time"),
+        "closes": question.get("scheduled_close_time") or post.get("scheduled_close_time"),
+        # None: the API didn't say (no my_forecasts field), not "no".
+        "ours": bool(mine.get("latest")) if isinstance(mine, dict) else None,
+    }
+
+
+def raw_lines(tournament: str | int) -> list[str]:
+    rows = sorted(raw_posts(tournament), key=lambda r: (r["opens"] or "", r["id"] or 0))
+    kinds: dict[str, int] = {}
+    for r in rows:
+        kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+    lines = [
+        f"- RAW /api/posts/ (no status or type filter, all pages): {len(rows)} post(s); by kind: "
+        + (", ".join(f"{k} {v}" for k, v in sorted(kinds.items())) or "none"),
+        "",
+        "| Post | Kind | State | Opens (UTC) | Closes (UTC) | Forecast by us |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        ours = "?" if r["ours"] is None else ("yes" if r["ours"] else "**no**")
+        lines.append(f"| {r['id']} | {r['kind']} | {r['state']} | {(r['opens'] or '?')[:16]} | {(r['closes'] or '?')[:16]} | {ours} |")
+    return lines
+
+
+def newer_minibench_lines(current: str | int, ahead: int = 15) -> list[str]:
+    """Tournament ids after the current MiniBench round that look like MiniBench."""
+    try:
+        start = int(current)
+    except (TypeError, ValueError):
+        return [f"- Newer rounds: current round id not numeric ({current}); not checked"]
+    found = []
+    for tid in range(start + 1, start + 1 + ahead):
+        response = requests.get(f"{API}/projects/tournaments/{tid}/", headers=_auth(), timeout=30)
+        if response.status_code != 200:
+            continue
+        data = response.json()
+        if "minibench" in f"{data.get('slug', '')} {data.get('name', '')}".lower():
+            found.append(f"  - {tid} `{data.get('slug')}`: start {data.get('start_date')}, close {data.get('close_date')}")
+    return [f"- Newer MiniBench rounds (ids {start + 1}-{start + ahead}): {len(found) or 'none'}", *found]
+
+
 def main(audit: bool = False) -> None:
     sections: list[str] = []
     minibench_id, how = current_minibench()
@@ -115,7 +203,12 @@ def main(audit: bool = False) -> None:
         sections += [f"## {label} (`{slug_or_id}`)", ""]
         sections += tournament_facts(slug_or_id)
         sections += audit_lines(slug_or_id) if audit else open_question_lines(slug_or_id)
+        if audit:
+            sections.append("")
+            sections += raw_lines(slug_or_id)
         sections.append("")
+    if audit:
+        sections += ["## MiniBench rounds", ""] + newer_minibench_lines(minibench_id) + [""]
     report = "\n".join(sections)
     print(report)
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
