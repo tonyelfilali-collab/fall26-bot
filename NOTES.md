@@ -9,7 +9,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 |---|---|---|---|---|
 | `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
 | `ACTIVE_LINEUP` | `bot_config.py` | `gemini-free` | Free Google AI Studio key: 4 Flash forecasters, Flash-Lite for research/parsing | #8, #9 |
-| Credits lineup | `bot_config.py` (`credits`) | OFF (built) | Opus 5.5 / GPT-5.6 Sol / Gemini 3.6 Flash tiers; Flash slot tries the free key first; switch-on checklist PLAN.md 6b | #23, #74, #79 |
+| Credits lineup | `bot_config.py` (`credits`) | OFF all season: no credits (Metaculus, 5 Oct) | Opus 5.5 / GPT-5.6 Sol / Gemini 3.6 Flash tiers; Flash slot tries the free key first; switch-on checklist PLAN.md 6b | #23, #74, #79 |
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
 | Reserve | `GEMINI_FREE_RESERVE` | 20% | Held back for a question's first forecast, emergencies, research | #9 |
 | `EXTRA_FORECASTS_ENABLED` | `bot_config.py` | ON | Up to 5 (binary) / 6 (numeric, MC) forecasts when non-reserve quota is spare; 25 questions/day expected while MiniBench is active | #85, #89 |
