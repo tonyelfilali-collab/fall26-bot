@@ -32,7 +32,9 @@ Alerts are GitHub issues, one per kind per day (see ensemble.open_alert_issue).
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -94,6 +96,80 @@ def http_status(error: BaseException | None) -> int | None:
             return status
         current = current.__cause__ or current.__context__
     return None
+
+
+_SAFE = re.compile(r"[^A-Za-z0-9 _.\-]")
+
+
+def _short(value: Any) -> str | None:
+    """A short, safe label (no message text): letters, digits, spaces, _ . -"""
+    if value is None or value == "":
+        return None
+    text = _SAFE.sub("", str(value))[:40].strip()
+    return text or None
+
+
+def _provider_labels(body: Any) -> list[str]:
+    """Labels from an OpenRouter-style error body: its code/type, the
+    upstream provider's name and the upstream error's status/type/code. Never
+    the messages."""
+    if not isinstance(body, dict):
+        return []
+    error = body.get("error") if isinstance(body.get("error"), dict) else body
+    labels = []
+    for key in ("type", "code", "status"):
+        if _short(error.get(key)):
+            labels.append(f"{key}={_short(error.get(key))}")
+    meta = error.get("metadata") if isinstance(error.get("metadata"), dict) else {}
+    if _short(meta.get("provider_name")):
+        labels.append(f"provider={_short(meta.get('provider_name'))}")
+    raw = meta.get("raw")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    if isinstance(raw, dict):
+        inner = raw.get("error") if isinstance(raw.get("error"), dict) else raw
+        for key in ("status", "type", "code"):
+            if _short(inner.get(key)):
+                labels.append(f"provider {key}={_short(inner.get(key))}")
+    return labels
+
+
+def error_details(error: BaseException | None) -> dict:
+    """The HTTP status code (a number) and the provider's error type (short
+    labels, never message text) of a failed call, when the error carries
+    them. Empty if neither is known."""
+    status = http_status(error)
+    chain, current = [], error
+    while current is not None and len(chain) < 6 and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    labels: list[str] = []
+    for exc in chain:  # 1st: a response body (LiteLLM's outer error has an empty stand-in)
+        response = getattr(exc, "response", None)
+        try:
+            labels = _provider_labels(response.json()) if response is not None and hasattr(response, "json") else []
+        except Exception:
+            labels = []
+        if labels:
+            break
+    for exc in chain if not labels else []:  # 2nd: LiteLLM puts the body in the message: read only its codes
+        text = str(exc)
+        for key, pattern in (("code", r'"code"\s*:\s*"?([A-Za-z0-9_]+)'), ("provider", r'"provider_name"\s*:\s*"([^"]{1,40})"'),
+                             ("provider status", r'\\?"status\\?"\s*:\s*\\?"([A-Z_]{3,40})')):
+            match = re.search(pattern, text)
+            if match and _short(match.group(1)):
+                labels.append(f"{key}={_short(match.group(1))}")
+        if labels:
+            break
+    details: dict = {}
+    if status is not None:
+        details["http_status"] = status
+    if labels:
+        details["provider_error"] = "; ".join(dict.fromkeys(labels))
+    return details
 
 
 class SpendGuard:
@@ -217,10 +293,14 @@ class SpendGuard:
             entry["spent"] = float(entry.get("spent", 0.0)) + charge
             entry["last"] = day
             # Per call, for the switch-on review (measured output tokens per model).
-            entry.setdefault("calls", []).append({
+            call = {
                 "model": model.removeprefix("replay/"), "ok": succeeded, "charged": round(charge, 6),
                 "cost_known": bool(succeeded and cost), "output_tokens": output_tokens,
-            })
+            }
+            if not succeeded:
+                # 7 Oct: why it failed, as a number and short labels (no messages).
+                call.update(error_details(error))
+            entry.setdefault("calls", []).append(call)
 
     # ------------------------------------------------------------ saving
 
