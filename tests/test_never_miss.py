@@ -258,3 +258,15 @@ def test_health_warns_when_main_is_older_than_21_days():
     fresh = health_check.Report()
     health_check.check_main_activity(now - timedelta(days=3), now, fresh)
     assert not fresh.warnings and fresh.ok
+
+
+def test_stale_success_list_is_corrected_by_the_recent_runs():
+    # 7 Oct: the status=success list answered with a run 190 hours old.
+    stale = [{"updated_at": "2026-09-29T13:40:00Z", "conclusion": "success"}]
+    recent = [{"updated_at": "2026-10-07T12:12:56Z", "conclusion": "success"},
+              {"updated_at": "2026-10-07T12:03:10Z", "conclusion": "failure"}]
+    assert health_check.latest_success(stale, recent) == datetime(2026, 10, 7, 12, 12, 56, tzinfo=timezone.utc)
+    # Really no recent success: the old one stands, so the check still goes red.
+    assert health_check.latest_success(stale, [{"updated_at": "2026-10-07T12:03:10Z", "conclusion": "failure"}]) == \
+        datetime(2026, 9, 29, 13, 40, tzinfo=timezone.utc)
+    assert health_check.latest_success([], []) is None
