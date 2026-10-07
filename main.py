@@ -132,7 +132,7 @@ from gemini_budget import current_question_key
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
-from spend import SpendGuard, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
+from spend import SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, window_baseline
 from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
@@ -700,6 +700,9 @@ class FallBot2026(ForecastBot):
                 )
             except BaseException as e:
                 entry.update(status="failed", error=describe_exception(e))
+                # 7 Oct: the HTTP status code and the provider's error type, if any
+                # (private question log only; numbers and short labels).
+                entry.update(error_details(e))
                 if isinstance(e, asyncio.TimeoutError):
                     logger.warning(
                         f"Question {question.id_of_post}: a {kind} forecast ran out of time"

@@ -471,6 +471,13 @@ Flash-Lite (parser, research, emergency) never gets it. Spend guards (#81, `spen
   reserves a measured $0.03 per call (`PAID_FLASH_ESTIMATE`; 1 Oct: 7 calls $0.0227-0.0289, median 6,426
   output tokens), so 3 x $0.03 fit the $0.10 cap and a 4th ($0.12) can't start. High reasoning kept. A free answer that arrives while paid
   calls are already running can still make a 4th forecast (bounded by the cap).
+- **Failed-call details (7 Oct):** every failed call records its HTTP status code (a number) and the
+  provider's error type as short labels (`spend.error_details`: e.g. "code=402; provider=Google AI
+  Studio; provider status=RESOURCE_EXHAUSTED"; never message text) in the spend ledger entry
+  (`http_status`, `provider_error`) and in the private question log's forecast entry. Why: on 6 Oct
+  22 paid calls were refused (charged $0) with a generic error; LiteLLM's OpenRouter mapping means
+  they were 402 or 403, and now the code will show which. The daily report counts failed paid calls
+  by status code.
 - ON since the switch PR (Tony, 30 Sep): the lineup allows exactly ONE paid model (`Lineup.allowed_paid` =
   `PAID_FLASH_MODEL`); any other paid model fails `get_lineup`'s guard. Each run also reads the key's
   remaining limit: under $2 (`spend.KEY_LOW_DOLLARS`) -> an alert issue (once a UTC day) so Tony can raise
