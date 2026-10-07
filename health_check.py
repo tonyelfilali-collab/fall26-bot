@@ -173,9 +173,21 @@ def _parse_time(text: str) -> datetime:
     return datetime.fromisoformat(text.replace("Z", "+00:00"))
 
 
+def latest_success(filtered: list[dict], recent: list[dict]) -> datetime | None:
+    """The newest successful run in either list. GitHub's "status=success"
+    list sometimes answers with an old run (6 and 7 Oct: "no successful run
+    for 11.6 / 190.5 hours" while runs succeeded every 10 min), so the plain
+    list of recent runs is checked too."""
+    times = [_parse_time(r["updated_at"]) for r in filtered if r.get("updated_at")]
+    times += [_parse_time(r["updated_at"]) for r in recent if r.get("conclusion") == "success" and r.get("updated_at")]
+    return max(times) if times else None
+
+
 def last_successful_tournament_run() -> datetime | None:
-    runs = _github(f"actions/workflows/{TOURNAMENT_WORKFLOW}/runs?status=success&per_page=1")["workflow_runs"]
-    return _parse_time(runs[0]["updated_at"]) if runs else None
+    base = f"actions/workflows/{TOURNAMENT_WORKFLOW}/runs"
+    filtered = _github(f"{base}?status=success&per_page=1")["workflow_runs"]
+    recent = _github(f"{base}?per_page=30")["workflow_runs"]
+    return latest_success(filtered, recent)
 
 
 def recent_annotation_titles(since: datetime) -> list[str]:
