@@ -85,8 +85,13 @@ R=tonyelfilali-collab/fall26-bot; after="<ISO time>"; until id=$(gh run list -R 
 ```bash
 R=tonyelfilali-collab/fall26-bot; gh workflow run credit_check.yaml -R $R; sleep 8; id=$(gh run list -R $R -w credit_check.yaml -L1 --json databaseId -q '.[0].databaseId'); gh run watch $id -R $R >/dev/null; gh run view $id -R $R --log | cut -f3- | grep -E "^[^ ]+ \| (Limit|Used|Remaining|Free tier)" | cut -d' ' -f2- | sort -u
 ```
-Expected: Limit 8, Used = the spend ledger total (fall26-data `status/spend.json`, sum of `days`).
-If Used is above the ledger: stop everything and tell the architect.
+Expected: Limit 8, Used = the spend ledger (fall26-data `status/spend.json`). The ledger keeps only
+7 days (`spend.KEEP_DAYS`), so don't sum `days`: compare Used with `key_day_start[today]` +
+`days[today]` (today = newest `key_day_start` date):
+```bash
+gh api repos/tonyelfilali-collab/fall26-data/contents/status/spend.json -q .content | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); t=max(d["key_day_start"]); print(t, round(d["key_day_start"][t]+d["days"].get(t,0),6))'
+```
+If Used is above that: stop everything and tell the architect.
 
 ## 5. Lessons
 
