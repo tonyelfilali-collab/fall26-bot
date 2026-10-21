@@ -397,6 +397,13 @@ class GeminiPool:
             self.ledger.book(repeat)
             chains.append(self._chain([repeat, *[m for m in ranked if m != repeat]], allow_reserve=False,
                                       paid=len(chains) < PAID_FLASH_TARGET_FORECASTS))
+        if limit is not None and self.paid_flash is not None and len(chains) < limit:
+            # Frontier (Claude on): free Flash quota used up, so the rest of the
+            # Flash slots are paid Flash straight away, within its caps ($0.10 a
+            # question, $1.00 a day, MiniBench under $0.50); a refusal ends the slot.
+            paid = limit - len(chains)
+            chains += [self.paid_flash() for _ in range(paid)]
+            self.last_plan["paid_flash_planned"] = paid
         self.last_plan["count"] = len(chains)
         return chains
 
