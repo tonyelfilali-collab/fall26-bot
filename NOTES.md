@@ -265,6 +265,16 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   21 days (standing rule: a notes PR at least every 21 days). Manual option
   "simulate miss". On pull requests that change the health check it runs with a simulated miss,
   so that run is **expected to be red**.
+  **Claude (since 21 Oct, `claude_health.py`):** **red** on a credit error this cycle (ledger
+  `credit_errors`) or a Claude ledger (`status/claude_spend.json`) that can't be read; **warning** if a
+  live run in the last 24 h printed a "Frontier lineup:" mode other than `full` (mode and why, read from
+  the tournament run logs), the agent was switched off by an overrun (ledger alert `agent-overrun` or
+  the run-log warning), over 20% of live Claude calls failed (counts per HTTP status), or question logs
+  of the last 24 h had forecasts but none from Claude. The report ends with the Claude numbers ($ per
+  seasonal / MiniBench question, agent searches / fetches per call, agent calls over $1, ledger days
+  total vs the sum of call charges); the weekly Scoreboard has the same over the ledger's 7 days.
+  The ledger's calls have no time: "last 24 h" there = questions last charged UTC today or yesterday.
+  Test Bot keys (`-test-`) are left out (the totals line counts them: the days include them).
 - 07:00 UK is 23:00 Pacific, the end of Google's quota day, so the quota warning will be common.
 - Test Bot has a "fail planned forecasts" option to prove the quick forecast.
 - **Test Bot never uses the live Gemini quota:** by default it runs the `free` lineup (OpenRouter
