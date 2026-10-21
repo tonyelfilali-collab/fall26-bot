@@ -9,6 +9,10 @@ on:
         description: "List every question of each tournament (any state) and whether we forecast it"
         type: boolean
         default: false
+      standing:
+        description: "Our bot's username, and its rank, score and 95% range on each leaderboard"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,11 +37,11 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Show tournament info
         run: |
-          if [ "$AUDIT" = "true" ]; then
-            poetry run python tournament_info.py --audit
-          else
-            poetry run python tournament_info.py
-          fi
+          args=()
+          if [ "$AUDIT" = "true" ]; then args+=(--audit); fi
+          if [ "$STANDING" = "true" ]; then args+=(--standing); fi
+          poetry run python tournament_info.py "${args[@]}"
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           AUDIT: ${{ inputs.audit }}
+          STANDING: ${{ inputs.standing }}

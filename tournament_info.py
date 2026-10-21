@@ -9,8 +9,10 @@ directly, no status or type filter, every page, every post type (a type the
 library can't read would show up here and not in the audit). And newer
 MiniBench rounds (the next tournament ids). Ids, types, states and times
 only, never forecasts.
+--standing: our bot's Metaculus username, and its rank, score and 95% range on
+each tournament's leaderboard (public on Metaculus; no forecasts).
 
-    poetry run python tournament_info.py [--audit]
+    poetry run python tournament_info.py [--audit] [--standing]
 """
 from __future__ import annotations
 
@@ -192,7 +194,57 @@ def newer_minibench_lines(current: str | int, ahead: int = 15) -> list[str]:
     return [f"- Newer MiniBench rounds (ids {start + 1}-{start + ahead}): {len(found) or 'none'}", *found]
 
 
-def main(audit: bool = False) -> None:
+RANGE_FIELDS = (("ci_lower", "ci_upper"), ("lower", "upper"), ("score_lower", "score_upper"))
+
+
+def _entry_user(entry: dict) -> dict:
+    user = entry.get("user")
+    return user if isinstance(user, dict) else {"id": entry.get("user_id") or user, "username": entry.get("username")}
+
+
+def standing_row(board: dict, me: dict) -> dict | None:
+    """Our leaderboard entry (matched by user id, then username), or None."""
+    entries = list(board.get("entries") or [])
+    for key in ("userEntry", "user_entry"):
+        if isinstance(board.get(key), dict):
+            entries.append(board[key])
+    for entry in entries:
+        user = _entry_user(entry)
+        if (me.get("id") and user.get("id") == me.get("id")) or (me.get("username") and user.get("username") == me.get("username")):
+            return entry
+    return None
+
+
+def standing_line(label: str, board: dict | None, me: dict, status: int | None = None) -> str:
+    if board is None:
+        return f"- {label}: leaderboard not readable (HTTP {status})"
+    entry = standing_row(board, me)
+    count = len(board.get("entries") or [])
+    if entry is None:
+        return f"- {label}: not on the leaderboard yet ({count} entries)"
+    low, high = next(((entry.get(a), entry.get(b)) for a, b in RANGE_FIELDS if entry.get(a) is not None), (None, None))
+    score = entry.get("score")
+    text = f"- {label}: rank **{entry.get('rank', '?')}** of {count}, score **{score if score is not None else '?'}**"
+    text += f", 95% range {low} to {high}" if low is not None else ", 95% range not given"
+    if score is None or low is None:
+        text += f" (entry fields: {', '.join(sorted(entry))})"
+    return text
+
+
+def standing_lines(tournaments: list[tuple[str, str | int]], get=requests.get) -> list[str]:  # type: ignore[no-untyped-def]
+    response = get(f"{API}/users/me/", headers=_auth(), timeout=30)
+    if response.status_code != 200:
+        return [f"- Our account: not readable (HTTP {response.status_code})"]
+    me = response.json()
+    lines = [f"- Our bot's Metaculus username: **{me.get('username')}** (user id {me.get('id')})"]
+    for label, tid in tournaments:
+        response = get(f"{API}/leaderboards/project/{tid}/", headers=_auth(), timeout=60)
+        board = response.json() if response.status_code == 200 else None
+        lines.append(standing_line(f"{label} ({tid})", board, me, response.status_code))
+    return lines
+
+
+def main(audit: bool = False, standing: bool = False) -> None:
     sections: list[str] = []
     minibench_id, how = current_minibench()
     sections += [f"**Current MiniBench round: {minibench_id}** (found by {how})", ""]
@@ -207,6 +259,9 @@ def main(audit: bool = False) -> None:
             sections.append("")
             sections += raw_lines(slug_or_id)
         sections.append("")
+    if standing:
+        sections += ["## Our standing", ""] + standing_lines(
+            [("Seasonal tournament", FALL_2026_TOURNAMENT_ID), ("MiniBench", minibench_id)]) + [""]
     if audit:
         sections += ["## MiniBench rounds", ""] + newer_minibench_lines(minibench_id) + [""]
     report = "\n".join(sections)
@@ -220,4 +275,4 @@ def main(audit: bool = False) -> None:
 if __name__ == "__main__":
     if not os.getenv("METACULUS_TOKEN"):
         sys.exit("METACULUS_TOKEN is not set")
-    main(audit="--audit" in sys.argv)
+    main(audit="--audit" in sys.argv, standing="--standing" in sys.argv)
