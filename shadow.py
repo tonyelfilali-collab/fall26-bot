@@ -18,13 +18,16 @@ Zero-cost variants (no model call, computed from the forecasts already made):
 - Numeric / discrete with a window baseline (window_baseline.py, shadow
   "window"): "window-blend" = 0.5 x the live CDF + 0.5 x the window CDF,
   pointwise on the question's grid (21 Oct). No baseline: no blend.
-- "referee": a model sees each forecaster's number and a two-line reason and
-  gives its own number, kept between the lowest and highest forecast; the
-  candidate is the average of the referee and the median. SWITCHED OFF until
-  credits arrive (REFEREE_ENABLED), because it costs a model call per question.
+- "referee" (binary, built OFF: REFEREE_ENABLED): only when 2+ forecasts
+  finished and they are more than 15 points apart. After submission, Claude
+  Opus 5.5 (effort high, the Claude budget, one try, no backups, 240 s, not
+  after minute 40) sees each forecaster's number and a two-line reason and
+  gives its own; candidate = mean of it and the submitted forecast, kept
+  between the lowest and highest forecast. Claude off: no referee.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -46,6 +49,10 @@ WINDOW_BLEND_WEIGHT = 0.5  # share of the window baseline in the blend
 TRIM_FROM = 5  # trimmed mean drops the highest and lowest from this many forecasts
 _ODDS_CLAMP = 1e-3
 REFEREE_ENABLED = False
+REFEREE_MIN_FORECASTS = 2
+REFEREE_MIN_SPREAD = 0.15  # max - min must be over this (15 percentage points)
+REFEREE_TIMEOUT_SECONDS = 240  # then cancelled (charged as any Claude timeout)
+REFEREE_LATEST_SECONDS = 40 * 60  # no referee once the run is past minute 40
 
 
 def geometric_mean_of_odds(forecasts: list[float]) -> float:
@@ -160,7 +167,7 @@ def window_blend(live: Any, window: Any, question: Any, weight: float = WINDOW_B
     return None if distribution_problems(distribution, question) else distribution
 
 
-# ---------------------------------------------------------------- referee (off)
+# ---------------------------------------------------------------- referee (built off)
 
 
 def two_line_reason(reasoning: str) -> str:
@@ -179,24 +186,32 @@ def referee_prompt(question_text: str, forecasts: list[tuple[float, str]]) -> st
     )
 
 
-def referee_candidate(referee: float, forecasts: list[float]) -> float:
-    """Referee kept between the lowest and highest forecast; candidate = mean of it and the median."""
-    bounded = min(max(referee, min(forecasts)), max(forecasts))
-    return clip_binary((bounded + statistics.median(forecasts)) / 2)
+def referee_needed(forecasts: list[float]) -> bool:
+    """2+ finished forecasts more than 15 percentage points apart."""
+    return len(forecasts) >= REFEREE_MIN_FORECASTS and round(max(forecasts) - min(forecasts), 6) > REFEREE_MIN_SPREAD
+
+
+def referee_candidate(referee: float, submitted: float, forecasts: list[float]) -> float:
+    """Mean of the referee and the submitted forecast, kept between the lowest and highest forecast."""
+    return min(max((referee + submitted) / 2, min(forecasts)), max(forecasts))
 
 
 async def referee_shadow(
     question_text: str,
     forecasts: list[tuple[float, str]],
+    submitted: float,
     invoke: Callable[[str], Awaitable[str]],
     parse: Callable[[str], float | None],
 ) -> float | None:
-    if not REFEREE_ENABLED or len(forecasts) < 2:
+    """The referee candidate, or None (off, not needed, no answer). Over
+    REFEREE_TIMEOUT_SECONDS: asyncio.TimeoutError (the call is cancelled)."""
+    if not REFEREE_ENABLED or not referee_needed([p for p, _ in forecasts]):
         return None
-    answer = parse(await invoke(referee_prompt(question_text, forecasts)))
+    reply = await asyncio.wait_for(invoke(referee_prompt(question_text, forecasts)), REFEREE_TIMEOUT_SECONDS)
+    answer = parse(reply)
     if answer is None:
         return None
-    return referee_candidate(answer, [p for p, _ in forecasts])
+    return referee_candidate(answer, submitted, [p for p, _ in forecasts])
 
 
 def combine_with_shadow(question: Any, predictions: list[Any]) -> Any:

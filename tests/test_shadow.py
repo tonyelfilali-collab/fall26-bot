@@ -26,14 +26,14 @@ def test_referee_is_off_until_credits():
     async def never(prompt):
         raise AssertionError("the referee must not be called while off")
 
-    assert asyncio.run(shadow.referee_shadow("Q?", [(0.3, "a"), (0.6, "b")], never, lambda t: 0.5)) is None
+    assert asyncio.run(shadow.referee_shadow("Q?", [(0.3, "a"), (0.6, "b")], 0.45, never, lambda t: 0.5)) is None
 
 
 def test_worked_example_referee_candidate():
-    # Referee says 90% but forecasts span 30%-60%: kept at 60%; median 40% -> (60 + 40) / 2 = 50%.
-    assert shadow.referee_candidate(0.9, [0.3, 0.4, 0.6]) == pytest.approx(0.5)
-    # Inside the range: referee 45%, median 40% -> 42.5%.
-    assert shadow.referee_candidate(0.45, [0.3, 0.4, 0.6]) == pytest.approx(0.425)
+    # Referee 90%, submitted 40%: mean 65%, kept at the highest forecast 60%.
+    assert shadow.referee_candidate(0.9, 0.4, [0.3, 0.4, 0.6]) == pytest.approx(0.6)
+    # Inside the range: referee 45%, submitted 40% -> 42.5%.
+    assert shadow.referee_candidate(0.45, 0.4, [0.3, 0.4, 0.6]) == pytest.approx(0.425)
 
 
 def test_referee_when_turned_on(monkeypatch):
@@ -45,7 +45,7 @@ def test_referee_when_turned_on(monkeypatch):
 
     from answer_parsing import parse_binary_answer
 
-    value = asyncio.run(shadow.referee_shadow("Q?", [(0.3, "because A"), (0.4, "because B"), (0.6, "because C")], referee, parse_binary_answer))
+    value = asyncio.run(shadow.referee_shadow("Q?", [(0.3, "because A"), (0.4, "because B"), (0.6, "because C")], 0.4, referee, parse_binary_answer))
     assert value == pytest.approx(0.425)
 
 

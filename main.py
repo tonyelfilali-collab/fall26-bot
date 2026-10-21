@@ -110,10 +110,12 @@ from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
 from shadow import (
     REFEREE_ENABLED,
+    REFEREE_LATEST_SECONDS,
     WINDOW_BLEND,
     combine_with_shadow,
     multiple_choice_shadows,
     numeric_shadows,
+    referee_needed,
     referee_shadow,
     two_line_reason,
     window_blend,
@@ -135,7 +137,7 @@ from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from frontier import FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
-from spend import SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
+from spend import SpendCapReached, SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, window_baseline
 from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
@@ -1113,24 +1115,9 @@ class FallBot2026(ForecastBot):
         submitted = await self._submit_if_still_open(question, report)
         if submitted and isinstance(question, BinaryQuestion):
             self._consistency_shadow(question, record, report.prediction)
-        # Step 10: the referee shadow (OFF until credits), saved, never submitted.
-        if REFEREE_ENABLED and isinstance(question, BinaryQuestion) and self.planner is not None:
-            try:
-                finished = [
-                    (float(f["parsed"]), two_line_reason(f["raw_output"]))
-                    for f in record["forecasts"]
-                    if f.get("status") == "ok"
-                ]
-                referee = await referee_shadow(
-                    question.question_text,
-                    finished,
-                    self.planner.quick_forecaster().invoke,
-                    parse_binary_answer,
-                )
-                if referee is not None:
-                    record.setdefault("shadow", {})["referee"] = referee
-            except Exception as e:
-                logger.warning(f"Question {question.id_of_post}: referee shadow failed ({type(e).__name__})")
+        # Step 10: the referee shadow (built OFF), after submission, saved, never submitted.
+        if REFEREE_ENABLED and isinstance(question, BinaryQuestion):
+            await self._referee_shadow(question, record, report.prediction)
         # Step 9, log-only: after submitting, find and judge matching markets
         # and save them. Never changes the forecast; a failure is only logged.
         if MARKET_MODE == "log-only" and isinstance(question, BinaryQuestion):
@@ -1159,6 +1146,48 @@ class FallBot2026(ForecastBot):
         await self._save_record(question, record, started)
         self._shadow_later(question, record, started)
         return report
+
+    def _referee_llm(self):  # type: ignore[no-untyped-def]
+        referee_llm = getattr(self.planner, "referee_llm", None)
+        return referee_llm() if referee_llm is not None else None
+
+    async def _referee_shadow(self, question: BinaryQuestion, record: dict, submitted: Any) -> None:
+        """The referee (shadow.py): only 2+ finished forecasts over 15 points
+        apart, before minute 40, with Claude on. Its cost goes in the Claude
+        ledger; the public log gets the status and cost only."""
+        try:
+            finished = [
+                (float(f["parsed"]), two_line_reason(f.get("raw_output") or ""))
+                for f in record["forecasts"] if f.get("status") == "ok"
+            ]
+            if not referee_needed([p for p, _ in finished]):
+                return
+            if self._run_elapsed() >= REFEREE_LATEST_SECONDS:
+                logger.info(f"Question {question.id_of_post}: referee skipped (run past minute {REFEREE_LATEST_SECONDS // 60})")
+                return
+            llm = self._referee_llm()
+            if llm is None:
+                logger.info(f"Question {question.id_of_post}: referee skipped (Claude off)")
+                return
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: referee shadow failed ({type(e).__name__})")
+            return
+        budget, key = llm._spend, current_question_key.get()
+        before = budget.question_spent(key) if key else 0.0
+        value = None
+        try:
+            value = await referee_shadow(question.question_text, finished, float(submitted), llm.invoke, parse_binary_answer)
+            status = "saved" if value is not None else "no answer"
+        except asyncio.TimeoutError:
+            status = "timed out"
+        except SpendCapReached:
+            status = "refused (cap)"
+        except Exception as e:
+            status = f"failed ({type(e).__name__})"
+        if value is not None:
+            record.setdefault("shadow", {})["referee"] = value
+        cost = (budget.question_spent(key) - before) if key else 0.0
+        logger.info(f"Question {question.id_of_post}: referee {status}, ${cost:.4f}")
 
     def _shadow_later(self, question: MetaculusQuestion, record: dict, started: datetime) -> None:
         """Run timing: the shadow forecast waits for the end of the run."""

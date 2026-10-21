@@ -697,6 +697,20 @@ class FrontierPlanner(bot_config.GeminiPool):
         # Full mode only: in "low" / "minimal" the single Claude slot is plain Opus (the cheaper one).
         return self.agent_enabled and self.mode == "full" and self.claude is not None and self.claude.agent_off is None
 
+    def referee_llm(self) -> ThrottledLlm | None:
+        """The referee shadow (shadow.py): Opus 5.5, effort high, through the
+        Claude budget (day, MiniBench $9, question and cycle caps); one try, no
+        backups (a cap refusal = no referee). None while Claude is off or blocked."""
+        if self.claude is None or not self._frontier_on():
+            return None
+        question = current_question_key.get()
+        if question not in self.claude.caps:  # plan() sets it; fail closed to the question kind's cap
+            self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if question_seasonal.get() is True else CLAUDE_MINIBENCH_QUESTION_CAP)
+        return self.claude_llm_class(
+            model=self.model_prefix + OPUS_55, pacer=self.claude_pacer, backup=None, spend=self.claude,
+            temperature=None, timeout=CLAUDE_TIMEOUT_SECONDS, allowed_tries=1,
+        )
+
     def _gpt_chain(self) -> ThrottledLlm:
         # Any GPT failure: this slot goes to the Flash chain (never the reserve).
         return self.gpt_llm_class(
