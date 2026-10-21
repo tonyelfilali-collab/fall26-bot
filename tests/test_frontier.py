@@ -1,0 +1,258 @@
+"""Frontier lineup (frontier.py): billing cycle, step-downs, caps, credit error, the Claude call, the plan."""
+from __future__ import annotations
+
+import asyncio
+from datetime import date
+from types import SimpleNamespace
+
+import pytest
+
+import bot_config
+import frontier
+from frontier import FABLE, GPT_SOL, HAIKU, OPUS_5, OPUS_55, SONNET, ClaudeBudget
+from gemini_budget import MemoryStore, current_question_key
+from llm_throttle import NoAnswer
+from spend import SpendGuard, utc_day
+
+RESET = date(2026, 10, 14)
+
+
+def _budget(spent: float = 0.0, data: dict | None = None, today: date = date(2026, 10, 21)) -> ClaudeBudget:
+    claude = ClaudeBudget(MemoryStore(data if data is not None else {"days": {}}), 170.0, RESET, today=today)
+    if spent:
+        claude.cycles[claude.cycle.isoformat()] = spent
+    return claude
+
+
+# ---------------------------------------------------------------- cycle and step-downs
+
+
+@pytest.mark.parametrize("today, start", [
+    (date(2026, 10, 21), date(2026, 10, 14)), (date(2026, 10, 14), date(2026, 10, 14)),
+    (date(2026, 10, 13), date(2026, 9, 14)), (date(2027, 1, 2), date(2026, 12, 14)),
+])
+def test_cycle_start(today, start):
+    assert frontier.cycle_start(today, RESET) == start
+
+
+def test_cycle_start_in_short_months():
+    assert frontier.cycle_start(date(2027, 2, 28), date(2026, 10, 31)) == date(2027, 2, 28)
+    assert frontier.cycle_start(date(2027, 2, 27), date(2026, 10, 31)) == date(2027, 1, 31)
+
+
+@pytest.mark.parametrize("spent, mode", [(0, "full"), (127.4, "full"), (128, "low"), (152.9, "low"), (153.1, "minimal"), (170, "off")])
+def test_step_downs(spent, mode):
+    assert frontier.claude_mode(_budget(spent))[0] == mode
+
+
+def test_fail_closed_modes():
+    assert frontier.claude_mode(_budget(), api_key=False)[0] == "off"
+    assert frontier.claude_mode(ClaudeBudget(MemoryStore(None), 170.0, RESET))[0] == "off"  # missing ledger
+    assert frontier.claude_mode(ClaudeBudget(MemoryStore({"days": {}}), 170.0, None))[0] == "off"  # no reset date
+    claude = _budget()
+    claude.mark_credit_error()
+    assert frontier.claude_mode(claude)[0] == "off" and claude.blocked
+
+
+def test_credit_error_is_recorded_and_ends_with_the_cycle():
+    claude = _budget()
+    error = RuntimeError("Your credit balance is too low to access the Anthropic API.")
+    error.status_code = 400  # type: ignore[attr-defined]
+    token = current_question_key.set("1")
+    try:
+        claude.finish(OPUS_55, False, error=error)
+    finally:
+        current_question_key.reset(token)
+    assert claude.blocked and claude.question_spent("1") == 0.0  # a 400: never billed
+    saved = claude.snapshot()
+    assert saved["credit_errors"] == {"2026-10-14": utc_day()}
+    later = _budget(data=saved, today=date(2026, 10, 30))
+    assert frontier.claude_mode(later)[0] == "off"
+    next_cycle = _budget(data=saved, today=date(2026, 11, 14))
+    assert frontier.claude_mode(next_cycle)[0] == "full"
+
+
+def test_cycle_spend_is_kept_and_saved():
+    claude = _budget()
+    token = current_question_key.set("7")
+    try:
+        claude.start(OPUS_55)
+        claude.finish(OPUS_55, True, cost=0.21)
+        claude.start(FABLE)
+        claude.finish(FABLE, False, error=_status_error(529))  # overloaded: not billed
+    finally:
+        current_question_key.reset(token)
+    assert claude.cycle_spent() == pytest.approx(0.21)
+    assert ClaudeBudget(MemoryStore(claude.snapshot()), 170.0, RESET, today=date(2026, 10, 21)).cycle_spent() == pytest.approx(0.21)
+
+
+def _status_error(status: int) -> Exception:
+    error = RuntimeError(f"HTTP {status}")
+    error.status_code = status  # type: ignore[attr-defined]
+    return error
+
+
+def test_a_refusal_is_charged_its_real_cost():
+    claude = _budget()
+    token = current_question_key.set("8")
+    try:
+        claude.start(SONNET)
+        claude.finish(SONNET, False, error=NoAnswer("refused", cost=0.02))
+    finally:
+        current_question_key.reset(token)
+    assert claude.question_spent("8") == pytest.approx(0.02)
+
+
+def test_worst_case_reservations_fit_the_question_caps():
+    assert frontier.claude_reserve(FABLE) + frontier.claude_reserve(OPUS_55) <= frontier.CLAUDE_SEASONAL_QUESTION_CAP
+    assert frontier.claude_reserve(OPUS_55) + frontier.claude_reserve(SONNET) <= frontier.CLAUDE_MINIBENCH_QUESTION_CAP
+
+
+def test_claude_caps_refuse_before_passing():
+    claude = _budget()
+    claude.days[utc_day()] = 11.50
+    token = current_question_key.set("9")
+    try:
+        assert claude.refusal(FABLE) == "daily cap"  # $0.90 worst case would pass $12
+        assert claude.refusal(OPUS_55) is None
+        claude.set_cap("9", 0.60)
+        claude.questions["9"] = {"spent": 0.30}
+        assert claude.refusal(OPUS_55) == "cap"
+    finally:
+        current_question_key.reset(token)
+
+
+# ---------------------------------------------------------------- the Claude call
+
+
+class _FakeMessages:
+    def __init__(self, response, seen):
+        self.response, self.seen = response, seen
+
+    async def create(self, **kwargs):
+        self.seen.update(kwargs)
+        return self.response
+
+
+def _fake_client(response, seen):
+    class Client:
+        def __init__(self, **kwargs):
+            seen["client"] = kwargs
+            self.messages = _FakeMessages(response, seen)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    return Client
+
+
+def _response(text="Probability: 40%", stop="end_turn", out=1200):
+    return SimpleNamespace(content=[SimpleNamespace(type="thinking", thinking=""), SimpleNamespace(type="text", text=text)],
+                           stop_reason=stop, usage=SimpleNamespace(input_tokens=7000, output_tokens=out,
+                                                                   cache_creation_input_tokens=0, cache_read_input_tokens=0))
+
+
+def test_claude_call_request_and_cost(monkeypatch):
+    import anthropic
+
+    seen: dict = {}
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _fake_client(_response(), seen))
+    llm = frontier._ClaudeCall(model=OPUS_55, temperature=None, timeout=60, allowed_tries=1)
+    reply = asyncio.run(llm._mockable_direct_call_to_model("Forecast this."))
+    assert seen["model"] == "claude-opus-5-5" and seen["output_config"] == {"effort": "high"}
+    assert "temperature" not in seen and "thinking" not in seen and seen["max_tokens"] == frontier.CLAUDE_MAX_TOKENS
+    assert seen["client"]["max_retries"] == 0  # failures go to the chain's backup, never an SDK retry
+    assert reply.data == "Probability: 40%" and reply.completion_tokens_used == 1200
+    assert reply.cost == pytest.approx((7000 * 4 + 1200 * 20) / 1e6)
+
+
+@pytest.mark.parametrize("stop, text", [("refusal", ""), ("max_tokens", "Half an"), ("end_turn", "")])
+def test_claude_no_usable_answer_goes_to_the_backup(monkeypatch, stop, text):
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _fake_client(_response(text=text, stop=stop), {}))
+    llm = frontier._ClaudeCall(model=SONNET, temperature=None, timeout=60, allowed_tries=1)
+    with pytest.raises(NoAnswer) as caught:
+        asyncio.run(llm._mockable_direct_call_to_model("Forecast this."))
+    assert caught.value.cost and caught.value.cost > 0
+
+
+def test_system_messages_go_to_the_system_field():
+    system, messages = frontier._messages([{"role": "system", "content": "S"}, {"role": "user", "content": "U"}])
+    assert system == "S" and messages == [{"role": "user", "content": "U"}]
+
+
+# ---------------------------------------------------------------- the plan
+
+
+def _planner(claude: ClaudeBudget, key_left: float = 5.0):
+    spend = SpendGuard(MemoryStore({"days": {}}))
+    planner = frontier._frontier_pool(MemoryStore(), spend, claude)
+    planner.start_run(key_left, api_key=True)
+    return planner
+
+
+def _models(chains) -> list[str]:
+    return [c.model for c in chains]
+
+
+def test_full_plan_seasonal_and_minibench():
+    planner = _planner(_budget())
+    token = current_question_key.set("1")
+    try:
+        seasonal = planner.plan(True, binary=False)
+        assert _models(seasonal)[:3] == [FABLE, OPUS_55, GPT_SOL]
+        assert len(seasonal) == 5 and all(m.startswith("gemini/") for m in _models(seasonal)[3:])
+        assert planner.spend.caps["1"] == frontier.OPENROUTER_SEASONAL_QUESTION_CAP
+        assert planner.claude.caps["1"] == frontier.CLAUDE_SEASONAL_QUESTION_CAP
+        assert planner.round2(True, []) == []
+    finally:
+        current_question_key.reset(token)
+    token = current_question_key.set("2")
+    try:
+        minibench = planner.plan(False)
+        assert _models(minibench)[:2] == [OPUS_55, SONNET] and len(minibench) >= 3
+        assert planner.claude.caps["2"] == frontier.CLAUDE_MINIBENCH_QUESTION_CAP
+        assert planner.spend.caps["2"] == bot_config.PAID_FLASH_QUESTION_CAP  # MiniBench Flash: unchanged caps
+    finally:
+        current_question_key.reset(token)
+
+
+def test_backup_chains():
+    planner = _planner(_budget())
+    assert planner._claude_chain(FABLE)._backup.model == OPUS_55 and planner._claude_chain(FABLE)._backup._backup is None
+    assert planner._claude_chain(OPUS_55)._backup.model == OPUS_5
+    assert planner._claude_chain(SONNET)._backup.model == HAIKU
+    gpt = planner._gpt_chain()
+    assert gpt._backup.model.startswith("gemini/") and gpt._backup_on_any_error and gpt.allowed_tries == 1
+
+
+def test_no_gpt_when_the_key_is_low_and_off_is_todays_setup():
+    planner = _planner(_budget(), key_left=1.99)
+    token = current_question_key.set("3")
+    try:
+        assert GPT_SOL not in _models(planner.plan(True)) and len(planner.plan(True)) == 5
+    finally:
+        current_question_key.reset(token)
+    off = _planner(ClaudeBudget(MemoryStore(None), 170.0, RESET))
+    token = current_question_key.set("4")
+    try:
+        assert all(m.startswith("gemini/") for m in _models(off.plan(True)))
+    finally:
+        current_question_key.reset(token)
+
+
+def test_frontier_is_built_off():
+    assert bot_config.FRONTIER_ENABLED is False
+    assert bot_config.CLAUDE_BUDGET_PER_CYCLE == 170.0
+    assert bot_config.get_lineup("frontier").test_only
+
+
+def test_rehearsal_passes():
+    import frontier_rehearsal
+
+    ok, text = frontier_rehearsal.report()
+    assert ok, text

@@ -9,7 +9,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 |---|---|---|---|---|
 | `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
 | Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the PR 2 caps; OpenRouter paid: GPT-5.6 Sol (seasonal only) + Gemini 3.6 Flash (as now) | OpenRouter daily stop rule $2.00; spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
-| `FRONTIER_ENABLED` | `bot_config.py` (PR 2) | not built yet; will be built OFF | Claude Fable/Opus/Sonnet + GPT-5.6 Sol lineup with its budget, caps and step-downs | PR 2 |
+| `FRONTIER_ENABLED` | `bot_config.py` (PR 2) | OFF (built; switch = PR 3) | `frontier.py`: seasonal Fable 5.1 + Opus 5.5 + GPT-5.6 Sol + 2 Flash; MiniBench Opus 5.5 + Sonnet 5.5 + today's Flash path; `CLAUDE_BUDGET_PER_CYCLE` 170 + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $12/UTC day, $1.50 seasonal / $0.60 MiniBench per question; step-downs at 25% / 10% left | PR 2 |
 | `ACTIVE_LINEUP` | `bot_config.py` | `gemini-free` | Free Google AI Studio key: 4 Flash forecasters, Flash-Lite for research/parsing | #8, #9 |
 | Credits lineup | `bot_config.py` (`credits`) | OFF all season: no credits (Metaculus, 5 Oct) | Opus 5.5 / GPT-5.6 Sol / Gemini 3.6 Flash tiers; Flash slot tries the free key first; switch-on checklist PLAN.md 6b | #23, #74, #79 |
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
@@ -522,6 +522,34 @@ with a 120 s timeout) starts only if it can finish in time; it loads only the la
 of resolved questions still missing E4 (before: every log, which took most of the run). Job timeout
 9 min (backstop). Leak guard: a model released after the
 question opened (OpenRouter `created` date) or of unknown date is never used.
+
+## Frontier lineup (21 Oct 2026, PR 2, built OFF)
+
+`frontier.py`; switch `bot_config.FRONTIER_ENABLED` (OFF). Test Bot lineups: `frontier` (real models,
+bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehearsal` (0 calls),
+`claude-preflight` (one tiny call per Claude id + rate limits from the response headers).
+- **Slots.** Seasonal: `claude-fable-5-1` + `claude-opus-5-5` + GPT-5.6 Sol (OpenRouter) + 2 Flash (free
+  key first, then paid Flash), the same 5 for every type, no round 2. MiniBench: `claude-opus-5-5` +
+  `claude-sonnet-5-5` + today's Flash path (unchanged, incl. round 2 and extra forecasts).
+- **Backups.** Fable -> Opus 5.5; Opus 5.5 -> Opus 5; Sonnet -> Haiku 5.5 (on overload, 5xx, 429,
+  timeout, 404, refusal or no answer); GPT: any failure -> the Flash chain. One try each, never a retry.
+- **Claude call.** Official `anthropic` SDK (`frontier._ClaudeCall`), no SDK retries, effort `high`
+  (`output_config`), adaptive thinking (the models' default), no temperature, max 16,000 output tokens,
+  6-minute timeout. Server-side refusal `fallbacks` NOT used (the backups above are the architect's).
+- **Budget** (`status/claude_spend.json` in fall26-data; must exist, else no Claude): per UTC day,
+  per question and per billing cycle (`CLAUDE_BUDGET_PER_CYCLE` from `CLAUDE_CYCLE_RESET_DATE`).
+  Each call reserves its worst case (10k in, 16k out: Fable $0.90, Opus 5.5 $0.36, Sonnet $0.18), so
+  $12/day, $1.50 seasonal and $0.60 MiniBench are never passed. Charged: the real cost from token
+  usage; $0 for HTTP 400-429 and 5xx/529; the worst case for a timeout or a cut connection.
+- **Step-downs** (once per run): under 25% of the cycle left -> MiniBench Sonnet only, seasonal without
+  Fable; under 10% -> MiniBench no Claude, seasonal Opus only; a credit error ("credit balance is too
+  low", never retried, recorded for the cycle), an unreadable/missing ledger, no reset date or no key
+  -> no Claude and no GPT (today's setup). A Claude slot refused by a cap goes to Flash.
+- **OpenRouter.** GPT + paid Flash share $0.30 per seasonal question (MiniBench Flash $0.10 as now);
+  the paid-Flash $1.00/UTC day cap covers GPT too; no GPT when the key has under $2 left (a third
+  Flash instead).
+- **Private log.** Each forecast entry has `forecast_model` (with `parsed`), so each model can be
+  scored alone and the median; spend ledgers keep per call: model, $, output tokens, seconds.
 
 ## Free news fallback (27 Sep 2026)
 

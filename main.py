@@ -134,6 +134,7 @@ from gemini_budget import current_question_key
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
+from frontier import FrontierPlanner, frontier_report
 from spend import SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, window_baseline
@@ -713,6 +714,10 @@ class FallBot2026(ForecastBot):
             finally:
                 entry["seconds"] = round(time.monotonic() - started, 1)
                 entry["answered_models"] = list(answered_models.get() or [])
+                if entry["answered_models"]:
+                    # The model whose forecast this is (the parser answers after it),
+                    # so each model can be scored alone (private question log).
+                    entry["forecast_model"] = entry["answered_models"][0]
             entry.update(
                 status="ok",
                 raw_output=prediction.reasoning,
@@ -2230,7 +2235,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--lineup",
-        choices=["free", "gemini-free", "credits", "replay", "replay-credits", "replay-gemini"],
+        choices=["free", "gemini-free", "frontier", "credits", "replay", "replay-credits", "replay-gemini"],
         default=None,
         help="Model lineup (default: ACTIVE_LINEUP in bot_config.py). Test Bot uses 'free'.",
     )
@@ -2261,6 +2266,12 @@ if __name__ == "__main__":
         action="store_true",
         help="replay-gemini only: every Flash model starts the day used up and Flash-Lite "
         "at its reserve, so the backup chain (Nemotron) must answer",
+    )
+    parser.add_argument(
+        "--frontier-path",
+        choices=["seasonal", "minibench"],
+        default="seasonal",
+        help="Test mode, frontier lineup: forecast the test questions as seasonal or as MiniBench questions",
     )
     args = parser.parse_args()
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
@@ -2370,10 +2381,15 @@ if __name__ == "__main__":
         # Remaining key limit under $2: an alert issue (Tony decides on a top-up).
         credit = ensemble.openrouter_credit()
         key_limit_alert(lineup.planner.spend, credit[0] if credit else None, ensemble.open_alert_issue)
+    if isinstance(lineup.planner, FrontierPlanner):
+        # Frontier lineup: this run's Claude mode (cycle budget, step-downs,
+        # credit error, ledger) and whether GPT may run (key over $2 left).
+        key_credit = ensemble.openrouter_credit()
+        print(lineup.planner.start_run(key_credit[0] if key_credit else None))
     template_bot.only_model = args.only_model
     # Build 1b: the free shadow forecaster (never submitted) on the live and
     # the free test lineups; the replay model in replay (0 calls).
-    if lineup.name in ("gemini-free", "free"):
+    if lineup.name in ("gemini-free", "free", "frontier"):
         template_bot.shadow_llm = GeneralLlm(
             model=SHADOW_FORECAST_MODEL,
             temperature=None,
@@ -2521,6 +2537,8 @@ if __name__ == "__main__":
         test_questions = pick_test_questions(open_questions)
         if args.one_binary:
             test_questions = [q for q in test_questions if q.question_type == "binary"][:1]
+        if args.frontier_path == "minibench":
+            template_bot.forecasting_seasonal = False  # the MiniBench path (frontier lineup)
         print(
             f"Testing {len(test_questions)} of {len(open_questions)} open questions: "
             + ", ".join(f"{q.id_of_post} ({q.question_type})" for q in test_questions)
@@ -2636,6 +2654,13 @@ if __name__ == "__main__":
     lost_logs = template_bot.question_log.retry_failed()
     if lost_logs:
         print(f"Question JSON logs that could not be saved: {lost_logs}")
+    if isinstance(lineup.planner, FrontierPlanner) and lineup.planner.mode != "off":
+        table = "## Frontier lineup: calls this run\n\n" + frontier_report(lineup.planner)
+        print(table)
+        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(table + "\n\n")
     if template_bot.question_log.saved:
         print(f"Question JSON logs saved to fall26-data: {len(template_bot.question_log.saved)}")
     if lineup.planner is not None:

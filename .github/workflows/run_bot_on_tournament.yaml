@@ -106,6 +106,9 @@ jobs:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           # Free Google AI Studio key (no billing), for the gemini-free lineup.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Console credits (Max plan; no card, no auto-reload): Claude in the
+          # frontier lineup, used only when bot_config.FRONTIER_ENABLED is on.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Writes the Gemini daily quota ledger to the private fall26-data repo.
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
           # Only used to open an issue when the spending tier changes.

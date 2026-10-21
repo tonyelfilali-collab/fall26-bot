@@ -173,6 +173,9 @@ def error_details(error: BaseException | None) -> dict:
 
 
 class SpendGuard:
+    # A failed call with one of these HTTP statuses was never billed.
+    no_charge_statuses: tuple[int, ...] = PRE_GENERATION_REJECTIONS
+
     def __init__(self, store: Any) -> None:
         self._store = store
         # Fail closed: a ledger that can't be read (or is missing) means Lean
@@ -188,6 +191,7 @@ class SpendGuard:
         if data is None:
             self.load_failed = True
             data = {}
+        self.raw: dict = data  # the loaded ledger (subclasses read their own fields)
         self.days: dict[str, float] = {k: float(v) for k, v in data.get("days", {}).items()}
         self.questions: dict[str, dict] = dict(data.get("questions", {}))
         self.key_day_start: dict[str, float] = {k: float(v) for k, v in data.get("key_day_start", {}).items()}
@@ -264,7 +268,7 @@ class SpendGuard:
         self.paid_calls += 1
 
     def finish(self, model: str, succeeded: bool, cost: float | None = None, error: BaseException | None = None,
-               timed_out: bool = False, output_tokens: int | None = None) -> None:
+               timed_out: bool = False, output_tokens: int | None = None, seconds: float | None = None) -> None:
         """Charge one call: the real cost; the estimate when the cost is
         unknown or the call failed after it may have been billed; nothing when
         it was rejected before generating."""
@@ -280,7 +284,9 @@ class SpendGuard:
                 logger.warning(f"{model}: cost unknown, charged the estimate")
             else:
                 charge = float(cost)
-        elif http_status(error) in PRE_GENERATION_REJECTIONS:
+        elif getattr(error, "cost", None) is not None:
+            charge = float(error.cost)  # answered but unusable (e.g. a refusal): its real cost
+        elif http_status(error) in self.no_charge_statuses:
             charge = 0.0
         else:
             charge = estimate
@@ -297,6 +303,8 @@ class SpendGuard:
                 "model": model.removeprefix("replay/"), "ok": succeeded, "charged": round(charge, 6),
                 "cost_known": bool(succeeded and cost), "output_tokens": output_tokens,
             }
+            if seconds is not None:
+                call["seconds"] = round(seconds, 1)
             if not succeeded:
                 # 7 Oct: why it failed, as a number and short labels (no messages).
                 call.update(error_details(error))

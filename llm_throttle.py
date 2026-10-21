@@ -26,7 +26,7 @@ logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 # Errors that mean "this model can't serve us right now", as opposed to a bad
 # request: overloaded (503), server error, out of quota (429), timeout, or not
 # offered to this key (404, e.g. older models closed to new projects).
-_TRY_BACKUP_ERRORS = (
+_TRY_BACKUP_ERRORS: tuple[type[BaseException], ...] = (
     litellm.NotFoundError,
     litellm.ServiceUnavailableError,
     litellm.InternalServerError,
@@ -34,6 +34,35 @@ _TRY_BACKUP_ERRORS = (
     litellm.Timeout,
     litellm.APIConnectionError,
 )
+_TIMEOUT_ERRORS: tuple[type[BaseException], ...] = (litellm.Timeout,)
+try:
+    # Claude slots (frontier.py) call the official Anthropic SDK: the same
+    # "can't serve us right now" errors (incl. 529 overloaded) go to the backup.
+    import anthropic
+
+    _TRY_BACKUP_ERRORS += (
+        anthropic.NotFoundError,
+        anthropic.RateLimitError,
+        anthropic.InternalServerError,
+        anthropic.APITimeoutError,
+        anthropic.APIConnectionError,
+    )
+    _TIMEOUT_ERRORS += (anthropic.APITimeoutError,)
+except ImportError:  # pragma: no cover
+    pass
+
+
+class NoAnswer(RuntimeError):
+    """The model answered with nothing usable (a refusal, or cut off at
+    max_tokens): the next model in the chain is tried. `cost`: what the
+    answer cost (the spend guard charges it)."""
+
+    def __init__(self, message: str, cost: float | None = None) -> None:
+        super().__init__(message)
+        self.cost = cost
+
+
+_TRY_BACKUP_ERRORS += (NoAnswer,)
 
 
 # The models that answered in the current asyncio task (one forecast: the
@@ -100,10 +129,14 @@ class ThrottledLlm(GeneralLlm):
         booked: bool = False,
         allow_reserve: bool = False,
         spend=None,  # type: ignore[no-untyped-def]
+        backup_on_any_error: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._spend = spend
+        # True: any failure of this model (not only "can't serve us now")
+        # goes to the backup, e.g. GPT-5.6 Sol -> the Flash chain.
+        self._backup_on_any_error = backup_on_any_error
         self._pacer = pacer
         self._ledger = ledger
         self._backup = backup
@@ -139,8 +172,10 @@ class ThrottledLlm(GeneralLlm):
             self._spend.start(self.model)
         succeeded = False
         failure: BaseException | None = None
+        started_at = time.monotonic()
         try:
             await self._pacer.wait_turn()
+            started_at = time.monotonic()
             response = await super()._mockable_direct_call_to_model(prompt)
             succeeded = True
         except _TRY_BACKUP_ERRORS as e:
@@ -149,6 +184,11 @@ class ThrottledLlm(GeneralLlm):
                 self._ledger.mark_used_up(self.model)
             error_name = type(e).__name__
             failure = e
+        except Exception as e:
+            failure = e
+            if not (self._backup_on_any_error and self._backup is not None):
+                raise
+            error_name = type(e).__name__
         except BaseException as e:  # (incl. cancellation: it may still be billed)
             failure = e
             raise
@@ -162,8 +202,9 @@ class ThrottledLlm(GeneralLlm):
                     succeeded,
                     cost=getattr(response, "cost", None) if succeeded else None,
                     error=failure,
-                    timed_out=isinstance(failure, litellm.Timeout),
+                    timed_out=isinstance(failure, _TIMEOUT_ERRORS),
                     output_tokens=getattr(response, "completion_tokens_used", None) if succeeded else None,
+                    seconds=time.monotonic() - started_at,
                 )
         if not succeeded:
             return await self._hand_over(prompt, error_name)

@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       lineup:
-        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls. 'burst-rehearsal': 3 simulated days of MiniBench bursts, 0 model calls. 'timing-rehearsal': run time limits on a virtual clock (burst of 5 at every limit; overload of 12), 0 model calls. 'paid-flash-rehearsal': the paid-Flash fallback (switched on for the rehearsal only) with every free Flash 503, caps and Nemotron backup, 0 model calls."
+        description: "Model lineup. 'free' (default): real free models. 'replay': recorded replies, 0 model calls (the Tier B gate). 'replay-credits': credits rehearsal, 0 model calls. 'real-regression': free model on the 37 regression-pack questions, never submitted. 'replay-gemini': the gemini-free pool and backup chain with recorded replies, 0 model calls. 'burst-rehearsal': 3 simulated days of MiniBench bursts, 0 model calls. 'timing-rehearsal': run time limits on a virtual clock (burst of 5 at every limit; overload of 12), 0 model calls. 'paid-flash-rehearsal': the paid-Flash fallback (switched on for the rehearsal only) with every free Flash 503, caps and Nemotron backup, 0 model calls. 'frontier': the frontier lineup with REAL models (Claude via ANTHROPIC_API_KEY, GPT-5.6 Sol, Flash; paid; bot-testing-area only). 'frontier-rehearsal': the frontier lineup's caps, step-downs, credit error, GPT failure and timing, 0 model calls. 'claude-preflight': one tiny call per Claude model id (about a cent) and the rate limits."
         type: choice
-        options: [free, replay, replay-credits, replay-gemini, burst-rehearsal, timing-rehearsal, paid-flash-rehearsal, real-regression, gemini-free]
+        options: [free, replay, replay-credits, replay-gemini, burst-rehearsal, timing-rehearsal, paid-flash-rehearsal, real-regression, gemini-free, frontier, frontier-rehearsal, claude-preflight]
         default: free
       break_on_purpose:
         description: "Make every question fail, to check a failed run shows red"
@@ -39,18 +39,23 @@ on:
         type: choice
         options: [none, runaway, retry-run, unknown-cost, missing-ledger, key-mismatch]
         default: none
+      frontier_path:
+        description: "frontier only: forecast the test questions on the seasonal or the MiniBench path"
+        type: choice
+        options: [seasonal, minibench]
+        default: seasonal
       fail_model:
         description: "replay-credits only: this model fails every call, so its backup runs (e.g. openrouter/anthropic/claude-opus-5.5)"
         type: string
         default: ""
 
-# Lineups that call Gemini with the live key (gemini-free) share the group of
+# Lineups that call Gemini with the live key (gemini-free, frontier) share the group of
 # every workflow that uses it, one at a time. The others (replay, replay-credits,
 # replay-gemini, burst/timing rehearsals, free, real-regression: no Gemini key) have their own group,
 # so a test can never cancel a waiting live run (GitHub keeps only one waiting
 # run per group and cancels the older one).
 concurrency:
-  group: ${{ inputs.lineup == 'gemini-free' && 'forecast-bot' || 'test-bot-no-gemini' }}
+  group: ${{ (inputs.lineup == 'gemini-free' || inputs.lineup == 'frontier') && 'forecast-bot' || 'test-bot-no-gemini' }}
   cancel-in-progress: false
 
 permissions:
@@ -124,6 +129,14 @@ jobs:
             poetry run python paid_flash_rehearsal.py
             exit $?
           fi
+          if [ "$LINEUP" = "frontier-rehearsal" ]; then
+            poetry run python frontier_rehearsal.py
+            exit $?
+          fi
+          if [ "$LINEUP" = "claude-preflight" ]; then
+            poetry run python claude_preflight.py
+            exit $?
+          fi
           if [ "$LINEUP" = "real-regression" ]; then
             args=(--mode test_questions --lineup free --real-regression)
           else
@@ -135,6 +148,7 @@ jobs:
           if [ -n "$ONLY_MODEL" ]; then args+=(--only-model "$ONLY_MODEL"); fi
           if [ -n "$FAIL_MODEL" ]; then args+=(--fail-model "$FAIL_MODEL"); fi
           if [ "$EXHAUST_FLASH" = "true" ]; then args+=(--exhaust-flash); fi
+          if [ "$LINEUP" = "frontier" ]; then args+=(--frontier-path "$FRONTIER_PATH"); fi
           if [ -n "$REHEARSAL" ] && [ "$REHEARSAL" != "none" ]; then args+=(--rehearsal "$REHEARSAL"); fi
           if [ -n "$FREE_MODEL" ]; then args+=(--free-model "openrouter/${FREE_MODEL#openrouter/}"); fi
           poetry run python main.py "${args[@]}"
@@ -148,6 +162,7 @@ jobs:
           EXHAUST_FLASH: ${{ inputs.exhaust_flash }}
           REHEARSAL: ${{ inputs.rehearsal }}
           FREE_MODEL: ${{ inputs.free_model }}
+          FRONTIER_PATH: ${{ inputs.frontier_path }}
           # Only the secrets the bot uses (see NOTES.md). No paid services.
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -156,6 +171,8 @@ jobs:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           # Free Google AI Studio key (no billing), for the gemini-free lineup.
           # Only the gemini-free lineup gets it (that lineup stays in the shared group).
-          GEMINI_API_KEY: ${{ inputs.lineup == 'gemini-free' && secrets.GEMINI_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ (inputs.lineup == 'gemini-free' || inputs.lineup == 'frontier') && secrets.GEMINI_API_KEY || '' }}
+          # Console credits (Max plan; no card): only the frontier lineup and its pre-flight.
+          ANTHROPIC_API_KEY: ${{ (inputs.lineup == 'frontier' || inputs.lineup == 'claude-preflight') && secrets.ANTHROPIC_API_KEY || '' }}
           # Writes the Gemini daily quota ledger to the private fall26-data repo.
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
