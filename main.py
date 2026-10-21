@@ -161,6 +161,16 @@ TOURNAMENT_QUESTION_TYPES = ("binary", "numeric", "discrete", "multiple_choice")
 TEST_QUESTIONS_PER_TYPE = 1
 
 
+def test_question_key_suffix(run_mode: str, run_id: str | None = None) -> str:
+    """Test Bot runs only: "-test-<run id>" for the per-question key (spend
+    caps, Gemini attempts). Live runs: "" (the post id, unchanged). Day totals
+    and the cycle budget count every call either way."""
+    if run_mode != "test_questions":
+        return ""
+    run_id = run_id or os.getenv("GITHUB_RUN_ID") or time.strftime("%Y%m%d%H%M%S", time.gmtime())
+    return f"-test-{run_id}"
+
+
 def pick_test_questions(
     questions: list[MetaculusQuestion],
 ) -> list[MetaculusQuestion]:
@@ -514,6 +524,10 @@ class FallBot2026(ForecastBot):
     # used in their path. Set in __main__.
     question_log: QuestionLogWriter | None = None
     run_mode = "tournament"
+    # Test Bot runs (test_questions mode, set in __main__): the per-question
+    # key gets "-test-<run id>", so each run's questions start with no spend
+    # or attempts from earlier tests. "" = the post id, as in live runs.
+    question_key_suffix = ""
     # Whether to submit forecasts to Metaculus. The library's own
     # publish_reports_to_metaculus stays False, so the bot can check that the
     # question is still open right before submitting.
@@ -1035,10 +1049,13 @@ class FallBot2026(ForecastBot):
             queue = self.__dict__["_research_queue"] = ResearchQueue()
         return queue
 
+    def _question_key(self, question: MetaculusQuestion) -> str:
+        return f"{question.id_of_post}{self.question_key_suffix}"
+
     async def _run_individual_question(self, question: MetaculusQuestion) -> ForecastReport:
         replay_question.set(question)  # replay mode answers from the question's shape
         # Gemini calls count per question too (a cap per model per day).
-        current_question_key.set(str(question.id_of_post))
+        current_question_key.set(self._question_key(question))
         seasonal = self.seasonal_by_post.get(question.id_of_post)
         if seasonal is None and self.seasonal_by_post:
             seasonal = False  # not in this run's queue: an unknown tournament = MiniBench (fail closed)
@@ -1428,7 +1445,7 @@ class FallBot2026(ForecastBot):
         _planned_forecaster.set(self.shadow_llm)
         # It runs at the end of the run, outside the question's own task.
         replay_question.set(question)
-        current_question_key.set(str(question.id_of_post))
+        current_question_key.set(self._question_key(question))
         started = time.monotonic()
         try:
             # The per-type forecast directly: the library's _make_prediction
@@ -2415,6 +2432,7 @@ if __name__ == "__main__":
         print(f"Live questions per day (7-day average): {lineup.planner.questions_per_day}")
     template_bot.fail_planned_forecasts = args.fail_planned_forecasts
     template_bot.run_mode = run_mode
+    template_bot.question_key_suffix = test_question_key_suffix(run_mode)
     template_bot.run_started = RUN_STARTED
     template_bot.submit_forecasts = publish_to_metaculus
     template_bot.question_log = QuestionLogWriter()
