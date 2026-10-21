@@ -11,6 +11,11 @@ Scoreboard: scores every resolved tournament question logged in fall26-data.
 - Shadow variants (every type, PLAN.md Step 10, shadow.py): the same score on
   the same questions, and the mean difference from live, per type (e.g.
   numeric "window" and "window-blend", one row each).
+- Per model (private: saved to fall26-data only, never on the job page):
+  each forecast entry's `forecast_model` scored alone (every type), and the
+  binary subset medians "claude-only", "flash-only", "no-agent" through the
+  live final steps (forecast_safety.adjust_binary), each with the mean diff
+  vs live; split before / since FRONTIER_SWITCH_ON.
 Counts per type are shown. The report goes to fall26-data (scoreboard/) and
 the job page. Weekly workflow "Scoreboard" plus a manual button.
 """
@@ -136,6 +141,153 @@ def report_markdown(scored: list[dict]) -> str:
                   *shadow_rows]
     if not scored:
         lines.append("| (none resolved yet) | 0 | |")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- per model (pure)
+
+# When the frontier lineup (Claude) went live: an ISO UTC datetime string, e.g.
+# "2026-10-25T00:00:00+00:00". None = not switched on yet: everything is "before".
+FRONTIER_SWITCH_ON: str | None = None
+PERIODS = ("before", "since")
+PERIOD_TITLES = {"before": "Before frontier switch-on", "since": "Since frontier switch-on"}
+# frontier.AGENT: the agent slot's ledger name (the call is Opus 5.5 with web tools).
+AGENT_MODEL = "anthropic/claude-opus-5-5-agent"
+MODEL_GROUPS = ("agent", "claude", "flash", "other")
+# Binary subset medians, through the live final steps (forecast_safety.adjust_binary).
+SUBSETS = {
+    "claude-only": lambda name: model_group(name) in ("agent", "claude"),
+    "flash-only": lambda name: model_group(name) == "flash",
+    "no-agent": lambda name: model_group(name) != "agent",
+}
+
+
+def model_group(name: str) -> str:
+    """'agent' / 'claude' (Opus 5.5, Opus 5, Haiku 5.5 backups) / 'flash' (each
+    Gemini Flash model, free key or paid, Flash-Lite too) / 'other'."""
+    if name == AGENT_MODEL:
+        return "agent"
+    if name.startswith("anthropic/") or "claude" in name:
+        return "claude"
+    if "gemini" in name and "flash" in name:
+        return "flash"
+    return "other"
+
+
+def forecast_model(entry: dict) -> str | None:
+    """The model whose forecast this log entry is: 'forecast_model' (frontier
+    logs), else the first model that answered (older logs, reused forecasts)."""
+    name = entry.get("forecast_model") or next(iter(entry.get("answered_models") or []), None)
+    return str(name).removeprefix("replay/") if name else None
+
+
+def period_of(when: str | None, switch_on: str | None = None) -> str:
+    """'before' / 'since' the frontier switch-on, from a forecast's ISO time."""
+    switch_on = FRONTIER_SWITCH_ON if switch_on is None else switch_on
+    if not switch_on or not when:
+        return "before"
+    try:
+        moment = datetime.fromisoformat(str(when).replace("Z", "+00:00"))
+        start = datetime.fromisoformat(switch_on.replace("Z", "+00:00"))
+    except ValueError:
+        return "before"
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    return "since" if moment >= start else "before"
+
+
+def model_forecasts(record: dict) -> list[tuple[str, Any, str | None]]:
+    """(model, parsed forecast, time) of each finished forecast in the log."""
+    out = []
+    for entry in record.get("forecasts") or []:
+        name = forecast_model(entry)
+        if entry.get("status") == "ok" and name and entry.get("parsed") is not None:
+            out.append((name, entry["parsed"], entry.get("started_at") or record.get("started_at")))
+    return out
+
+
+def subset_forecast(values: list[float]) -> float | None:
+    """A subset's binary forecast through the live final steps (median, stretch
+    at its live value, extreme check, 2-98% clip); None if empty."""
+    from forecast_safety import NoValidForecast, adjust_binary
+
+    try:
+        return adjust_binary(values)
+    except NoValidForecast:
+        return None
+
+
+def score_models(records: list[dict], resolution_of, switch_on: str | None = None) -> list[dict]:  # type: ignore[no-untyped-def]
+    """Per resolved question: {"type", "period" (of the live forecast), "live",
+    "models": [(model, period, score)], "subsets": {name: score} (binary)}."""
+    rows = []
+    for record in records:
+        question = record.get("question") or {}
+        resolution = resolution_of(question.get("id_of_post"))
+        if not resolution:
+            continue
+        kind = question.get("question_type")
+        live = live_score(record, resolution)
+        if live is None:
+            continue
+        row = {"type": kind, "period": period_of(record.get("started_at"), switch_on), "live": live,
+               "models": [], "subsets": {}}
+        forecasts = model_forecasts(record)
+        for name, parsed, when in forecasts:
+            try:
+                score = forecast_score(kind, parsed, resolution)
+            except (TypeError, ValueError):
+                score = None
+            if score is not None:
+                row["models"].append((name, period_of(when, switch_on), score))
+        if kind == "binary":
+            for subset, wanted in SUBSETS.items():
+                values = [float(p) for name, p, _ in forecasts if wanted(name) and isinstance(p, (int, float))]
+                p = subset_forecast(values)
+                if p is not None:
+                    row["subsets"][subset] = forecast_score(kind, p, resolution)
+        rows.append(row)
+    return rows
+
+
+def per_model_markdown(rows: list[dict], switch_on: str | None = None) -> str:
+    """Per-model and binary-subset tables, before / since the frontier switch-on.
+    Private (fall26-data only): never printed to the job log or page."""
+    switch_on = FRONTIER_SWITCH_ON if switch_on is None else switch_on
+    lines = [f"Frontier switch-on: {switch_on or 'not set (everything is before)'}. "
+             "Each model alone on the questions it forecast; diff vs live on the same questions."]
+    for period in PERIODS:
+        lines += ["", f"**{PERIOD_TITLES[period]}:**", ""]
+        model_rows = []
+        for kind in TYPES:
+            of_type = [r for r in rows if r["type"] == kind]
+            names = sorted({m for r in of_type for m, p, _ in r["models"] if p == period},
+                           key=lambda m: (MODEL_GROUPS.index(model_group(m)), m))
+            for name in names:
+                pairs = [(r["live"], s) for r in of_type for m, p, s in r["models"] if m == name and p == period]
+                model_rows.append(
+                    f"| {kind} | {name} | {model_group(name)} | {len(pairs)} | "
+                    f"{statistics.fmean(s for _, s in pairs):.4f} | {statistics.fmean(s - live for live, s in pairs):+.4f} |"
+                )
+        if model_rows:
+            lines += ["| Type | Model | Group | Forecasts | Mean log score | Mean diff vs live |",
+                      "|---|---|---|---|---|---|", *model_rows]
+        else:
+            lines.append("No resolved per-model forecasts.")
+        binary = [r for r in rows if r["type"] == "binary" and r["period"] == period]
+        subset_rows = []
+        for subset in SUBSETS:
+            pairs = [(r["live"], r["subsets"][subset]) for r in binary if subset in r["subsets"]]
+            if pairs:
+                subset_rows.append(
+                    f"| {subset} | {len(pairs)} | {statistics.fmean(s for _, s in pairs):.4f} | "
+                    f"{statistics.fmean(s - live for live, s in pairs):+.4f} |"
+                )
+        if subset_rows:
+            lines += ["", "Binary subset medians (live final steps: median, stretch, extreme check, 2-98% clip):", "",
+                      "| Subset | Questions | Mean log score | Mean diff vs live |", "|---|---|---|---|", *subset_rows]
     return "\n".join(lines)
 
 
@@ -272,7 +424,9 @@ def main() -> None:
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(report)
-    save_markdown(f"scoreboard/{stamp}.md", report, token, f"Scoreboard {stamp}")
+    # Per-model and subset tables: only in the saved fall26-data file, never on the job page.
+    private = f"\n**Per model and binary subsets (private):**\n\n{per_model_markdown(score_models(records, resolution_of))}\n"
+    save_markdown(f"scoreboard/{stamp}.md", report + private, token, f"Scoreboard {stamp}")
 
 
 if __name__ == "__main__":
