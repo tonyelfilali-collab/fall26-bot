@@ -405,6 +405,18 @@ def lab_section(token: str) -> str:
     return "\n" + lab.report(results) + "\n"
 
 
+def claude_section(token: str, records: list[dict]) -> str:
+    """The Claude numbers over the whole Claude ledger (it keeps 7 days):
+    claude_health.claude_report. Numbers and question ids only."""
+    import claude_health
+
+    ledger = claude_health.load_claude_ledger(token)
+    if ledger is None:
+        return "\n**Claude (ledger, last 7 days):** the Claude ledger could not be read.\n"
+    lines = claude_health.claude_report(ledger, None, claude_health.kinds_by_key(records))
+    return "\n**Claude (ledger, last 7 days):**\n\n" + "\n".join(lines) + "\n"
+
+
 def main() -> None:
     from bot_helpers import silence_noisy_dependencies
 
@@ -421,6 +433,7 @@ def main() -> None:
         f"**Shadow forecaster answer rate (never submitted):**\n\n{shadow_answer_rate(every)}\n"
     )
     report += lab_section(token)
+    report += claude_section(token, every)
     print(report)
     summary = os.getenv("GITHUB_STEP_SUMMARY")
     if summary:

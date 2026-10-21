@@ -15,6 +15,13 @@ busy days), if AskNews still returns 402, if any tournament run in the last
 24 hours could not save a question's JSON log or the quota ledger, or if main's
 last commit is older than 21 days (standing rule: a notes PR at least every
 21 days, so GitHub never pauses the workflows).
+Claude (frontier lineup, claude_health.py; architect, 21 Oct): red on a
+credit error this cycle or a Claude ledger that can't be read; warns if a
+live run in the last 24 hours was not in Claude mode "full", the agent was
+switched off by an overrun, over 20% of Claude calls failed, or no live
+question got a Claude forecast while questions were forecast. The report
+ends with the day's Claude numbers ($ per question, agent searches / fetches,
+dear agent calls, ledger total = sum of calls).
 
     poetry run python health_check.py [--simulate-miss] [--cron "0 6 * * *"]
 """
@@ -39,6 +46,7 @@ from bot_config import (  # noqa: E402
     GEMINI_LEDGER_PATH,
     GEMINI_QUOTA_BUCKETS,
 )
+import claude_health  # noqa: E402
 from gemini_budget import GitHubFileStore, quota_day  # noqa: E402
 from question_log import DATA_REPO, LOG_FAILURE_ANNOTATION  # noqa: E402
 
@@ -57,6 +65,7 @@ class Report:
     red: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     ok: list[str] = field(default_factory=list)
+    info: list[str] = field(default_factory=list)  # the day's Claude numbers (not checks)
 
 
 def is_uk_7am_trigger(cron: str, now: datetime) -> bool:
@@ -190,16 +199,86 @@ def last_successful_tournament_run() -> datetime | None:
     return latest_success(filtered, recent)
 
 
+_RUNS: dict[str, list[dict]] = {}
+_JOBS: dict[int, list[dict]] = {}
+
+
+def recent_runs(since: datetime) -> list[dict]:
+    """Tournament runs created since `since`, every page (a day has ~144);
+    kept for the run, so the log-failure and Claude checks share one listing."""
+    key = f"{since:%Y-%m-%dT%H:%M:%SZ}"
+    if key not in _RUNS:
+        runs: list[dict] = []
+        for page in range(1, 6):
+            found = _github(
+                f"actions/workflows/{TOURNAMENT_WORKFLOW}/runs?per_page=100&page={page}&created=>={key}"
+            )["workflow_runs"]
+            runs += found
+            if len(found) < 100:
+                break
+        _RUNS[key] = runs
+    return _RUNS[key]
+
+
+def run_jobs(run_id: int) -> list[dict]:
+    if run_id not in _JOBS:
+        _JOBS[run_id] = _github(f"actions/runs/{run_id}/jobs")["jobs"]
+    return _JOBS[run_id]
+
+
 def recent_annotation_titles(since: datetime) -> list[str]:
     titles = []
-    runs = _github(
-        f"actions/workflows/{TOURNAMENT_WORKFLOW}/runs?per_page=100&created=>={since:%Y-%m-%dT%H:%M:%SZ}"
-    )["workflow_runs"]
-    for run in runs:
-        for job in _github(f"actions/runs/{run['id']}/jobs")["jobs"]:
+    for run in recent_runs(since):
+        for job in run_jobs(run["id"]):
             for annotation in _github(f"check-runs/{job['id']}/annotations"):
                 titles.append(annotation.get("title") or "")
     return titles
+
+
+def job_log(job_id: int) -> str:
+    """One job's plain-text log (GitHub answers with a redirect to it)."""
+    response = requests.get(
+        f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/jobs/{job_id}/logs",
+        headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"},
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def frontier_runs(since: datetime) -> list[dict]:
+    """Completed live runs since `since` that printed the frontier line, as
+    {"mode", "reason", "overruns"} (nothing else is read from the logs)."""
+    found = []
+    for run in recent_runs(since):
+        if run.get("status") != "completed":
+            continue
+        for job in run_jobs(run["id"]):
+            parsed = claude_health.run_from_log(job_log(job["id"]))
+            if parsed is not None:
+                found.append(parsed)
+                break
+    return found
+
+
+def check_claude(now: datetime, report: Report) -> None:
+    """The Claude checks and the day's Claude numbers (claude_health.py)."""
+    from bot_config import CLAUDE_CYCLE_RESET_DATE
+    from frontier import reset_date
+
+    token = os.environ["DATA_REPO_TOKEN"]
+    ledger = claude_health.load_claude_ledger(token)
+    if not claude_health.check_claude_ledger(ledger, now.date(), reset_date(CLAUDE_CYCLE_RESET_DATE), report):
+        return
+    assert ledger is not None
+    days = claude_health.window_days(now)
+    runs = frontier_runs(now - timedelta(hours=24))
+    records = claude_health.recent_question_logs(token, now - timedelta(hours=24))
+    claude_health.check_claude_modes(runs, report)
+    claude_health.check_agent_overrun(ledger, runs, days, report)
+    claude_health.check_claude_failures(ledger, days, report)
+    claude_health.check_claude_forecasts(records, len(runs), report)
+    report.info += claude_health.claude_report(ledger, days, claude_health.kinds_by_key(records))
 
 
 def workflows() -> list[dict]:
@@ -343,6 +422,7 @@ def run(simulate_miss: bool) -> Report:
         ("log failures", lambda: check_log_failures(recent_annotation_titles(now - timedelta(hours=24)), report)),
         ("workflow states", lambda: check_workflow_states(workflows(), report)),
         ("main activity", lambda: check_main_activity(main_last_commit(), now, report)),
+        ("Claude", lambda: check_claude(now, report)),
     ]
     for name, check in checks:
         try:
@@ -360,6 +440,8 @@ def publish(report: Report) -> None:
     lines += [f"- ❌ {p}" for p in report.red]
     lines += [f"- ⚠️ {w}" for w in report.warnings]
     lines += [f"- ✅ {o}" for o in report.ok]
+    if report.info:
+        lines += ["", "### Claude, last 24 hours (ledger: UTC today and yesterday)", "", *report.info]
     text = "\n".join(lines)
     print(text)
     summary = os.getenv("GITHUB_STEP_SUMMARY")
