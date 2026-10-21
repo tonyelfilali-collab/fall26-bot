@@ -40,6 +40,9 @@ P. A question already near its cap: the agent is refused; seasonal plain Opus
    (or Haiku) within $1.50; MiniBench with no Claude room: today's setup.
 Q. The Claude day at $14.00: no seasonal agent ($2.28 would pass $15): plain
    Opus; MiniBench no Claude (the day is over its $9 limit).
+T. Free Flash quota at 0 with Claude on: the 2 Flash slots are paid Flash
+   (within $0.10 a question). T2: a paid day at $0.98: the $1.00 cap refuses
+   them. T3: at $0.48: seasonal paid, MiniBench refused (under $0.50 only).
 S. Two seasonal agents (FRONTIER_SEASONAL_AGENTS = 2, set for the phase only):
    seasonal = agent + agent2 + Flash x2 (caps 8/3 and 4/2), MiniBench as K;
    question cap $4.70, Claude day cap $20.
@@ -110,8 +113,10 @@ def _budget(spent: float = 0.0, day: float = 0.0, store: Any = None) -> ClaudeBu
 
 def run_phase(seasonal: list, minibench: list, claude: ClaudeBudget, key_left: float = 5.0,
               fail: dict | None = None, slow: dict | None = None, gpt: bool = False,
-              question_log: Any = None) -> tuple[list[dict], FrontierPlanner, list[str]]:
-    """One live-like run; returns (question records, planner, real model of each recorded call)."""
+              question_log: Any = None, free_used_up: bool = False,
+              openrouter_day: float = 0.0) -> tuple[list[dict], FrontierPlanner, list[str]]:
+    """One live-like run; returns (question records, planner, real model of each recorded call).
+    free_used_up: every free Flash model's quota at 0; openrouter_day: paid spend already today."""
     fail, slow, calls = fail or {}, slow or {}, []
     original = _RecordedAnswer._mockable_direct_call_to_model
 
@@ -126,8 +131,11 @@ def run_phase(seasonal: list, minibench: list, claude: ClaudeBudget, key_left: f
 
     _RecordedAnswer._mockable_direct_call_to_model = recorded
     try:
-        spend = SpendGuard(MemoryStore({"days": {}}))
+        spend = SpendGuard(MemoryStore({"days": {utc_day(): openrouter_day} if openrouter_day else {}}))
         planner = frontier._frontier_pool(MemoryStore(), spend, claude, llm_class=ReplayChainLlm)
+        if free_used_up:
+            for model in bot_config.GEMINI_FORECAST_MODELS:
+                planner.ledger.mark_used_up(model)
         planner.claude_llm_class = planner.gpt_llm_class = ReplayChainLlm
         planner.model_prefix = "replay/"
         planner.gpt_enabled = gpt
@@ -349,6 +357,9 @@ def run() -> dict:
 
         phase("G", 97000, ClaudeBudget(Unreadable(), BUDGET, RESET))
         phase("H", 98000, _budget(), key_left=1.50, gpt=True)
+        phase("T", 79000, _budget(), free_used_up=True)
+        phase("T2", 78000, _budget(), free_used_up=True, openrouter_day=0.98)
+        phase("T3", 77000, _budget(), free_used_up=True, openrouter_day=0.48)
         main.PLANNED_WAIT_SECONDS = 3
         phase("I", 99000, _budget(), slow={OPUS_55: 6.0})
         main.PLANNED_WAIT_SECONDS = wait
@@ -490,6 +501,15 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          and all(i["claude_spent"] >= two_reserve - 1e-9 and i["claude_spent"] <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
                  for i in infos("S2", True))
          and s2_day <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
+        ("T: free Flash quota at 0 with Claude on -> 2 paid Flash per question (seasonal and MiniBench), within $0.10 a question",
+         all(i["submitted"] and i["claude"] >= 1 and i["paid_flash"] == 2 for i in infos("T"))
+         and all(i["openrouter_spent"] <= bot_config.PAID_FLASH_QUESTION_CAP + 1e-9 for i in infos("T"))
+         and out["T"]["planner"].spend.day_spent() <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
+        ("T2: same, paid day at $0.98 -> the $1.00 day cap refuses paid Flash; Claude still forecasts every question",
+         all(i["submitted"] and i["claude"] >= 1 and i["paid_flash"] == 0 for i in infos("T2"))
+         and out["T2"]["planner"].spend.day_spent() <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
+        ("T3: same, paid day at $0.48 -> seasonal gets paid Flash; MiniBench refused (paid only under $0.50)",
+         all(i["paid_flash"] >= 1 for i in infos("T3", True)) and all(i["submitted"] and i["paid_flash"] == 0 for i in infos("T3", False))),
         ("Agent phases: 0 real calls (every Anthropic request went to the recorded client)",
          all(out[p]["fake"].agent_requests or out[p]["fake"].plain_requests for p in ("K", "L", "M", "N", "N2", "O", "P", "Q", "S", "S2"))),
     ]
@@ -572,7 +592,8 @@ def report() -> tuple[bool, str]:
               "L2": "L2. Agent and plain Opus too slow", "M": "M. Agent tool failures", "N": "N. Agent near its tool caps",
               "N2": "N2. Agent tool caps used at a pause", "O": "O. Agent credit error", "P": "P. Question near its cap",
               "Q": "Q. Claude day at $14.00", "R": "R. MiniBench burst of 40 from a $8 Claude day",
-              "S": "S. Two seasonal agents (test switch)", "S2": "S2. Two seasonal agents both past their cap"}
+              "S": "S. Two seasonal agents (test switch)", "T": "T. Free Flash quota at 0: paid Flash planned",
+              "T2": "T2. Free Flash at 0, paid day at $0.98", "T3": "T3. Free Flash at 0, paid day at $0.48", "S2": "S2. Two seasonal agents both past their cap"}
     for phase, title in titles.items():
         lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]
