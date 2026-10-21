@@ -24,7 +24,7 @@ R. A burst of 40 MiniBench questions on a Claude day at $8: MiniBench stops
    run still gets both Opus slots; the day stays under $15.
 
 The agent (PR 4; the real agent code, the Anthropic client swapped for
-recorded replies with tool results; FRONTIER_AGENT_ENABLED stays off):
+recorded replies with tool results; FRONTIER_AGENT_ENABLED is pinned off for A-J):
 K. Full agent path: seasonal = agent + Opus 5.5 + Flash x2, MiniBench = agent +
    Flash x2; pause_turn continued; searches / fetches / URLs in the private log;
    Claude <= $3.00 / $1.25 per question.
@@ -182,7 +182,7 @@ SEASONAL_TYPES = ("binary", "numeric", "multiple_choice", "discrete")
 # ---------------------------------------------------------------- the agent (PR 4)
 # The REAL agent and Claude call code (frontier.AgentLlm, frontier.ClaudeLlm)
 # with the Anthropic SDK client swapped for recorded replies (tool results
-# included): 0 calls. FRONTIER_AGENT_ENABLED stays off; the planner's switch is
+# included): 0 calls. FRONTIER_AGENT_ENABLED is pinned off; the planner's switch is
 # set for these phases only.
 
 AGENT_URL = "https://example.org/rehearsal-source"
@@ -461,7 +461,13 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
 
 
 def report() -> tuple[bool, str]:
-    out = run()
+    # A-J check the plain lineup: the live agent switch is pinned off here;
+    # the agent phases set the planner's switch themselves.
+    agent_switch, bot_config.FRONTIER_AGENT_ENABLED = bot_config.FRONTIER_AGENT_ENABLED, False
+    try:
+        out = run()
+    finally:
+        bot_config.FRONTIER_AGENT_ENABLED = agent_switch
 
     def infos(phase: str, seasonal: bool | None = None) -> list[dict]:
         return [i for i in out[phase]["infos"] if seasonal is None or bool(i["seasonal"]) == seasonal]

@@ -26,7 +26,7 @@ in price):
 - Step-down (claude_mode, once per run): under 25% of the cycle budget left ->
   seasonal Opus x1; under 10% -> seasonal Opus x1, no Claude on MiniBench; a
   credit error, an unreadable ledger or no reset date -> no Claude: today's setup.
-- Agent (PR 4, behind bot_config.FRONTIER_AGENT_ENABLED, OFF): in full mode one
+- Agent (PR 4, behind bot_config.FRONTIER_AGENT_ENABLED, ON): in full mode one
   Opus slot becomes an agent (Opus 5.5 with Anthropic's web_search + web_fetch
   server tools, same prompt and answer format, the dossier as its start).
   Caps: 8 searches / 3 fetches seasonal, 3 / 2 MiniBench, 3,000 tokens a page,
