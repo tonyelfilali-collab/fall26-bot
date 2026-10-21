@@ -9,7 +9,8 @@ Scoreboard: scores every resolved tournament question logged in fall26-data.
   Higher (closer to 0) is better. These are raw log scores, not Metaculus
   peer scores.
 - Shadow variants (every type, PLAN.md Step 10, shadow.py): the same score on
-  the same questions, and the mean difference from live, per type.
+  the same questions, and the mean difference from live, per type (e.g.
+  numeric "window" and "window-blend", one row each).
 Counts per type are shown. The report goes to fall26-data (scoreboard/) and
 the job page. Weekly workflow "Scoreboard" plus a manual button.
 """
