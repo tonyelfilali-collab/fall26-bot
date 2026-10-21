@@ -31,7 +31,7 @@ in price):
   server tools, same prompt and answer format, the dossier as its start).
   Caps: 8 searches / 3 fetches seasonal, 3 / 2 MiniBench, 3,000 tokens a page,
   7 minutes, then the plain Opus chain with the time left. Question caps
-  $3.00 / $1.25 while it runs; an overrun: agent off for the run + an alert.
+  $3.00 / $1.60 while it runs; an overrun: agent off for the run + an alert.
   Low and minimal modes: plain Opus only (the agent is the dear slot).
 """
 from __future__ import annotations
@@ -131,7 +131,7 @@ FALLBACK_MIN_SECONDS = 45  # under this, the fallback is not started
 AGENT_MAX_CONTINUATIONS = 3  # pause_turn continuations per agent turn
 AGENT_MIN_OUTPUT_TOKENS = 2000  # a continuation needs at least this much output left
 AGENT_SEASONAL_QUESTION_CAP = 3.00
-AGENT_MINIBENCH_QUESTION_CAP = 1.25
+AGENT_MINIBENCH_QUESTION_CAP = 1.60
 
 
 @dataclass(frozen=True)
@@ -147,7 +147,8 @@ class AgentCaps:
 # call read 413k input tokens; the input ceilings are set from that):
 # seasonal $1.80 + $0.40 + $0.08 = $2.28, so agent + plain Opus ($0.36) + the
 # agent's Opus fallback ($0.36) = $3.00; MiniBench $0.60 + $0.24 + $0.03 =
-# $0.87, + its fallback = $1.23 (cap $1.25).
+# $0.87, + plain Opus ($0.36) + its fallback ($0.36) = $1.59 (cap $1.60;
+# architect, 21 Oct: MiniBench gets a plain Opus slot next to the agent).
 AGENT_CAPS = {
     True: AgentCaps(searches=8, fetches=3, output_tokens=20000, input_tokens=450000),
     False: AgentCaps(searches=3, fetches=2, output_tokens=12000, input_tokens=150000),
@@ -746,7 +747,8 @@ class FrontierPlanner(bot_config.GeminiPool):
             self.claude.set_cap(question, AGENT_SEASONAL_QUESTION_CAP if seasonal else AGENT_MINIBENCH_QUESTION_CAP)
             agent = self._claude_ok(AGENT)
             if agent:
-                slots[0] = AGENT
+                # Both kinds: agent + plain Opus 5.5 (+ Flash x2 below).
+                slots = [AGENT, OPUS_55]
             else:  # refused (e.g. the day cap): plain Opus slots and caps, as without the agent
                 self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
         # A slot whose model a cap refuses now is left out (its backups may still fit).

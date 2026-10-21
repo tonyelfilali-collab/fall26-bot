@@ -299,10 +299,10 @@ def test_worst_case_reservations_fit_the_raised_caps():
     plain = frontier.claude_reserve(OPUS_55)
     # Seasonal: agent + the plain Opus slot + the agent's Opus fallback.
     assert frontier.agent_reserve(True) + 2 * plain <= frontier.AGENT_SEASONAL_QUESTION_CAP + 1e-9
-    # MiniBench: agent + its Opus fallback.
-    assert frontier.agent_reserve(False) + plain <= frontier.AGENT_MINIBENCH_QUESTION_CAP + 1e-9
+    # MiniBench: agent + the plain Opus slot + the agent's Opus fallback.
+    assert frontier.agent_reserve(False) + 2 * plain <= frontier.AGENT_MINIBENCH_QUESTION_CAP + 1e-9
     assert frontier.agent_reserve(True) == pytest.approx(2.28) and frontier.agent_reserve(False) == pytest.approx(0.87)
-    assert frontier.AGENT_SEASONAL_QUESTION_CAP == 3.00 and frontier.AGENT_MINIBENCH_QUESTION_CAP == 1.25
+    assert frontier.AGENT_SEASONAL_QUESTION_CAP == 3.00 and frontier.AGENT_MINIBENCH_QUESTION_CAP == 1.60
     assert frontier.AGENT_FETCH_MAX_CONTENT_TOKENS == 3000
 
 
@@ -332,8 +332,8 @@ def test_plan_raises_the_caps_and_replaces_one_opus_slot():
     token = current_question_key.set("22")
     try:
         chains = planner.plan(False)
-        assert [c.model for c in chains][0] == AGENT and len(chains) == 3
-        assert planner.claude.caps["22"] == 1.25
+        assert [c.model for c in chains][:2] == [AGENT, OPUS_55] and len(chains) == 4
+        assert planner.claude.caps["22"] == 1.60
     finally:
         current_question_key.reset(token)
 

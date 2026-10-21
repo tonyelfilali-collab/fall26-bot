@@ -25,9 +25,9 @@ R. A burst of 40 MiniBench questions on a Claude day at $8: MiniBench stops
 
 The agent (PR 4; the real agent code, the Anthropic client swapped for
 recorded replies with tool results; FRONTIER_AGENT_ENABLED is pinned off for A-J):
-K. Full agent path: seasonal = agent + Opus 5.5 + Flash x2, MiniBench = agent +
-   Flash x2; pause_turn continued; searches / fetches / URLs in the private log;
-   Claude <= $3.00 / $1.25 per question.
+K. Full agent path: seasonal and MiniBench = agent + Opus 5.5 + Flash x2;
+   pause_turn continued; searches / fetches / URLs in the private log;
+   Claude <= $3.00 / $1.60 per question.
 L. Agent past its 7-minute cap (1:100 clock): cancelled, charged its worst
    case, the plain Opus fallback answers inside the planned wait; the 4
    seasonal agents' reservations ($9.12) keep MiniBench to today's setup.
@@ -379,7 +379,7 @@ def run() -> dict:
         agent_phase("O", 87000, _budget(store=store), RecordedAnthropic("credit"))
         out["O_next"] = frontier.claude_mode(ClaudeBudget(store, BUDGET, RESET))
         agent_phase("P", 88000, _budget(), RecordedAnthropic("full"),
-                    prespent=tuple((88000 + i, 1.00) for i in range(4)) + ((88009, 0.50),))
+                    prespent=tuple((88000 + i, 1.00) for i in range(4)) + ((88009, 0.80),))
         agent_phase("Q", 89000, _budget(day=14.00), RecordedAnthropic("full"))
         return out
     finally:
@@ -409,7 +409,8 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
     return [
         ("K: seasonal, every type = agent + Opus 5.5 + Flash x2 (4 forecasts)",
          len(k_s) == 4 and all(i["forecasts"] == 4 and i["agent"] == 1 and i["opus"] == 1 and i["flash"] == 2 for i in k_s)),
-        ("K: MiniBench = agent + Flash x2 (3 forecasts)", all(i["forecasts"] == 3 and i["agent"] == 1 and i["flash"] == 2 for i in k_m)),
+        ("K: MiniBench = agent + Opus 5.5 + Flash x2 (4 forecasts)",
+         all(i["forecasts"] == 4 and i["agent"] == 1 and i["opus"] == 1 and i["flash"] == 2 for i in k_m)),
         ("K: pause_turn continued with the paused content, no extra user message (2 requests per agent turn)",
          len(k_runs) == 5 and all(r["requests"] == 2 for r in k_runs) and len(continued) == 5
          and all(len(r["messages"]) == 2 for r in continued)),
@@ -444,14 +445,16 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          and all(r["searches"] <= (8 if r["reserve"] > 1 else 4) and r["fetches"] <= (5 if r["reserve"] > 1 else 3) for r in runs("N"))),
         ("N2: every search and fetch used at a pause -> not continued, plain Opus answers",
          all(r["outcome"] == "paused, not continued (tool caps)" and r["requests"] == 1 for r in runs("N2"))
-         and all(i["agent"] == 0 and i["opus"] == (2 if i["seasonal"] else 1) and i["submitted"] for i in infos("N2"))),
+         and all(i["agent"] == 0 and i["opus"] == 2 and i["submitted"] for i in infos("N2"))),
         (f"O: credit error on the agent: never retried, no fallback ({len(o_fake.agent_requests)} agent + {o_fake.plain_requests} plain request(s))",
          len(o_fake.agent_requests) + o_fake.plain_requests <= 2 and all(i["submitted"] for i in infos("O"))
          and not any(c["model"] in (OPUS_5, HAIKU) for e in out["O"]["planner"].claude.questions.values() for c in e.get("calls", []))),
         (f"O: the next run: {out['O_next'][0]} ({out['O_next'][1]})", out["O_next"][0] == "off"),
         ("P: question near its cap -> no agent; seasonal plain Opus / Haiku within $1.50; MiniBench today's setup; all forecast",
-         all(i["agent"] == 0 and i["submitted"] and i["claude_spent"] <= (frontier.CLAUDE_SEASONAL_QUESTION_CAP if i["seasonal"]
-             else frontier.CLAUDE_MINIBENCH_QUESTION_CAP) + 1e-9 for i in infos("P")) and all(i["claude"] >= 1 for i in infos("P", True))),
+         all(i["agent"] == 0 and i["submitted"] for i in infos("P"))
+         and all(i["claude"] >= 1 and i["claude_spent"] <= frontier.CLAUDE_SEASONAL_QUESTION_CAP + 1e-9 for i in infos("P", True))
+         # MiniBench at $0.80: the agent's $0.87 passes $1.60 and plain Opus's $0.60 cap is already passed.
+         and all(i["claude"] == 0 for i in infos("P", False))),
         (f"Q: Claude day at $14.00 -> no seasonal agent ($2.28 would pass $15), plain Opus; MiniBench no Claude (over $9); ${q_day:.2f} <= $15.00",
          all(i["agent"] == 0 and i["opus"] >= 1 and i["submitted"] for i in infos("Q", True))
          and all(i["claude"] == 0 and i["submitted"] for i in infos("Q", False))
