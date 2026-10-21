@@ -75,7 +75,11 @@ GPT_TIMEOUT_SECONDS = 360
 CLAUDE_REQUESTS_PER_MINUTE = 50
 
 CLAUDE_SPEND_PATH = "status/claude_spend.json"
-CLAUDE_DAILY_CAP = 12.00
+CLAUDE_DAILY_CAP = 15.00
+# MiniBench (or an unknown tournament) may use Claude only while the UTC day's
+# Claude spend, running reservations included, stays under this: at least
+# $6 a day is always left for seasonal questions (architect, 21 Oct).
+CLAUDE_MINIBENCH_DAY_LIMIT = 9.00
 CLAUDE_SEASONAL_QUESTION_CAP = 1.50
 CLAUDE_MINIBENCH_QUESTION_CAP = 0.60
 OPENROUTER_SEASONAL_QUESTION_CAP = 0.30
@@ -162,6 +166,7 @@ class ClaudeBudget(SpendGuard):
         self.cycles: dict[str, float] = {k: float(v) for k, v in (self.raw.get("cycles") or {}).items()}
         self.credit_errors: dict[str, str] = dict(self.raw.get("credit_errors") or {})  # cycle -> day
         self.daily_cap = CLAUDE_DAILY_CAP
+        self.minibench_daily_cap = CLAUDE_MINIBENCH_DAY_LIMIT
         self.estimates = {m: claude_reserve(m) for m in CLAUDE_PRICES}
 
     def estimate(self, model: str) -> float:

@@ -1040,6 +1040,8 @@ class FallBot2026(ForecastBot):
         # Gemini calls count per question too (a cap per model per day).
         current_question_key.set(str(question.id_of_post))
         seasonal = self.seasonal_by_post.get(question.id_of_post)
+        if seasonal is None and self.seasonal_by_post:
+            seasonal = False  # not in this run's queue: an unknown tournament = MiniBench (fail closed)
         if seasonal is not None:
             _question_seasonal.set(seasonal)
         # Paid-Flash fallback: MiniBench has the lower daily paid cap.

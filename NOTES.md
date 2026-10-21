@@ -9,7 +9,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 |---|---|---|---|---|
 | `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
 | Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the PR 2 caps; OpenRouter paid: GPT-5.6 Sol (seasonal only) + Gemini 3.6 Flash (as now) | OpenRouter daily stop rule $2.00; spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
-| `FRONTIER_ENABLED` | `bot_config.py` (PR 2) | OFF (built; switch = PR 3) | `frontier.py`: seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus 5.5 + Flash x2 (GPT behind `FRONTIER_GPT_ENABLED`, OFF); `CLAUDE_BUDGET_PER_CYCLE` 170 + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $12/UTC day, $1.50 seasonal / $0.60 MiniBench per question; step-downs at 25% / 10% left | PR 2 |
+| `FRONTIER_ENABLED` | `bot_config.py` (PR 2) | OFF (built; switch = PR 3) | `frontier.py`: seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus 5.5 + Flash x2 (GPT behind `FRONTIER_GPT_ENABLED`, OFF); `CLAUDE_BUDGET_PER_CYCLE` 170 + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $15/UTC day (MiniBench Claude only while the day is under $9), $1.50 seasonal / $0.60 MiniBench per question; step-downs at 25% / 10% left | PR 2 |
 | `ACTIVE_LINEUP` | `bot_config.py` | `gemini-free` | Free Google AI Studio key: 4 Flash forecasters, Flash-Lite for research/parsing | #8, #9 |
 | Credits lineup | `bot_config.py` (`credits`) | OFF all season: no credits (Metaculus, 5 Oct) | Opus 5.5 / GPT-5.6 Sol / Gemini 3.6 Flash tiers; Flash slot tries the free key first; switch-on checklist PLAN.md 6b | #23, #74, #79 |
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
@@ -542,7 +542,9 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   per question and per billing cycle (`CLAUDE_BUDGET_PER_CYCLE` 170 from `CLAUDE_CYCLE_RESET_DATE`
   2026-11-18: credits are monthly; this cycle 18 Oct - 17 Nov 23:59 UTC).
   Each call reserves its worst case (10k in, 16k out: Opus 5.5 $0.36, Opus 5 $0.45, Haiku 5.5 $0.009), so
-  $12/day, $1.50 seasonal and $0.60 MiniBench are never passed. Charged: the real cost from token
+  $15/day, $1.50 seasonal and $0.60 MiniBench are never passed. MiniBench (or an unknown tournament)
+  uses Claude only while the day's Claude spend, running reservations included, is under $9, so at
+  least $6 a day is left for seasonal (architect, 21 Oct). Charged: the real cost from token
   usage; $0 for HTTP 400-429 and 5xx/529; the worst case for a timeout or a cut connection.
 - **Step-downs** (once per run): under 25% of the cycle left -> seasonal Opus x1 (MiniBench Opus x1);
   under 10% -> seasonal Opus x1, MiniBench no Claude; a credit error ("credit balance is too

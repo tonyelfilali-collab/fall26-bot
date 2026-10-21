@@ -12,7 +12,7 @@ import frontier
 from frontier import GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget
 from gemini_budget import MemoryStore, current_question_key
 from llm_throttle import NoAnswer
-from spend import SpendGuard, utc_day
+from spend import SpendGuard, question_seasonal, utc_day
 
 RESET = date(2026, 10, 14)
 
@@ -118,17 +118,41 @@ def test_worst_case_reservations_fit_the_question_caps():
 
 def test_claude_caps_refuse_before_passing():
     claude = _budget()
-    claude.days[utc_day()] = 11.70
-    token = current_question_key.set("9")
+    claude.days[utc_day()] = 14.70
+    token, seasonal = current_question_key.set("9"), question_seasonal.set(True)
     try:
-        assert claude.refusal(OPUS_55) == "daily cap"  # $0.36 worst case would pass $12
+        assert claude.refusal(OPUS_55) == "daily cap"  # $0.36 worst case would pass $15
         assert claude.refusal(HAIKU) is None
         claude.days[utc_day()] = 0.0
         claude.set_cap("9", 0.60)
         claude.questions["9"] = {"spent": 0.30}
         assert claude.refusal(OPUS_55) == "cap"
     finally:
-        current_question_key.reset(token)
+        current_question_key.reset(token), question_seasonal.reset(seasonal)
+
+
+@pytest.mark.parametrize("flag", [False, None])  # MiniBench, or an unknown tournament (fail closed)
+def test_a_minibench_burst_leaves_seasonal_its_claude(flag):
+    claude = _budget()
+    for q in range(40):
+        tokens = current_question_key.set(f"m{q}"), question_seasonal.set(flag)
+        try:
+            while claude.refusal(OPUS_55) is None:
+                claude.start(OPUS_55)
+                assert claude.day_spent() + sum(claude.in_flight.values()) <= frontier.CLAUDE_MINIBENCH_DAY_LIMIT + 1e-9
+                claude.finish(OPUS_55, True, cost=frontier.claude_reserve(OPUS_55))
+            assert claude.refusal(OPUS_55) == "daily cap"
+        finally:
+            current_question_key.reset(tokens[0]), question_seasonal.reset(tokens[1])
+    assert frontier.CLAUDE_MINIBENCH_DAY_LIMIT - 0.36 < claude.day_spent() <= frontier.CLAUDE_MINIBENCH_DAY_LIMIT + 1e-9
+    tokens = current_question_key.set("s1"), question_seasonal.set(True)
+    try:
+        for _ in range(2):  # the seasonal question's two Opus slots, both running at once
+            assert claude.refusal(OPUS_55) is None
+            claude.start(OPUS_55)
+    finally:
+        current_question_key.reset(tokens[0]), question_seasonal.reset(tokens[1])
+    assert frontier.CLAUDE_DAILY_CAP - frontier.CLAUDE_MINIBENCH_DAY_LIMIT >= 6.0
 
 
 # ---------------------------------------------------------------- the Claude call
