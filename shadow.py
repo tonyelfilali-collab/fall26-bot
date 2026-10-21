@@ -18,7 +18,7 @@ Zero-cost variants (no model call, computed from the forecasts already made):
 - Numeric / discrete with a window baseline (window_baseline.py, shadow
   "window"): "window-blend" = 0.5 x the live CDF + 0.5 x the window CDF,
   pointwise on the question's grid (21 Oct). No baseline: no blend.
-- "referee" (binary, built OFF: REFEREE_ENABLED): only when 2+ forecasts
+- "referee" (binary, ON since 22 Oct: REFEREE_ENABLED): only when 2+ forecasts
   finished and they are more than 15 points apart. At the end of the run
   (after the question's log is saved; none at or after minute 45, each call
   at most min(240 s, the time left until minute 47)), Claude Opus 5.5 (effort
@@ -50,7 +50,7 @@ WINDOW_BLEND = "window-blend"
 WINDOW_BLEND_WEIGHT = 0.5  # share of the window baseline in the blend
 TRIM_FROM = 5  # trimmed mean drops the highest and lowest from this many forecasts
 _ODDS_CLAMP = 1e-3
-REFEREE_ENABLED = False
+REFEREE_ENABLED = True  # switched on (Tony's pre-approval, 22 Oct; a shadow, never submitted)
 REFEREE_MIN_FORECASTS = 2
 REFEREE_MIN_SPREAD = 0.15  # max - min must be over this (15 percentage points)
 REFEREE_TIMEOUT_SECONDS = 240  # then cancelled (charged as any Claude timeout)

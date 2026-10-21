@@ -20,8 +20,8 @@ def test_worked_example_zero_cost_shadows():
     assert shadow.zero_cost_shadows([]) == {}
 
 
-def test_referee_is_off_until_credits():
-    assert shadow.REFEREE_ENABLED is False
+def test_referee_switched_off_is_never_called(monkeypatch):
+    monkeypatch.setattr(shadow, "REFEREE_ENABLED", False)
 
     async def never(prompt):
         raise AssertionError("the referee must not be called while off")
