@@ -1208,13 +1208,13 @@ class FallBot2026(ForecastBot):
             return
         try:
             blend = window_blend(prediction, window, question)
+            if blend is None:
+                logger.info(f"Question {question.id_of_post}: window blend: none, broke the platform rules")
+                return
+            record["shadow"][WINDOW_BLEND] = to_jsonable(blend)
         except Exception as e:
             logger.warning(f"Question {question.id_of_post}: window blend shadow failed ({type(e).__name__})")
             return
-        if blend is None:
-            logger.info(f"Question {question.id_of_post}: window blend: none, broke the platform rules")
-            return
-        record["shadow"][WINDOW_BLEND] = to_jsonable(blend)
         logger.info(f"Question {question.id_of_post}: window blend shadow saved")
 
     async def _attach_hard_data(self, question: MetaculusQuestion, record: dict, task) -> None:  # type: ignore[no-untyped-def]
