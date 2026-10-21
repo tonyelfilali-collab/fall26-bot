@@ -110,11 +110,13 @@ from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
 from shadow import (
     REFEREE_ENABLED,
+    WINDOW_BLEND,
     combine_with_shadow,
     multiple_choice_shadows,
     numeric_shadows,
     referee_shadow,
     two_line_reason,
+    window_blend,
     zero_cost_shadows,
 )
 from markets import match_question
@@ -1122,6 +1124,7 @@ class FallBot2026(ForecastBot):
             minutes=report.minutes_taken,
             list_price_cost=report.price_estimate,
         )
+        self._window_blend_shadow(question, record, report.prediction)
         # Saved at once: a job killed later still leaves this question's log.
         await self._save_record(question, record, started)
         self._shadow_later(question, record, started)
@@ -1195,6 +1198,24 @@ class FallBot2026(ForecastBot):
             f"Question {question.id_of_post}: sibling group of {len(found['group'])} "
             f"({found['kind']} ladder, {found['direction']}); {found['violations']} violation(s)"
         )
+
+    def _window_blend_shadow(self, question: MetaculusQuestion, record: dict, prediction) -> None:  # type: ignore[no-untyped-def]
+        """Zero-cost shadow 'window-blend' (21 Oct): 50/50 pointwise blend of
+        the live CDF and the window baseline's, only where a baseline exists.
+        Never submitted; any failure is only logged (status, no values)."""
+        window = (record.get("shadow") or {}).get("window")
+        if window is None or not isinstance(question, NumericQuestion):
+            return
+        try:
+            blend = window_blend(prediction, window, question)
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: window blend shadow failed ({type(e).__name__})")
+            return
+        if blend is None:
+            logger.info(f"Question {question.id_of_post}: window blend: none, broke the platform rules")
+            return
+        record["shadow"][WINDOW_BLEND] = to_jsonable(blend)
+        logger.info(f"Question {question.id_of_post}: window blend shadow saved")
 
     async def _attach_hard_data(self, question: MetaculusQuestion, record: dict, task) -> None:  # type: ignore[no-untyped-def]
         self.__dict__.get("_hard_data_tasks", {}).pop(id(question), None)
