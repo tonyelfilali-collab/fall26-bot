@@ -480,8 +480,12 @@ def test_frontier_report_adds_agent_numbers(monkeypatch):
 # ---------------------------------------------------------------- built OFF
 
 
-def test_agent_is_built_off():
-    assert bot_config.FRONTIER_AGENT_ENABLED is False
+def test_agent_is_switched_on_live():
+    assert bot_config.FRONTIER_AGENT_ENABLED is True
+
+
+def test_agent_switched_off_plans_plain_opus(monkeypatch):
+    monkeypatch.setattr(bot_config, "FRONTIER_AGENT_ENABLED", False)
     planner = frontier._frontier_pool(MemoryStore(), SpendGuard(MemoryStore({"days": {}})), _budget())
     line = planner.start_run(5.0, api_key=True)
     assert planner.agent_enabled is False and "agent" not in line

@@ -2296,7 +2296,7 @@ if __name__ == "__main__":
         "--frontier-agent",
         action="store_true",
         help="Test mode, frontier lineup only: switch the agent forecaster on for this test "
-        "(bot_config.FRONTIER_AGENT_ENABLED stays off)",
+        "(even when bot_config.FRONTIER_AGENT_ENABLED is off)",
     )
     parser.add_argument(
         "--frontier-path",

@@ -165,10 +165,10 @@ CLAUDE_CYCLE_RESET_DATE: str | None = "2026-11-18"
 # GPT-5.6 Sol in the frontier lineup (architect, 21 Oct: OFF; doubled in price,
 # GPT bots score badly on the Fall leaderboard).
 FRONTIER_GPT_ENABLED = False
-# The agent forecaster in the frontier lineup (architect, 21 Oct; PR 4, built
-# OFF): Opus 5.5 + Anthropic's web_search / web_fetch replaces one Opus slot.
-# Test Bot can force it on for one test (frontier lineup, frontier_agent).
-FRONTIER_AGENT_ENABLED = False
+# The agent forecaster in the frontier lineup (architect, 21 Oct; PR 4 #146,
+# switched on after its Test Bots 39664210635 + 39665680234): Opus 5.5 +
+# Anthropic's web_search / web_fetch replaces one Opus slot.
+FRONTIER_AGENT_ENABLED = True
 
 
 

@@ -224,6 +224,7 @@ def test_system_messages_go_to_the_system_field():
 def _planner(claude: ClaudeBudget, key_left: float = 5.0):
     spend = SpendGuard(MemoryStore({"days": {}}))
     planner = frontier._frontier_pool(MemoryStore(), spend, claude)
+    planner.agent_enabled = False  # these tests cover the plain lineup (the agent: test_frontier_agent.py)
     planner.start_run(key_left, api_key=True)
     return planner
 
