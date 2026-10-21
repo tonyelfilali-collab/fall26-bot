@@ -215,6 +215,15 @@ def standing_row(board: dict, me: dict) -> dict | None:
     return None
 
 
+def leaderboards(board):  # type: ignore[no-untyped-def]
+    """The API may answer one leaderboard, a list of leaderboards, or a list of entries."""
+    if not isinstance(board, list):
+        return [("", board)]
+    if board and all(isinstance(b, dict) and "entries" in b for b in board):
+        return [(f", {b.get('name') or b.get('score_type') or 'leaderboard'}", b) for b in board]
+    return [("", {"entries": [e for e in board if isinstance(e, dict)]})]
+
+
 def standing_line(label: str, board: dict | None, me: dict, status: int | None = None) -> str:
     if board is None:
         return f"- {label}: leaderboard not readable (HTTP {status})"
@@ -240,7 +249,8 @@ def standing_lines(tournaments: list[tuple[str, str | int]], get=requests.get) -
     for label, tid in tournaments:
         response = get(f"{API}/leaderboards/project/{tid}/", headers=_auth(), timeout=60)
         board = response.json() if response.status_code == 200 else None
-        lines.append(standing_line(f"{label} ({tid})", board, me, response.status_code))
+        for name, one in leaderboards(board):
+            lines.append(standing_line(f"{label} ({tid}){name}", one, me, response.status_code))
     return lines
 
 
