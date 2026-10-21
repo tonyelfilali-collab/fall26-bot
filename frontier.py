@@ -26,12 +26,21 @@ in price):
 - Step-down (claude_mode, once per run): under 25% of the cycle budget left ->
   seasonal Opus x1; under 10% -> seasonal Opus x1, no Claude on MiniBench; a
   credit error, an unreadable ledger or no reset date -> no Claude: today's setup.
+- Agent (PR 4, behind bot_config.FRONTIER_AGENT_ENABLED, OFF): in full mode one
+  Opus slot becomes an agent (Opus 5.5 with Anthropic's web_search + web_fetch
+  server tools, same prompt and answer format, the dossier as its start).
+  Caps: 8 searches / 5 fetches seasonal, 4 / 3 MiniBench, 7 minutes, then the
+  plain Opus chain with the time left. Question caps $2.00 / $1.00 while it runs.
+  Low and minimal modes: plain Opus only (the agent is the dear slot).
 """
 from __future__ import annotations
 
+import asyncio
 import calendar
+import contextvars
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
@@ -50,7 +59,7 @@ import ensemble
 from bot_helpers import PUBLIC_LOGGER_NAME
 from gemini_budget import current_question_key
 from llm_throttle import NoAnswer, RequestPacer, ThrottledLlm
-from spend import SpendGuard, http_status, utc_day
+from spend import SpendGuard, http_status, question_seasonal, utc_day
 
 logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 
@@ -104,10 +113,73 @@ MODE_SLOTS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 }
 CREDIT_ERROR_TEXT = "credit balance is too low"
 
+# ---- the agent (PR 4, OFF): Opus 5.5 + web_search / web_fetch (server tools).
+AGENT = "anthropic/claude-opus-5-5-agent"  # ledger name; the call is Opus 5.5
+AGENT_SEARCH_TOOL = "web_search_20260209"  # current versions for Opus 5.5 (dynamic filtering)
+AGENT_FETCH_TOOL = "web_fetch_20260209"
+AGENT_SEARCH_PRICE = 0.01  # dollars per search ($10 per 1,000)
+# Page text per fetch, in tokens (about 20 kB; PDFs are not cut by it).
+AGENT_FETCH_MAX_CONTENT_TOKENS = 5000
+AGENT_TIMEOUT_SECONDS = 420  # 7 minutes, then the plain Opus chain
+AGENT_FALLBACK_SECONDS = 120  # kept for the plain Opus fallback inside the planned wait
+AGENT_MIN_SECONDS = 60  # under this, no agent (the fallback runs at once)
+PARSE_MARGIN_SECONDS = 20  # a deadline-aware fallback ends this long before the wait
+FALLBACK_MIN_SECONDS = 45  # under this, the fallback is not started
+AGENT_MAX_CONTINUATIONS = 3  # pause_turn continuations per agent turn
+AGENT_MIN_OUTPUT_TOKENS = 2000  # a continuation needs at least this much output left
+AGENT_SEASONAL_QUESTION_CAP = 2.00
+AGENT_MINIBENCH_QUESTION_CAP = 1.00
+
+
+@dataclass(frozen=True)
+class AgentCaps:
+    searches: int
+    fetches: int
+    output_tokens: int  # all requests of the turn together (thinking included)
+    input_tokens: int  # ASSUMED ceiling, all server-side iterations together
+
+
+# Worst case = input x $4 + output x $20 per million + searches x $0.01:
+# seasonal $0.80 + $0.40 + $0.08 = $1.28, so agent + plain Opus ($0.36) + the
+# agent's Opus fallback ($0.36) = $2.00; MiniBench $0.36 + $0.24 + $0.04 =
+# $0.64, + its fallback = $1.00.
+AGENT_CAPS = {
+    True: AgentCaps(searches=8, fetches=5, output_tokens=20000, input_tokens=200000),
+    False: AgentCaps(searches=4, fetches=3, output_tokens=12000, input_tokens=90000),
+}
+AGENT_SYSTEM = (
+    "You are forecasting the question in the user message. The research assistant's report in it is "
+    "your starting point. You have web_search (at most {searches} searches) and web_fetch (at most "
+    "{fetches} pages) to check the key facts, find newer information and read the resolution source. "
+    "Then write your answer exactly as the user message asks, ending with the final answer in the format "
+    "it gives."
+)
+
+# Set per forecast by main.py: the loop-independent deadline (time.monotonic)
+# of the planned wait, and the agent runs of this forecast (private log).
+forecast_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("forecast_deadline", default=None)
+agent_log: contextvars.ContextVar[list | None] = contextvars.ContextVar("agent_log", default=None)
+
 
 def claude_reserve(model: str) -> float:
     prompt, completion = CLAUDE_PRICES[model.removeprefix("replay/")]
     return (CLAUDE_RESERVE_PROMPT_TOKENS * prompt + CLAUDE_MAX_TOKENS * completion) / 1_000_000
+
+
+def agent_reserve(seasonal: bool) -> float:
+    """The agent's worst case: its token and search caps at Opus 5.5 prices."""
+    caps, (prompt, completion) = AGENT_CAPS[seasonal], CLAUDE_PRICES[OPUS_55]
+    return (caps.input_tokens * prompt + caps.output_tokens * completion) / 1_000_000 + caps.searches * AGENT_SEARCH_PRICE
+
+
+def agent_seasonal() -> bool:
+    """The question in this task is seasonal; unknown -> seasonal (the larger reserve: fail closed)."""
+    return question_seasonal.get() is not False
+
+
+def seconds_left() -> float | None:
+    deadline = forecast_deadline.get()
+    return None if deadline is None else deadline - time.monotonic()
 
 
 def claude_cost(model: str, usage: Any) -> float:
@@ -174,10 +246,20 @@ class ClaudeBudget(SpendGuard):
         self.daily_cap = CLAUDE_DAILY_CAP
         self.minibench_daily_cap = CLAUDE_MINIBENCH_DAY_LIMIT
         self.estimates = {m: claude_reserve(m) for m in CLAUDE_PRICES}
+        self.agent_stats: dict[str, dict] = {}  # question -> searches, fetches of the agent call finishing
+        self.agent_off: str | None = None  # set: no agent for the rest of this run
 
     def estimate(self, model: str) -> float:
         name = model.removeprefix("replay/")
+        if name == AGENT:
+            return agent_reserve(agent_seasonal())
         return claude_reserve(name) if name in CLAUDE_PRICES else super().estimate(model)
+
+    def note_agent(self, question: str | None, stats: dict) -> None:
+        """The agent call that is about to finish: searches, fetches, pauses,
+        tokens, outcome, stop reason, tool error codes (numbers and labels only)."""
+        if question is not None:
+            self.agent_stats[question] = stats
 
     def cycle_spent(self) -> float:
         return self.cycles.get(self.cycle.isoformat(), 0.0) if self.cycle else 0.0
@@ -192,6 +274,10 @@ class ClaudeBudget(SpendGuard):
                timed_out: bool = False, **details: Any) -> None:
         before = self.day_spent()
         super().finish(model, succeeded, cost=cost, error=error, timed_out=timed_out, **details)
+        question = current_question_key.get()
+        stats = self.agent_stats.pop(question, None) if model.removeprefix("replay/") == AGENT else None
+        if stats and question in self.questions and self.questions[question].get("calls"):
+            self.questions[question]["calls"][-1].update(stats)
         if self.cycle is not None:
             key = self.cycle.isoformat()
             self.cycles[key] = self.cycles.get(key, 0.0) + (self.day_spent() - before)
@@ -258,9 +344,23 @@ class _ClaudeCall(GeneralLlm):
     the official Anthropic SDK (no SDK retries: the chain's backups handle
     failures), adaptive thinking (the models' default), effort high."""
 
+    # True on the agent's fallback chain only: the call gets the planned
+    # wait's time left (minus PARSE_MARGIN_SECONDS), not the full 6 minutes.
+    deadline_aware = False
+
+    def _request_timeout(self) -> float:
+        left = seconds_left() if self.deadline_aware else None
+        if left is None:
+            return CLAUDE_TIMEOUT_SECONDS
+        timeout = min(CLAUDE_TIMEOUT_SECONDS, left - PARSE_MARGIN_SECONDS)
+        if timeout < FALLBACK_MIN_SECONDS:
+            raise NoAnswer(f"{self.model}: no time left in the planned wait", cost=0.0)
+        return timeout
+
     async def _mockable_direct_call_to_model(self, prompt: Any) -> TextTokenCostResponse:
         import anthropic
 
+        timeout = self._request_timeout()
         system, messages = _messages(prompt)
         request: dict[str, Any] = dict(
             model=self.model.removeprefix("anthropic/"), max_tokens=CLAUDE_MAX_TOKENS,
@@ -268,7 +368,7 @@ class _ClaudeCall(GeneralLlm):
         )
         if system:
             request["system"] = system
-        async with anthropic.AsyncAnthropic(max_retries=0, timeout=CLAUDE_TIMEOUT_SECONDS) as client:
+        async with anthropic.AsyncAnthropic(max_retries=0, timeout=timeout) as client:
             response = await client.messages.create(**request)
         text = "".join(block.text for block in response.content if block.type == "text").strip()
         usage = response.usage
@@ -289,6 +389,236 @@ class ClaudeLlm(ThrottledLlm, _ClaudeCall):
     around one Anthropic SDK call."""
 
 
+# ---------------------------------------------------------------- the agent
+
+
+class AgentTimeout(NoAnswer):
+    """The agent ran past its time cap: cancelled, charged its worst case
+    (cost None: the reservation), and the plain Opus chain answers."""
+
+
+def _get(obj: Any, name: str, default: Any = None) -> Any:
+    return obj.get(name, default) if isinstance(obj, dict) else getattr(obj, name, default)
+
+
+@dataclass
+class AgentRun:
+    """One agent turn (all its requests): counts, URLs and cost. URLs and
+    tool error codes go to the private question log only, never stdout."""
+
+    seasonal: bool
+    requests: int = 0
+    searches: int = 0
+    fetches: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    last_input: int = 0
+    token_cost: float = 0.0
+    urls_read: list = field(default_factory=list)
+    urls_found: list = field(default_factory=list)
+    tool_errors: dict = field(default_factory=dict)
+    stop: str | None = None
+    outcome: str = "running"
+    worst_case: bool = False  # charged the reservation (timed out / cut connection)
+    seconds: float = 0.0
+    texts: list = field(default_factory=list)
+
+    @property
+    def caps(self) -> AgentCaps:
+        return AGENT_CAPS[self.seasonal]
+
+    @property
+    def cost(self) -> float:
+        return self.token_cost + self.searches * AGENT_SEARCH_PRICE
+
+    def add(self, response: Any) -> None:
+        usage = response.usage
+        self.requests += 1
+        self.token_cost += claude_cost(OPUS_55, usage)
+        tokens_in = sum(_get(usage, k, 0) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        self.input_tokens += tokens_in
+        self.last_input = tokens_in
+        self.output_tokens += _get(usage, "output_tokens", 0) or 0
+        searches = fetches = 0
+        for block in response.content or []:
+            kind = _get(block, "type")
+            if kind == "text":
+                self.texts.append(_get(block, "text", "") or "")
+            elif kind == "web_search_tool_result":
+                content = _get(block, "content")
+                if isinstance(content, list):
+                    searches += 1
+                    for hit in content:
+                        url = _get(hit, "url")
+                        if url and url not in self.urls_found and len(self.urls_found) < 40:
+                            self.urls_found.append(url)
+                else:
+                    self._error("web_search", content)
+            elif kind == "web_fetch_tool_result":
+                content = _get(block, "content")
+                if _get(content, "type") == "web_fetch_result":
+                    fetches += 1
+                    url = _get(content, "url")
+                    if url and url not in self.urls_read:
+                        self.urls_read.append(url)
+                else:
+                    self._error("web_fetch", content)
+        # The billed counts come from the API (usage.server_tool_use); the result blocks if it has none.
+        server = _get(usage, "server_tool_use")
+        self.searches += (_get(server, "web_search_requests", 0) or 0) if server is not None else searches
+        self.fetches += (_get(server, "web_fetch_requests", 0) or 0) if server is not None else fetches
+        self.stop = _get(response, "stop_reason")
+
+    def _error(self, tool: str, content: Any) -> None:
+        key = f"{tool}:{str(_get(content, 'error_code', 'unknown'))[:40]}"
+        self.tool_errors[key] = self.tool_errors.get(key, 0) + 1
+
+    def output_left(self) -> int:
+        return self.caps.output_tokens - self.output_tokens
+
+    def can_continue(self) -> str | None:
+        """Why the next pause_turn continuation may NOT run (None: it may)."""
+        caps = self.caps
+        if self.requests > AGENT_MAX_CONTINUATIONS:
+            return "continuations"
+        if self.searches >= caps.searches or self.fetches >= caps.fetches:
+            return "tool caps"  # never a max_uses of 0 (a continuation keeps the same tools)
+        if self.output_left() < AGENT_MIN_OUTPUT_TOKENS:
+            return "output cap"
+        prompt, completion = CLAUDE_PRICES[OPUS_55]
+        # The next request re-reads at least the last one's context; with the
+        # rest of the searches it must still fit the reservation.
+        context = self.last_input + self.output_tokens
+        nxt = (context * prompt + min(CLAUDE_MAX_TOKENS, self.output_left()) * completion) / 1_000_000
+        if self.input_tokens + context > caps.input_tokens \
+                or self.cost + nxt + (caps.searches - self.searches) * AGENT_SEARCH_PRICE > agent_reserve(self.seasonal) + 1e-9:
+            return "reservation"
+        return None
+
+    def log_entry(self) -> dict:
+        """For the private question log (fall26-data): never printed."""
+        reserve = agent_reserve(self.seasonal)
+        return {
+            "model": AGENT, "outcome": self.outcome, "stop_reason": self.stop, "requests": self.requests,
+            "searches": self.searches, "fetches": self.fetches, "urls_read": list(self.urls_read),
+            "urls_found": list(self.urls_found), "tool_errors": dict(self.tool_errors),
+            "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
+            "seconds": round(self.seconds, 1), "cost": round(reserve if self.worst_case else self.cost, 6),
+            "usage_cost": round(self.cost, 6), "reserve": round(reserve, 6),
+        }
+
+
+def agent_tools(searches: int, fetches: int) -> list[dict]:
+    return [
+        {"type": AGENT_SEARCH_TOOL, "name": "web_search", "max_uses": searches},
+        {"type": AGENT_FETCH_TOOL, "name": "web_fetch", "max_uses": fetches,
+         "max_content_tokens": AGENT_FETCH_MAX_CONTENT_TOKENS},
+    ]
+
+
+class _AgentCall(GeneralLlm):
+    """The agent at the bottom of its ThrottledLlm: Opus 5.5 (effort high) with
+    web_search + web_fetch and the same prompt as a plain Opus slot (question,
+    criteria, fine print, dates, the research dossier and the answer format).
+    pause_turn: the paused content goes back as-is (same tools, max_uses =
+    what is left), at most AGENT_MAX_CONTINUATIONS times. A 7-minute cap (less
+    if the planned wait has less left, keeping AGENT_FALLBACK_SECONDS for the
+    fallback) cancels it. Any failure: the plain Opus chain (its backup)."""
+
+    def _time_cap(self) -> float:
+        left = seconds_left()
+        cap = AGENT_TIMEOUT_SECONDS if left is None else min(AGENT_TIMEOUT_SECONDS, left - AGENT_FALLBACK_SECONDS)
+        if cap < AGENT_MIN_SECONDS:
+            raise NoAnswer(f"{self.model}: not enough time for the agent", cost=0.0)
+        return cap
+
+    async def _mockable_direct_call_to_model(self, prompt: Any) -> TextTokenCostResponse:
+        run = AgentRun(seasonal=agent_seasonal())
+        cap = self._time_cap()
+        started = time.monotonic()
+        budget = getattr(self, "_spend", None)
+        try:
+            return await asyncio.wait_for(self._turn(prompt, run, cap), cap)
+        except asyncio.TimeoutError:
+            run.outcome, run.worst_case = "timed out", True
+            raise AgentTimeout(f"{self.model}: over its time cap") from None
+        finally:
+            run.seconds = time.monotonic() - started
+            if run.outcome == "running":
+                run.outcome = "failed"
+            entries = agent_log.get()
+            if entries is not None:
+                entries.append(run.log_entry())
+            if isinstance(budget, ClaudeBudget):
+                budget.note_agent(current_question_key.get(), {
+                    "searches": run.searches, "fetches": run.fetches, "pauses": max(0, run.requests - 1),
+                    "outcome": run.outcome[:60], "stop_reason": str(run.stop)[:20], "tool_errors": dict(run.tool_errors),
+                    "input_tokens": run.input_tokens, "output_tokens": run.output_tokens})
+                if run.cost > agent_reserve(run.seasonal) + 1e-9:
+                    # Fail closed: an agent over its reservation switches the agent off for this run.
+                    logger.warning(f"Question {current_question_key.get()}: agent over its reservation "
+                                   f"(${run.cost:.4f}); agent off for this run")
+                    budget.agent_off = "over its reservation"
+
+    async def _turn(self, prompt: Any, run: AgentRun, cap: float) -> TextTokenCostResponse:
+        import anthropic
+
+        caps = run.caps
+        system, messages = _messages(prompt)
+        note = AGENT_SYSTEM.format(searches=caps.searches, fetches=caps.fetches)
+        request: dict[str, Any] = dict(
+            model=OPUS_55.removeprefix("anthropic/"), output_config={"effort": CLAUDE_EFFORT},
+            system=note if not system else f"{note}\n\n{system}",
+        )
+        async with anthropic.AsyncAnthropic(max_retries=0, timeout=cap) as client:
+            while True:
+                try:
+                    response = await client.messages.create(
+                        **request, messages=messages, max_tokens=min(CLAUDE_MAX_TOKENS, run.output_left()),
+                        tools=agent_tools(caps.searches - run.searches, caps.fetches - run.fetches),
+                    )
+                except Exception as e:
+                    if run.requests == 0:
+                        raise  # the first request: charged as any Claude call (400-429, 5xx: $0)
+                    # A continuation failed: the earlier requests were billed; a
+                    # timeout or cut connection: the worst case, as any Claude call.
+                    status = http_status(e)
+                    no_charge = status is not None and status in ClaudeBudget.no_charge_statuses
+                    run.worst_case = not no_charge
+                    raise NoAnswer(f"{self.model}: continuation failed ({type(e).__name__})",
+                                   cost=run.cost if no_charge else None) from e
+                run.add(response)
+                if run.stop != "pause_turn":
+                    break
+                why = run.can_continue()
+                if why is not None:
+                    run.outcome = f"paused, not continued ({why})"
+                    raise NoAnswer(f"{self.model}: {run.outcome}", cost=run.cost)
+                # The same turn goes on: the paused content back as-is, no new user message.
+                last = messages[-1]
+                if last.get("role") == "assistant":
+                    messages = [*messages[:-1], {"role": "assistant", "content": [*last["content"], *response.content]}]
+                else:
+                    messages = [*messages, {"role": "assistant", "content": list(response.content)}]
+        text = "".join(run.texts).strip()
+        if run.stop == "refusal":
+            run.outcome = "refused"
+            raise NoAnswer(f"{self.model}: refused", cost=run.cost)
+        if run.stop != "end_turn" or not text:
+            run.outcome = f"no answer ({run.stop})"
+            raise NoAnswer(f"{self.model}: no answer (stop reason {run.stop})", cost=run.cost)
+        run.outcome = "answered"
+        return ClaudeResponse(
+            stop_reason=run.stop, data=text, prompt_tokens_used=run.input_tokens, completion_tokens_used=run.output_tokens,
+            total_tokens_used=run.input_tokens + run.output_tokens, model=self.model, cost=run.cost,
+        )
+
+
+class AgentLlm(ThrottledLlm, _AgentCall):
+    """The agent slot: pacing and the Claude spend guard (ThrottledLlm) around
+    one agent turn; its backup is the plain Opus chain (any failure)."""
+
+
 # ---------------------------------------------------------------- the planner
 
 
@@ -302,10 +632,12 @@ class FrontierPlanner(bot_config.GeminiPool):
     mode_reason: str = "not started"
     gpt_allowed: bool = False
     gpt_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_GPT_ENABLED)
+    agent_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_AGENT_ENABLED)
     # The class and model-name prefix of the Claude and GPT slots (the
     # rehearsal swaps in recorded replies: ReplayChainLlm, "replay/").
     claude_llm_class: type = ClaudeLlm
     gpt_llm_class: type = ThrottledLlm
+    agent_llm_class: type = AgentLlm
     model_prefix: str = ""
     claude_pacer: RequestPacer = field(default_factory=lambda: RequestPacer(CLAUDE_REQUESTS_PER_MINUTE))
     gpt_pacer: RequestPacer = field(default_factory=lambda: RequestPacer(600))
@@ -327,17 +659,35 @@ class FrontierPlanner(bot_config.GeminiPool):
         )
         why = "switched off" if not self.gpt_enabled else ("frontier off" if self.mode == "off" else "key under $2 left or unknown")
         gpt = "on" if self.gpt_allowed else f"off ({why})"
-        return f"Frontier lineup: {self.mode} ({self.mode_reason}); GPT-5.6 Sol {gpt}"
+        line = f"Frontier lineup: {self.mode} ({self.mode_reason}); GPT-5.6 Sol {gpt}"
+        if self.agent_enabled:
+            line += f"; agent {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
+        return line
 
-    def _claude_chain(self, model: str) -> ThrottledLlm:
+    def _claude_chain(self, model: str, deadline_aware: bool = False) -> ThrottledLlm:
         llm: ThrottledLlm | None = None
         for name in reversed([model, *CLAUDE_BACKUPS.get(model, [])]):
             llm = self.claude_llm_class(
                 model=self.model_prefix + name, pacer=self.claude_pacer, backup=llm, spend=self.claude,
                 temperature=None, timeout=CLAUDE_TIMEOUT_SECONDS, allowed_tries=1, spend_backups=True,
             )
+            if deadline_aware:
+                llm.deadline_aware = True  # the agent's fallback: only the planned wait's time left
         assert llm is not None
         return llm
+
+    def _agent_chain(self) -> ThrottledLlm:
+        # Any agent failure (time cap, tool or request error, no answer, a cap
+        # refusal): the plain Opus chain, with the time the planned wait has left.
+        return self.agent_llm_class(
+            model=self.model_prefix + AGENT, pacer=self.claude_pacer, backup=self._claude_chain(OPUS_55, deadline_aware=True),
+            spend=self.claude, temperature=None, timeout=AGENT_TIMEOUT_SECONDS, allowed_tries=1,
+            spend_backups=True, backup_on_any_error=True,
+        )
+
+    def _agent_on(self) -> bool:
+        # Full mode only: in "low" / "minimal" the single Claude slot is plain Opus (the cheaper one).
+        return self.agent_enabled and self.mode == "full" and self.claude is not None and self.claude.agent_off is None
 
     def _gpt_chain(self) -> ThrottledLlm:
         # Any GPT failure: this slot goes to the Flash chain (never the reserve).
@@ -365,8 +715,20 @@ class FrontierPlanner(bot_config.GeminiPool):
         question = current_question_key.get()
         assert self.claude is not None
         self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
+        slots = list(MODE_SLOTS[self.mode][0 if seasonal else 1])
+        agent = self._agent_on()
+        if agent:
+            # The agent replaces one Opus slot; the question cap rises while it runs.
+            # Its reservation follows the question kind (main.py sets the same value).
+            question_seasonal.set(seasonal)
+            self.claude.set_cap(question, AGENT_SEASONAL_QUESTION_CAP if seasonal else AGENT_MINIBENCH_QUESTION_CAP)
+            agent = self._claude_ok(AGENT)
+            if agent:
+                slots[0] = AGENT
+            else:  # refused (e.g. the day cap): plain Opus slots and caps, as without the agent
+                self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
         # A slot whose model a cap refuses now is left out (its backups may still fit).
-        claude_models = [m for m in MODE_SLOTS[self.mode][0 if seasonal else 1] if self._claude_ok(m)]
+        claude_models = [m for m in slots if self._claude_ok(m)]
         gpt = False
         if seasonal and self.gpt_allowed and self.spend is not None:
             self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
@@ -386,8 +748,11 @@ class FrontierPlanner(bot_config.GeminiPool):
             if gpt:
                 # After the pool set its $0.10: GPT + paid Flash share $0.30 per seasonal question.
                 self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
-        chains = [self._claude_chain(m) for m in claude_models] + ([self._gpt_chain()] if gpt else []) + flash
+        claude_chains = [self._agent_chain() if m == AGENT else self._claude_chain(m) for m in claude_models]
+        chains = claude_chains + ([self._gpt_chain()] if gpt else []) + flash
         self.last_plan.update(frontier=self.mode, claude=claude_models, gpt=gpt, flash=len(flash), count=len(chains))
+        if self.agent_enabled:
+            self.last_plan["agent"] = AGENT in claude_models
         return chains
 
     def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:
@@ -444,6 +809,25 @@ def frontier_report(planner: FrontierPlanner) -> str:
                          f"{'-' if secs is None else f'{secs:.0f}'}{' **over 6 min**' if (secs or 0) > 360 else ''} | "
                          f"{c.get('input_tokens') or '-'} | {c.get('output_tokens') or '-'} | ${c.get('charged', 0.0):.4f} | "
                          f"{c.get('stop_reason') or '-'} | {c.get('http_status') or '-'} |")
+    agent = [call for question, entry in (planner.claude.questions.items() if planner.claude else [])
+             for call in entry.get("calls", [])[planner.calls_before.get(("Anthropic", question), 0):] if "searches" in call]
+    if agent:
+        # The agent (numbers only: no URLs, no research).
+        secs = [c["seconds"] for c in agent if c.get("seconds") is not None]
+        lines += ["", "| Agent calls | Answered | Searches | Fetches | Seconds (max) | $ |", "|---|---|---|---|---|---|",
+                  f"| {len(agent)} | {sum(bool(c.get('ok')) for c in agent)} | {sum(c.get('searches') or 0 for c in agent)} | "
+                  f"{sum(c.get('fetches') or 0 for c in agent)} | "
+                  f"{(f'{sum(secs) / len(secs):.0f} ({max(secs):.0f})') if secs else '-'} | "
+                  f"${sum(c.get('charged', 0.0) for c in agent):.4f} |"]
+        lines += ["", "| Agent call | Seconds | Input tokens | Output tokens | $ | Searches | Fetches | Pauses | Outcome | Tool errors |",
+                  "|---|---|---|---|---|---|---|---|---|---|"]
+        for c in agent:
+            inputs = c.get("input_tokens") or 0
+            errors = ", ".join(f"{k} x{v}" for k, v in (c.get("tool_errors") or {}).items()) or "-"
+            lines.append(f"| {c['model'].removeprefix('anthropic/')} | {c.get('seconds', '-')} | "
+                         f"{inputs}{' **over 150k**' if inputs > 150_000 else ''} | {c.get('output_tokens') or '-'} | "
+                         f"${c.get('charged', 0.0):.4f} | {c.get('searches', 0)} | {c.get('fetches', 0)} | "
+                         f"{c.get('pauses', 0)} | {c.get('outcome', '-')} | {errors} |")
     return "\n".join(lines)
 
 

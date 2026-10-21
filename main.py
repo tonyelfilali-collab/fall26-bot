@@ -134,7 +134,7 @@ from gemini_budget import current_question_key
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
-from frontier import FrontierPlanner, frontier_report
+from frontier import FrontierPlanner, agent_log, forecast_deadline, frontier_report
 from spend import SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, window_baseline
@@ -691,6 +691,10 @@ class FallBot2026(ForecastBot):
             _planned_forecaster.set(forecaster)
             _parser_above_reserve.set(above_reserve)
             answered_models.set([])
+            # Frontier agent (PR 4): the wait's deadline (its fallback gets the
+            # time left) and its runs (URLs, searches, fetches: private log only).
+            forecast_deadline.set(None if timeout is None else time.monotonic() + timeout)
+            agent_log.set([])
             entry = {"kind": kind, "planned_model": forecaster.model, "started_at": utc_now()}
             record["forecasts"].append(entry)
             started = time.monotonic()
@@ -714,6 +718,8 @@ class FallBot2026(ForecastBot):
             finally:
                 entry["seconds"] = round(time.monotonic() - started, 1)
                 entry["answered_models"] = list(answered_models.get() or [])
+                if agent_log.get():
+                    entry["agent"] = list(agent_log.get() or [])
                 if entry["answered_models"]:
                     # The model whose forecast this is (the parser answers after it),
                     # so each model can be scored alone (private question log).
@@ -2270,6 +2276,12 @@ if __name__ == "__main__":
         "at its reserve, so the backup chain (Nemotron) must answer",
     )
     parser.add_argument(
+        "--frontier-agent",
+        action="store_true",
+        help="Test mode, frontier lineup only: switch the agent forecaster on for this test "
+        "(bot_config.FRONTIER_AGENT_ENABLED stays off)",
+    )
+    parser.add_argument(
         "--frontier-path",
         choices=["seasonal", "minibench"],
         default="seasonal",
@@ -2295,6 +2307,11 @@ if __name__ == "__main__":
             f"The {lineup.name} lineup may only run in test_questions mode, not {run_mode}. "
             "Change ACTIVE_LINEUP in bot_config.py."
         )
+    if args.frontier_agent:
+        if lineup.name != "frontier" or run_mode != "test_questions" or not isinstance(lineup.planner, FrontierPlanner):
+            raise SystemExit("--frontier-agent only runs with --mode test_questions --lineup frontier.")
+        lineup.planner.agent_enabled = True
+        print("Frontier agent: ON for this test (Opus 5.5 + web search / fetch)")
     if args.rehearsal and lineup.name != "replay-credits":
         raise SystemExit("--rehearsal only works with the replay-credits lineup.")
     if args.rehearsal:

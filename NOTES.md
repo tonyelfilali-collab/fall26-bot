@@ -556,6 +556,26 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   Flash instead).
 - **Private log.** Each forecast entry has `forecast_model` (with `parsed`), so each model can be
   scored alone and the median; spend ledgers keep per call: model, $, output tokens, seconds.
+- **Agent** (PR 4, built OFF: `FRONTIER_AGENT_ENABLED`; Test Bot lineup `frontier-agent` = `frontier`
+  with the agent on for that test, bot-testing-area only). `frontier.AgentLlm`: `claude-opus-5-5`, effort
+  `high`, the same prompt as the plain Opus slot (question, criteria, fine print, dates, research
+  dossier, answer format; the parser is unchanged) plus a short system note, with server tools
+  `web_search_20260209` and `web_fetch_20260209` (`max_content_tokens` 5,000 per page; PDFs are not cut
+  by it). Caps: seasonal 8 searches / 5 fetches, 20k output tokens; MiniBench 4 / 3, 12k (`max_uses`;
+  each `pause_turn` continuation sends the paused content back as-is with what is left, at most 3
+  continuations, never with a tool used up or past the reservation). Slots (full mode only): seasonal
+  agent + Opus 5.5 + Flash x2, MiniBench agent + Flash x2; low / minimal modes: plain Opus (cheaper).
+  Worst case (reserved): seasonal $1.28 (200k input ASSUMED + 20k output + 8 searches x $0.01),
+  MiniBench $0.64 (90k + 12k + 4), so agent + plain Opus + the agent's Opus fallback fit $2.00, agent +
+  fallback fit $1.00. Cost charged: tokens at Opus 5.5 prices + $0.01 per search
+  (`usage.server_tool_use`); a timeout or cut connection: the worst case. Input tokens inside one
+  request can't be capped by the client: an agent ever over its reservation is charged in full and
+  switches the agent off for the run. Time: 7 min (or the planned wait left minus 120 s), then
+  cancelled -> the plain Opus chain with only the wait's time left (minus 20 s; under 45 s it is
+  not started); the other slots carry the question either way. Private question log: per forecast
+  `agent` = URLs read (fetched) and found (search hits, max 40), searches, fetches, tool error codes,
+  seconds, cost, reserve. Claude ledger calls: searches, fetches. Step summary: agent calls, searches,
+  fetches, seconds, $ (numbers only). Public logs: nothing new (model + error class name only).
 
 ## Free news fallback (27 Sep 2026)
 
