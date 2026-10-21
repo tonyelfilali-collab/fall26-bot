@@ -2611,6 +2611,10 @@ if __name__ == "__main__":
         if summary_path:
             with open(summary_path, "a", encoding="utf-8") as f:
                 f.write(f"{line}\n\n")
+    # Data-repo saves that failed during the run get 3 more tries (about 2 minutes).
+    lost_logs = template_bot.question_log.retry_failed()
+    if lost_logs:
+        print(f"Question JSON logs that could not be saved: {lost_logs}")
     if template_bot.question_log.saved:
         print(f"Question JSON logs saved to fall26-data: {len(template_bot.question_log.saved)}")
     if lineup.planner is not None:

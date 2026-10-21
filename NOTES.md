@@ -245,7 +245,10 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   text + time, each forecast (planned or quick, the models that answered, raw output, parsed
   value, seconds, error), final forecast, list-price cost. A save failure never blocks a forecast;
   it logs a warning and a GitHub annotation (`question-log-failed`; `quota-ledger-failed` for the
-  ledger).
+  ledger). **Since 21 Oct (PR A):** a question log or shadow file whose save failed is kept in memory
+  and retried at the end of the run (`QuestionLogWriter.retry_failed`: 3 tries, 1 minute apart);
+  the `question-log-failed` annotation comes only if it still fails. Nothing is ever uploaded as an
+  Actions artifact (public repo). The ledgers (spend, Gemini) are not in this pass.
 - **healthchecks.io:** the tournament workflow pings `HEALTHCHECK_URL` at the end of every run
   (with `/fail` if the run failed). No ping when `BOT_ENABLED` is off.
 - **Daily health check** (`health.yml` + `health_check.py`) at 07:00 UK time. Two UTC triggers
