@@ -37,3 +37,11 @@ def test_standing_lines(monkeypatch):
 
     lines = tournament_info.standing_lines([("A", 1), ("B", 2)], get=get)
     assert "**our-bot**" in lines[0] and "rank **2** of 1" in lines[1] and "HTTP 403" in lines[2]
+
+
+def test_list_answers():
+    entry = {"user": ME, "rank": 5, "score": 1.0}
+    assert tournament_info.leaderboards([entry]) == [("", {"entries": [entry]})]
+    named = tournament_info.leaderboards([{"name": "Peer", "entries": [entry]}])
+    assert named[0][0] == ", Peer" and "rank **5**" in tournament_info.standing_line("S", named[0][1], ME)
+    assert tournament_info.leaderboards({"entries": []}) == [("", {"entries": []})]
