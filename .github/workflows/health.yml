@@ -19,6 +19,7 @@ on:
   pull_request:
     paths:
       - health_check.py
+      - claude_health.py
       - .github/workflows/health.yml
 
 permissions:
