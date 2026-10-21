@@ -134,9 +134,9 @@ FALLBACK_MIN_SECONDS = 45  # under this, the fallback is not started
 AGENT_MAX_CONTINUATIONS = 3  # pause_turn continuations per agent turn
 AGENT_MIN_OUTPUT_TOKENS = 2000  # a continuation needs at least this much output left
 AGENT_SEASONAL_QUESTION_CAP = 3.00
-# Two seasonal agents (architect, 21 Oct): agent $2.28 + agent2 $1.28 + their
-# two Opus fallbacks ($0.72) = $4.28; the Claude day cap rises to $20 with them.
-AGENT2_SEASONAL_QUESTION_CAP = 4.30
+# Two seasonal agents (architect, 21 Oct): agent $2.28 + agent2 $1.64 + their
+# two Opus fallbacks ($0.72) = $4.64; the Claude day cap rises to $20 with them.
+AGENT2_SEASONAL_QUESTION_CAP = 4.70
 CLAUDE_DAILY_CAP_TWO_AGENTS = 20.00
 AGENT_MINIBENCH_QUESTION_CAP = 1.60
 
@@ -160,8 +160,9 @@ AGENT_CAPS = {
     True: AgentCaps(searches=8, fetches=3, output_tokens=20000, input_tokens=450000),
     False: AgentCaps(searches=3, fetches=2, output_tokens=12000, input_tokens=150000),
 }
-# agent2 (seasonal only): $0.80 + $0.44 + $0.04 = $1.28.
-AGENT2_CAPS = AgentCaps(searches=4, fetches=2, output_tokens=22000, input_tokens=200000)
+# agent2 (seasonal only): $1.20 + $0.40 + $0.04 = $1.64 (architect, 21 Oct: a test
+# call read 215k input, so 300k; the dollar reservation is the guard).
+AGENT2_CAPS = AgentCaps(searches=4, fetches=2, output_tokens=20000, input_tokens=300000)
 
 
 def agent_caps(seasonal: bool, name: str = AGENT) -> AgentCaps:

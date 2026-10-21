@@ -42,7 +42,7 @@ Q. The Claude day at $14.00: no seasonal agent ($2.28 would pass $15): plain
    Opus; MiniBench no Claude (the day is over its $9 limit).
 S. Two seasonal agents (FRONTIER_SEASONAL_AGENTS = 2, set for the phase only):
    seasonal = agent + agent2 + Flash x2 (caps 8/3 and 4/2), MiniBench as K;
-   question cap $4.30, Claude day cap $20.
+   question cap $4.70, Claude day cap $20.
 S2. Both seasonal agents past their 7-minute cap: both cancelled at their
    worst case, each one's own Opus fallback answers inside the planned wait.
 
@@ -472,7 +472,7 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          all(i["agent"] == 0 and i["opus"] >= 1 and i["submitted"] for i in infos("Q", True))
          and all(i["claude"] == 0 and i["submitted"] for i in infos("Q", False))
          and q_day <= frontier.CLAUDE_DAILY_CAP + 1e-9),
-        ("S: two seasonal agents (test switch 2) -> seasonal = agent + agent2 + Flash x2; MiniBench = agent + Opus + Flash x2; caps $4.30 / $1.60; day cap $20",
+        ("S: two seasonal agents (test switch 2) -> seasonal = agent + agent2 + Flash x2; MiniBench = agent + Opus + Flash x2; caps $4.70 / $1.60; day cap $20",
          all(i["forecasts"] == 4 and i["agent"] == 1 and i["agent2"] == 1 and i["flash"] == 2 and i["submitted"] for i in infos("S", True))
          and all(i["agent"] == 1 and i["opus"] == 1 and i["agent2"] == 0 and i["submitted"] for i in infos("S", False))
          and all(s_planner.claude.caps[str(i["post"])] == (frontier.AGENT2_SEASONAL_QUESTION_CAP if i["seasonal"]

@@ -37,11 +37,11 @@ def test_built_off_one_seasonal_agent():
 
 def test_agent2_reserve_and_the_caps():
     plain = frontier.claude_reserve(OPUS_55)
-    assert frontier.agent_reserve(True, AGENT2) == pytest.approx(1.28)
-    assert frontier.agent_caps(True, AGENT2) == frontier.AgentCaps(searches=4, fetches=2, output_tokens=22000, input_tokens=200000)
+    assert frontier.agent_reserve(True, AGENT2) == pytest.approx(1.64)
+    assert frontier.agent_caps(True, AGENT2) == frontier.AgentCaps(searches=4, fetches=2, output_tokens=20000, input_tokens=300000)
     # agent + agent2 + one plain Opus fallback each.
     assert frontier.agent_reserve(True) + frontier.agent_reserve(True, AGENT2) + 2 * plain <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
-    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 4.30 and frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.00
+    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 4.70 and frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.00
 
 
 def test_two_agents_seasonal_and_minibench_unchanged():
@@ -51,7 +51,7 @@ def test_two_agents_seasonal_and_minibench_unchanged():
     chains = _plan(planner, True, "32")
     assert [c.model for c in chains][:2] == [AGENT, AGENT2] and len(chains) == 4
     assert all("flash" in c.model for c in chains[2:])
-    assert planner.claude.caps["32"] == 4.30
+    assert planner.claude.caps["32"] == 4.70
     # Each agent has its own plain Opus fallback, with only the planned wait's time left.
     assert chains[0]._backup is not chains[1]._backup
     assert all(c._backup.model == OPUS_55 and c._backup.deadline_aware and c._backup_on_any_error for c in chains[:2])
@@ -105,7 +105,7 @@ def test_agent2_call_uses_its_caps_and_both_calls_keep_their_stats(monkeypatch):
     assert [t["max_uses"] for t in tools[0]] == [8, 3] and [t["max_uses"] for t in tools[1]] == [4, 2]
     calls = claude.questions["36"]["calls"]
     assert [(c["model"], c["searches"], c["fetches"]) for c in calls] == [(AGENT, 1, 1), (AGENT2, 2, 0)]
-    assert [e["model"] for e in log] == [AGENT, AGENT2] and log[1]["reserve"] == pytest.approx(1.28)
+    assert [e["model"] for e in log] == [AGENT, AGENT2] and log[1]["reserve"] == pytest.approx(1.64)
     assert claude.question_spent("36") <= frontier.AGENT2_SEASONAL_QUESTION_CAP
 
 
