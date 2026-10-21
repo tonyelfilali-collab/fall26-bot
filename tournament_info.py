@@ -247,6 +247,9 @@ def standing_lines(tournaments: list[tuple[str, str | int]], get=requests.get) -
     me = response.json()
     lines = [f"- Our bot's Metaculus username: **{me.get('username')}** (user id {me.get('id')})"]
     for label, tid in tournaments:
+        if not str(tid).isdigit():  # a slug: the leaderboard wants the project's number
+            found = get(f"{API}/projects/tournaments/{tid}/", headers=_auth(), timeout=30)
+            tid = found.json().get("id", tid) if found.status_code == 200 else tid
         response = get(f"{API}/leaderboards/project/{tid}/", headers=_auth(), timeout=60)
         board = response.json() if response.status_code == 200 else None
         for name, one in leaderboards(board):
@@ -254,7 +257,7 @@ def standing_lines(tournaments: list[tuple[str, str | int]], get=requests.get) -
     return lines
 
 
-def main(audit: bool = False, standing: bool = False) -> None:
+def main(audit: bool = False, standing: bool = False, extra_ids: tuple[str, ...] = ()) -> None:
     sections: list[str] = []
     minibench_id, how = current_minibench()
     sections += [f"**Current MiniBench round: {minibench_id}** (found by {how})", ""]
@@ -271,7 +274,8 @@ def main(audit: bool = False, standing: bool = False) -> None:
         sections.append("")
     if standing:
         sections += ["## Our standing", ""] + standing_lines(
-            [("Seasonal tournament", FALL_2026_TOURNAMENT_ID), ("MiniBench", minibench_id)]) + [""]
+            [("Seasonal tournament", FALL_2026_TOURNAMENT_ID), ("MiniBench", minibench_id)]
+            + [("Tournament", tid) for tid in extra_ids]) + [""]
     if audit:
         sections += ["## MiniBench rounds", ""] + newer_minibench_lines(minibench_id) + [""]
     report = "\n".join(sections)
@@ -285,4 +289,6 @@ def main(audit: bool = False, standing: bool = False) -> None:
 if __name__ == "__main__":
     if not os.getenv("METACULUS_TOKEN"):
         sys.exit("METACULUS_TOKEN is not set")
-    main(audit="--audit" in sys.argv, standing="--standing" in sys.argv)
+    extra = os.getenv("STANDING_IDS", "")
+    main(audit="--audit" in sys.argv, standing="--standing" in sys.argv,
+         extra_ids=tuple(t.strip() for t in extra.split(",") if t.strip().isdigit()))

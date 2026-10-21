@@ -45,3 +45,16 @@ def test_list_answers():
     named = tournament_info.leaderboards([{"name": "Peer", "entries": [entry]}])
     assert named[0][0] == ", Peer" and "rank **5**" in tournament_info.standing_line("S", named[0][1], ME)
     assert tournament_info.leaderboards({"entries": []}) == [("", {"entries": []})]
+
+
+def test_a_slug_is_looked_up_as_a_number(monkeypatch):
+    monkeypatch.setenv("METACULUS_TOKEN", "t")
+    seen = []
+
+    def get(url, **_):  # type: ignore[no-untyped-def]
+        seen.append(url.removeprefix(tournament_info.API + "/"))
+        body = {"users/me/": ME, "projects/tournaments/fall/": {"id": 33121}}.get(seen[-1], {"entries": []})
+        return SimpleNamespace(status_code=200, json=lambda: body)
+
+    tournament_info.standing_lines([("Seasonal", "fall")], get=get)
+    assert seen[-1] == "leaderboards/project/33121/"

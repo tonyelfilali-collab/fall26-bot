@@ -13,6 +13,10 @@ on:
         description: "Our bot's username, and its rank, score and 95% range on each leaderboard"
         type: boolean
         default: false
+      standing_ids:
+        description: "With standing: more tournament ids to check, comma-separated (e.g. an earlier MiniBench round)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -45,3 +49,4 @@ jobs:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           AUDIT: ${{ inputs.audit }}
           STANDING: ${{ inputs.standing }}
+          STANDING_IDS: ${{ inputs.standing_ids }}
