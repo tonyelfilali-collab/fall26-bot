@@ -130,6 +130,7 @@ class ThrottledLlm(GeneralLlm):
         allow_reserve: bool = False,
         spend=None,  # type: ignore[no-untyped-def]
         backup_on_any_error: bool = False,
+        spend_backups: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -137,6 +138,9 @@ class ThrottledLlm(GeneralLlm):
         # True: any failure of this model (not only "can't serve us now")
         # goes to the backup, e.g. GPT-5.6 Sol -> the Flash chain.
         self._backup_on_any_error = backup_on_any_error
+        # True: a spend cap refusing this model passes the call to its backup
+        # (Claude chains), instead of ending the slot.
+        self._spend_backups = spend_backups
         self._pacer = pacer
         self._ledger = ledger
         self._backup = backup
@@ -155,6 +159,9 @@ class ThrottledLlm(GeneralLlm):
                 return await self._hand_over(prompt, reason)
         if self._spend is not None:
             refusal = self._spend.refusal(self.model)
+            if refusal in ("cap", "daily cap") and self._backup is not None and self._spend_backups:
+                # A cheaper backup may still fit the cap (Opus 5.5 -> Opus 5 -> Haiku 5.5).
+                return await self._hand_over(prompt, f"spend {refusal}")
             if refusal in ("cap", "no question", "daily cap", "blocked"):
                 from spend import SpendCapReached
 

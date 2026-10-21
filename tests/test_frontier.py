@@ -9,7 +9,7 @@ import pytest
 
 import bot_config
 import frontier
-from frontier import FABLE, GPT_SOL, HAIKU, OPUS_5, OPUS_55, SONNET, ClaudeBudget
+from frontier import GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget
 from gemini_budget import MemoryStore, current_question_key
 from llm_throttle import NoAnswer
 from spend import SpendGuard, utc_day
@@ -33,6 +33,13 @@ def _budget(spent: float = 0.0, data: dict | None = None, today: date = date(202
 ])
 def test_cycle_start(today, start):
     assert frontier.cycle_start(today, RESET) == start
+
+
+def test_this_cycle_ends_17_nov():
+    reset = frontier.reset_date(bot_config.CLAUDE_CYCLE_RESET_DATE)
+    assert frontier.cycle_start(date(2026, 10, 21), reset) == date(2026, 10, 18)
+    assert frontier.cycle_start(date(2026, 11, 17), reset) == date(2026, 10, 18)
+    assert frontier.cycle_start(date(2026, 11, 18), reset) == date(2026, 11, 18)
 
 
 def test_cycle_start_in_short_months():
@@ -78,8 +85,8 @@ def test_cycle_spend_is_kept_and_saved():
     try:
         claude.start(OPUS_55)
         claude.finish(OPUS_55, True, cost=0.21)
-        claude.start(FABLE)
-        claude.finish(FABLE, False, error=_status_error(529))  # overloaded: not billed
+        claude.start(OPUS_5)
+        claude.finish(OPUS_5, False, error=_status_error(529))  # overloaded: not billed
     finally:
         current_question_key.reset(token)
     assert claude.cycle_spent() == pytest.approx(0.21)
@@ -96,25 +103,27 @@ def test_a_refusal_is_charged_its_real_cost():
     claude = _budget()
     token = current_question_key.set("8")
     try:
-        claude.start(SONNET)
-        claude.finish(SONNET, False, error=NoAnswer("refused", cost=0.02))
+        claude.start(HAIKU)
+        claude.finish(HAIKU, False, error=NoAnswer("refused", cost=0.02))
     finally:
         current_question_key.reset(token)
     assert claude.question_spent("8") == pytest.approx(0.02)
 
 
 def test_worst_case_reservations_fit_the_question_caps():
-    assert frontier.claude_reserve(FABLE) + frontier.claude_reserve(OPUS_55) <= frontier.CLAUDE_SEASONAL_QUESTION_CAP
-    assert frontier.claude_reserve(OPUS_55) + frontier.claude_reserve(SONNET) <= frontier.CLAUDE_MINIBENCH_QUESTION_CAP
+    assert 2 * frontier.claude_reserve(OPUS_55) <= frontier.CLAUDE_SEASONAL_QUESTION_CAP
+    assert frontier.claude_reserve(OPUS_55) <= frontier.CLAUDE_MINIBENCH_QUESTION_CAP
+    assert set(frontier.CLAUDE_PRICES) == {OPUS_55, OPUS_5, HAIKU}
 
 
 def test_claude_caps_refuse_before_passing():
     claude = _budget()
-    claude.days[utc_day()] = 11.50
+    claude.days[utc_day()] = 11.70
     token = current_question_key.set("9")
     try:
-        assert claude.refusal(FABLE) == "daily cap"  # $0.90 worst case would pass $12
-        assert claude.refusal(OPUS_55) is None
+        assert claude.refusal(OPUS_55) == "daily cap"  # $0.36 worst case would pass $12
+        assert claude.refusal(HAIKU) is None
+        claude.days[utc_day()] = 0.0
         claude.set_cap("9", 0.60)
         claude.questions["9"] = {"spent": 0.30}
         assert claude.refusal(OPUS_55) == "cap"
@@ -174,7 +183,7 @@ def test_claude_no_usable_answer_goes_to_the_backup(monkeypatch, stop, text):
     import anthropic
 
     monkeypatch.setattr(anthropic, "AsyncAnthropic", _fake_client(_response(text=text, stop=stop), {}))
-    llm = frontier._ClaudeCall(model=SONNET, temperature=None, timeout=60, allowed_tries=1)
+    llm = frontier._ClaudeCall(model=OPUS_5, temperature=None, timeout=60, allowed_tries=1)
     with pytest.raises(NoAnswer) as caught:
         asyncio.run(llm._mockable_direct_call_to_model("Forecast this."))
     assert caught.value.cost and caught.value.cost > 0
@@ -204,9 +213,9 @@ def test_full_plan_seasonal_and_minibench():
     token = current_question_key.set("1")
     try:
         seasonal = planner.plan(True, binary=False)
-        assert _models(seasonal)[:3] == [FABLE, OPUS_55, GPT_SOL]
-        assert len(seasonal) == 5 and all(m.startswith("gemini/") for m in _models(seasonal)[3:])
-        assert planner.spend.caps["1"] == frontier.OPENROUTER_SEASONAL_QUESTION_CAP
+        assert _models(seasonal)[:2] == [OPUS_55, OPUS_55]
+        assert len(seasonal) == 4 and all("flash" in m for m in _models(seasonal)[2:])
+        assert planner.spend.forecast_target is None  # no top-ups: Flash never outvotes Claude
         assert planner.claude.caps["1"] == frontier.CLAUDE_SEASONAL_QUESTION_CAP
         assert planner.round2(True, []) == []
     finally:
@@ -214,33 +223,53 @@ def test_full_plan_seasonal_and_minibench():
     token = current_question_key.set("2")
     try:
         minibench = planner.plan(False)
-        assert _models(minibench)[:2] == [OPUS_55, SONNET] and len(minibench) >= 3
+        assert _models(minibench)[0] == OPUS_55 and len(minibench) == 3
         assert planner.claude.caps["2"] == frontier.CLAUDE_MINIBENCH_QUESTION_CAP
         assert planner.spend.caps["2"] == bot_config.PAID_FLASH_QUESTION_CAP  # MiniBench Flash: unchanged caps
     finally:
         current_question_key.reset(token)
 
 
+@pytest.mark.parametrize("spent, seasonal_opus, minibench_opus", [(0.80 * 170, 1, 1), (0.95 * 170, 1, 0)])
+def test_step_down_plans(spent, seasonal_opus, minibench_opus):
+    planner = _planner(_budget(spent))
+    for key, seasonal, opus in (("5", True, seasonal_opus), ("6", False, minibench_opus)):
+        token = current_question_key.set(key)
+        try:
+            assert _models(planner.plan(seasonal)).count(OPUS_55) == opus
+        finally:
+            current_question_key.reset(token)
+
+
 def test_backup_chains():
     planner = _planner(_budget())
-    assert planner._claude_chain(FABLE)._backup.model == OPUS_55 and planner._claude_chain(FABLE)._backup._backup is None
-    assert planner._claude_chain(OPUS_55)._backup.model == OPUS_5
-    assert planner._claude_chain(SONNET)._backup.model == HAIKU
+    opus = planner._claude_chain(OPUS_55)
+    assert opus._backup.model == OPUS_5 and opus._backup._backup.model == HAIKU and opus._backup._backup._backup is None
     gpt = planner._gpt_chain()
     assert gpt._backup.model.startswith("gemini/") and gpt._backup_on_any_error and gpt.allowed_tries == 1
 
 
-def test_no_gpt_when_the_key_is_low_and_off_is_todays_setup():
-    planner = _planner(_budget(), key_left=1.99)
+def test_gpt_is_off_by_default_and_needs_the_key_left():
+    planner = _planner(_budget())
     token = current_question_key.set("3")
     try:
-        assert GPT_SOL not in _models(planner.plan(True)) and len(planner.plan(True)) == 5
+        assert GPT_SOL not in _models(planner.plan(True))
+        planner.gpt_enabled = True
+        planner.start_run(5.0, api_key=True)
+        assert _models(planner.plan(True))[:3] == [OPUS_55, OPUS_55, GPT_SOL]
+        assert planner.spend.caps["3"] == frontier.OPENROUTER_SEASONAL_QUESTION_CAP
+        planner.start_run(1.99, api_key=True)
+        assert GPT_SOL not in _models(planner.plan(True))
     finally:
         current_question_key.reset(token)
+
+
+def test_off_is_todays_setup():
     off = _planner(ClaudeBudget(MemoryStore(None), 170.0, RESET))
     token = current_question_key.set("4")
     try:
         assert all(m.startswith("gemini/") for m in _models(off.plan(True)))
+        assert off.spend.forecast_target == 3
     finally:
         current_question_key.reset(token)
 
@@ -248,6 +277,7 @@ def test_no_gpt_when_the_key_is_low_and_off_is_todays_setup():
 def test_frontier_is_built_off():
     assert bot_config.FRONTIER_ENABLED is False
     assert bot_config.CLAUDE_BUDGET_PER_CYCLE == 170.0
+    assert bot_config.FRONTIER_GPT_ENABLED is False
     assert bot_config.get_lineup("frontier").test_only
 
 

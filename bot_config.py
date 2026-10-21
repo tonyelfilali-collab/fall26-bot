@@ -158,9 +158,13 @@ GEMINI_LEDGER_PATH = "quota/gemini_free.json"
 # switch is PR 3, after "the architect says merge" on PR 2.
 FRONTIER_ENABLED = False
 CLAUDE_BUDGET_PER_CYCLE = 170.0  # dollars of Console credits per billing cycle (the one budget setting)
-# A day the monthly credits reset (any month, "YYYY-MM-DD"; Tony gives it).
-# None: no Claude (fail closed).
-CLAUDE_CYCLE_RESET_DATE: str | None = None
+# A day the monthly credits reset (any month, "YYYY-MM-DD"; None = no Claude).
+# Tony, 21 Oct: the current credits expire 18 Nov, so this cycle ends 17 Nov
+# 23:59 UTC and a new one starts on the 18th of each month.
+CLAUDE_CYCLE_RESET_DATE: str | None = "2026-11-18"
+# GPT-5.6 Sol in the frontier lineup (architect, 21 Oct: OFF; doubled in price,
+# GPT bots score badly on the Fall leaderboard).
+FRONTIER_GPT_ENABLED = False
 
 
 

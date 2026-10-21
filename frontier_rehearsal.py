@@ -1,21 +1,24 @@
 """
-Frontier lineup rehearsal (architect, 21 Oct; PR 2). The REAL frontier planner,
-spend guards and bot code with recorded replies: 0 model calls, $0, nothing
-submitted, every ledger in memory.
+Frontier lineup rehearsal (architect, 21 Oct; PR 2, second version). The REAL
+frontier planner, spend guards and bot code with recorded replies: 0 model
+calls, $0, nothing submitted, every ledger in memory.
 
-A. Full mode: seasonal (4 types) = Fable + Opus 5.5 + GPT + 2 Flash, no round 2
-   even when they disagree; MiniBench = Opus + Sonnet + today's Flash path;
-   Claude <= $1.50 / $0.60 per question, OpenRouter <= $0.30 per seasonal one.
-B. Under 25% of the cycle budget left: seasonal without Fable, MiniBench Sonnet only.
-C. Under 10% left: seasonal Opus only (+ GPT + Flash), MiniBench no Claude.
+A. Full mode: seasonal (4 types) = Opus 5.5 x2 + Flash x2; MiniBench = Opus 5.5
+   + Flash x2; no round 2 even when they disagree; never more than 2 Flash;
+   Claude <= $1.50 / $0.60 per question.
+B. Under 25% of the cycle budget left: seasonal Opus x1; MiniBench Opus x1.
+C. Under 10% left: seasonal Opus x1; MiniBench no Claude (today's setup).
 D. "Credit balance too low": never retried, no Claude backup tried, no more
    Claude this run; every question still forecast; the next run: today's setup.
-E. GPT fails: its slot goes to the Flash chain (still 5 forecasts), never retried.
-F. The Claude day at $11.50: no call may take it over $12.
-G. The Claude ledger can't be read: no Claude, no GPT (today's setup).
-H. The OpenRouter key under $2 left: no GPT, a third Flash instead.
-I. Timing: a Fable call slower than the planned-forecast wait is cut; the
-   question is still forecast with the others.
+E. GPT switched on and failing: its slot goes to the Flash chain, never retried.
+F. The Claude day at $11.50: no call takes it over $12; a refused Opus slot
+   passes to a backup that fits (Haiku).
+G. The Claude ledger can't be read: no Claude (today's setup).
+H. GPT switched on, the OpenRouter key under $2 left: no GPT.
+I. Timing: Opus calls slower than the planned-forecast wait are cut; the
+   question is still forecast with the Flash ones.
+J. Every free Flash call answers 503: paid Flash fills both Flash slots,
+   although the Opus forecasts are in.
 
 Prints a report; exits 1 if a check fails.
 
@@ -31,9 +34,12 @@ from typing import Any
 
 from forecasting_tools import BinaryQuestion, DiscreteQuestion, MultipleChoiceQuestion, NumericQuestion
 
+import litellm
+
+import bot_config
 import frontier
 import main
-from frontier import FABLE, GPT_SOL, HAIKU, OPUS_5, OPUS_55, SONNET, ClaudeBudget, FrontierPlanner
+from frontier import GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget, FrontierPlanner
 from gemini_budget import MemoryStore
 from llm_throttle import RequestPacer
 from replay import ReplayChainLlm, _RecordedAnswer
@@ -77,7 +83,7 @@ def _budget(spent: float = 0.0, day: float = 0.0, store: Any = None) -> ClaudeBu
 
 
 def run_phase(seasonal: list, minibench: list, claude: ClaudeBudget, key_left: float = 5.0,
-              fail: dict | None = None, slow: dict | None = None) -> tuple[list[dict], FrontierPlanner, list[str]]:
+              fail: dict | None = None, slow: dict | None = None, gpt: bool = False) -> tuple[list[dict], FrontierPlanner, list[str]]:
     """One live-like run; returns (question records, planner, real model of each recorded call)."""
     fail, slow, calls = fail or {}, slow or {}, []
     original = _RecordedAnswer._mockable_direct_call_to_model
@@ -97,6 +103,7 @@ def run_phase(seasonal: list, minibench: list, claude: ClaudeBudget, key_left: f
         planner = frontier._frontier_pool(MemoryStore(), spend, claude, llm_class=ReplayChainLlm)
         planner.claude_llm_class = planner.gpt_llm_class = ReplayChainLlm
         planner.model_prefix = "replay/"
+        planner.gpt_enabled = gpt
         planner.pacers = {m: RequestPacer(60000) for m in planner.pacers}
         planner.claude_pacer = planner.gpt_pacer = RequestPacer(60000)
         planner.start_run(key_left, api_key=True)
@@ -125,7 +132,8 @@ def _info(record: dict, planner: FrontierPlanner) -> dict:
         "post": int(post), "type": record["question"]["question_type"], "seasonal": record.get("seasonal"),
         "forecasts": len(ok), "models": models, "round2": record.get("round2"),
         "claude": sum(m.startswith("anthropic/") for m in models), "gpt": models.count(GPT_SOL),
-        "flash": sum("flash" in m for m in models), "submitted": record.get("final_forecast") is not None,
+        "opus": models.count(OPUS_55), "flash": sum("flash" in m for m in models),
+        "paid_flash": models.count(bot_config.PAID_FLASH_MODEL), "submitted": record.get("final_forecast") is not None,
         "claude_spent": planner.claude.question_spent(post) if planner.claude else 0.0,
         "openrouter_spent": planner.spend.question_spent(post) if planner.spend else 0.0,
         "failed": [f.get("planned_model", "").removeprefix("replay/") for f in record.get("forecasts", []) if f.get("status") == "failed"],
@@ -150,10 +158,11 @@ SEASONAL_TYPES = ("binary", "numeric", "multiple_choice", "discrete")
 
 
 def run() -> dict:
-    wait, stages = main.PLANNED_WAIT_SECONDS, main.FORECAST_STAGES_LIMIT_SECONDS
+    wait = main.PLANNED_WAIT_SECONDS
     main.QUICK_FORECAST_RETRY_WAIT_SECONDS, quick_wait = 0, main.QUICK_FORECAST_RETRY_WAIT_SECONDS
-    # Round 1 disagrees on binary questions (Fable 20%, Opus 70%): round 2 would run on the old path.
-    _RecordedAnswer.binary_percent = {FABLE: 20, OPUS_55: 70, GPT_SOL: 45, SONNET: 40, OPUS_5: 50, HAIKU: 50}
+    # Round 1 disagrees on binary questions (Opus 70%, Flash 20%): round 2 would run on today's path.
+    _RecordedAnswer.binary_percent = {OPUS_55: 70, OPUS_5: 60, HAIKU: 60, GPT_SOL: 45,
+                                      **{m: 20 for m in bot_config.GEMINI_FORECAST_MODELS}}
     out: dict = {}
     try:
         def phase(name: str, base: int, claude: ClaudeBudget, **kw: Any) -> None:
@@ -168,7 +177,7 @@ def run() -> dict:
         phase("D", 94000, _budget(store=store), fail={m: lambda: CreditError("Your credit balance is too low to access the Anthropic API.")
                                                    for m in frontier.CLAUDE_PRICES})
         out["D_next"] = frontier.claude_mode(ClaudeBudget(store, BUDGET, RESET))
-        phase("E", 95000, _budget(), fail={GPT_SOL: lambda: _Broken("rehearsal: GPT down")})
+        phase("E", 95000, _budget(), fail={GPT_SOL: lambda: _Broken("rehearsal: GPT down")}, gpt=True)
         phase("F", 96000, _budget(day=11.50))
 
         class Unreadable(MemoryStore):
@@ -176,12 +185,15 @@ def run() -> dict:
                 raise OSError("rehearsal: ledger unreadable")
 
         phase("G", 97000, ClaudeBudget(Unreadable(), BUDGET, RESET))
-        phase("H", 98000, _budget(), key_left=1.50)
+        phase("H", 98000, _budget(), key_left=1.50, gpt=True)
         main.PLANNED_WAIT_SECONDS = 3
-        phase("I", 99000, _budget(), slow={FABLE: 6.0})
+        phase("I", 99000, _budget(), slow={OPUS_55: 6.0})
+        main.PLANNED_WAIT_SECONDS = wait
+        phase("J", 90000, _budget(), fail={m: lambda: litellm.ServiceUnavailableError(
+            message="rehearsal: overloaded", llm_provider="gemini", model="gemini") for m in bot_config.GEMINI_FORECAST_MODELS})
         return out
     finally:
-        main.PLANNED_WAIT_SECONDS, main.FORECAST_STAGES_LIMIT_SECONDS = wait, stages
+        main.PLANNED_WAIT_SECONDS = wait
         main.QUICK_FORECAST_RETRY_WAIT_SECONDS = quick_wait
         _RecordedAnswer.binary_percent = {}
 
@@ -192,54 +204,60 @@ def report() -> tuple[bool, str]:
     def infos(phase: str, seasonal: bool | None = None) -> list[dict]:
         return [i for i in out[phase]["infos"] if seasonal is None or bool(i["seasonal"]) == seasonal]
 
-    def models(phase: str, seasonal: bool) -> list[set]:
-        return [set(i["models"]) for i in infos(phase, seasonal)]
+    def mode(phase: str) -> str:
+        return out[phase]["planner"].mode
 
+    frontier_phases = ("A", "B", "E", "F", "H", "I", "J")
     a_s, a_m = infos("A", True), infos("A", False)
     d_claude_calls = [m for m in out["D"]["calls"] if m.startswith("anthropic/")]
     f_day = out["F"]["planner"].claude.day_spent()
     checks = [
-        ("A: seasonal, every type = Fable + Opus 5.5 + GPT + 2 Flash (5 forecasts)",
-         len(a_s) == 4 and all(i["forecasts"] == 5 and {FABLE, OPUS_55, GPT_SOL} <= set(i["models"]) and i["flash"] == 2 for i in a_s)),
-        ("A: seasonal binary with round 1 disagreeing: no round 2", all(not i["round2"] for i in a_s if i["type"] == "binary")),
-        ("A: MiniBench = Opus 5.5 + Sonnet 5.5 + Flash", all({OPUS_55, SONNET} <= set(i["models"]) and i["flash"] >= 1 for i in a_m)),
-        (f"A: Claude <= ${frontier.CLAUDE_SEASONAL_QUESTION_CAP:.2f} seasonal / ${frontier.CLAUDE_MINIBENCH_QUESTION_CAP:.2f} MiniBench; OpenRouter <= ${frontier.OPENROUTER_SEASONAL_QUESTION_CAP:.2f} seasonal",
-         all(i["claude_spent"] <= frontier.CLAUDE_SEASONAL_QUESTION_CAP + 1e-9 and i["openrouter_spent"] <= frontier.OPENROUTER_SEASONAL_QUESTION_CAP + 1e-9 for i in a_s)
+        ("A: seasonal, every type = Opus 5.5 x2 + Flash x2 (4 forecasts)",
+         len(a_s) == 4 and all(i["forecasts"] == 4 and i["opus"] == 2 and i["flash"] == 2 for i in a_s)),
+        ("A: MiniBench = Opus 5.5 + Flash x2 (3 forecasts)", all(i["forecasts"] == 3 and i["opus"] == 1 and i["flash"] == 2 for i in a_m)),
+        ("A: binary questions with round 1 disagreeing: no round 2 (seasonal and MiniBench)",
+         all(not i["round2"] for i in infos("A") if i["type"] == "binary")),
+        (f"A: Claude <= ${frontier.CLAUDE_SEASONAL_QUESTION_CAP:.2f} seasonal / ${frontier.CLAUDE_MINIBENCH_QUESTION_CAP:.2f} MiniBench per question",
+         all(i["claude_spent"] <= frontier.CLAUDE_SEASONAL_QUESTION_CAP + 1e-9 for i in a_s)
          and all(i["claude_spent"] <= frontier.CLAUDE_MINIBENCH_QUESTION_CAP + 1e-9 for i in a_m)),
-        ("B (20% left): seasonal without Fable (Opus + GPT + Flash); MiniBench Sonnet only",
-         out["B"]["planner"].mode == "low" and all(FABLE not in m and {OPUS_55, GPT_SOL} <= m for m in models("B", True))
-         and all(SONNET in m and OPUS_55 not in m for m in models("B", False))),
-        ("C (5% left): seasonal Opus only (+ GPT + Flash); MiniBench no Claude",
-         out["C"]["planner"].mode == "minimal" and all(FABLE not in m and OPUS_55 in m and GPT_SOL in m for m in models("C", True))
-         and all(not any(x.startswith("anthropic/") for x in m) for m in models("C", False))),
-        (f"D: credit error: {len(d_claude_calls)} Claude call(s), each model at most once, no Claude backup ({', '.join(_short(m) for m in d_claude_calls)})",
-         len(d_claude_calls) == len(set(d_claude_calls)) and OPUS_5 not in d_claude_calls and len(d_claude_calls) <= 2),
-        ("D: every question still forecast (GPT / Flash)", all(i["submitted"] for i in infos("D"))),
+        ("Never more than 2 Flash on a question with a Claude forecast (A, B, F, H, I, J)",
+         all(i["flash"] <= 2 for p in ("A", "B", "F", "H", "I", "J") for i in infos(p) if i["claude"])),
+        ("B (20% left): seasonal Opus x1 + Flash x2; MiniBench Opus x1 + Flash x2",
+         mode("B") == "low" and all(i["opus"] == 1 and i["flash"] == 2 for i in infos("B"))),
+        ("C (5% left): seasonal Opus x1 + Flash x2; MiniBench no Claude (today's setup)",
+         mode("C") == "minimal" and all(i["opus"] == 1 and i["flash"] == 2 for i in infos("C", True))
+         and all(i["claude"] == 0 and i["flash"] >= 3 for i in infos("C", False))),
+        (f"D: credit error: {len(d_claude_calls)} Claude call(s), never retried, no Claude backup ({', '.join(_short(m) for m in d_claude_calls)})",
+         OPUS_5 not in d_claude_calls and HAIKU not in d_claude_calls and len(d_claude_calls) <= 2),
+        ("D: every question still forecast (today's setup)", all(i["submitted"] for i in infos("D"))),
         (f"D: the next run: {out['D_next'][0]} ({out['D_next'][1]})", out["D_next"][0] == "off"),
-        ("E: GPT fails -> its slot answered by Flash (5 forecasts, 3 Flash), GPT called once per seasonal question",
-         all(i["forecasts"] == 5 and i["flash"] == 3 and i["gpt"] == 0 for i in infos("E", True))
+        ("E: GPT on and failing -> its slot answered by Flash, GPT called once per seasonal question",
+         all(i["forecasts"] == 5 and i["gpt"] == 0 and i["flash"] == 3 for i in infos("E", True))
          and out["E"]["calls"].count(GPT_SOL) == len(infos("E", True))),
-        (f"F: Claude day at $11.50 -> ${f_day:.2f} <= $12.00", f_day <= frontier.CLAUDE_DAILY_CAP + 1e-9),
-        ("F: a Claude slot refused by a cap goes to Flash (every seasonal question still 5 forecasts)",
-         all(i["forecasts"] == 5 for i in infos("F", True))),
-        ("G: ledger unreadable -> no Claude, no GPT (today's setup)",
-         out["G"]["planner"].mode == "off" and all(i["claude"] == 0 and i["gpt"] == 0 and i["submitted"] for i in infos("G"))),
-        ("H: key under $2 -> no GPT; Fable + Opus + 3 Flash",
-         all(i["gpt"] == 0 and i["flash"] == 3 and {FABLE, OPUS_55} <= set(i["models"]) for i in infos("H", True))
-         and GPT_SOL not in out["H"]["calls"]),
-        ("I: Fable slower than the planned wait -> cut; question forecast with the others",
-         all(i["submitted"] and FABLE not in i["models"] and i["forecasts"] >= 4 for i in infos("I", True))),
+        (f"F: Claude day at $11.50 -> ${f_day:.2f} <= $12.00; every question forecast",
+         f_day <= frontier.CLAUDE_DAILY_CAP + 1e-9 and all(i["submitted"] for i in infos("F"))),
+        ("F: an Opus slot refused by the day cap passed to a backup that fits (Haiku)", HAIKU in out["F"]["calls"]),
+        ("G: ledger unreadable -> no Claude (today's setup)",
+         mode("G") == "off" and all(i["claude"] == 0 and i["submitted"] for i in infos("G"))),
+        ("H: GPT on, key under $2 -> no GPT; Opus x2 + Flash x2",
+         all(i["gpt"] == 0 and i["opus"] == 2 and i["flash"] == 2 for i in infos("H", True)) and GPT_SOL not in out["H"]["calls"]),
+        ("I: Opus slower than the planned wait -> cut; every question forecast with Flash",
+         all(i["submitted"] and i["opus"] == 0 for i in infos("I"))),
+        ("J: every free Flash 503 -> both Flash slots paid, with the Opus forecasts in",
+         all(i["paid_flash"] == 2 and i["opus"] >= 1 for i in infos("J"))),
+        ("Modes: A, B, E, F, H, I, J frontier; G off", all(mode(p) != "off" for p in frontier_phases) and mode("G") == "off"),
     ]
     ok = all(c for _, c in checks)
     lines = ["## Frontier lineup rehearsal (recorded replies, 0 model calls, $0)", "",
              f"Budget ${BUDGET:.0f} per cycle; caps ${frontier.CLAUDE_DAILY_CAP:.0f}/UTC day, "
              f"${frontier.CLAUDE_SEASONAL_QUESTION_CAP:.2f} seasonal / ${frontier.CLAUDE_MINIBENCH_QUESTION_CAP:.2f} MiniBench "
-             f"per question (Claude), ${frontier.OPENROUTER_SEASONAL_QUESTION_CAP:.2f} per seasonal question (OpenRouter).", ""]
+             f"per question (Claude); at most {frontier.FLASH_FORECASTS} Flash per question.", ""]
     titles = {"A": "A. Full", "B": "B. Under 25% left", "C": "C. Under 10% left", "D": "D. Credit balance too low",
-              "E": "E. GPT fails", "F": "F. Claude day at $11.50", "G": "G. Claude ledger unreadable",
-              "H": "H. OpenRouter key under $2", "I": "I. Fable slower than the planned wait"}
+              "E": "E. GPT on and failing", "F": "F. Claude day at $11.50", "G": "G. Claude ledger unreadable",
+              "H": "H. GPT on, OpenRouter key under $2", "I": "I. Opus slower than the planned wait",
+              "J": "J. Every free Flash 503"}
     for phase, title in titles.items():
-        lines += [f"### {title} (mode {out[phase]['planner'].mode})", "", *_rows(out[phase]["infos"]), ""]
+        lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]
     return ok, "\n".join(lines)
 

@@ -1,26 +1,31 @@
 """
 Frontier lineup (architect, 21 Oct; PR 2, built OFF behind
-bot_config.FRONTIER_ENABLED). Claude models through ANTHROPIC_API_KEY (the
-Console credits that come with Tony's Max plan: no card, no auto-reload; when
-they are used up, calls fail with "credit balance is too low" and are never
-charged), GPT-5.6 Sol through OpenRouter, and today's Gemini Flash path.
+bot_config.FRONTIER_ENABLED). Claude through ANTHROPIC_API_KEY (the Console
+credits that come with Tony's Max plan: no card, no auto-reload; when they are
+used up, calls fail with "credit balance is too low" and are never charged)
+and today's Gemini Flash path. Second version (architect, 21 Oct, from the
+Fall leaderboard: Opus 5.5 beats Fable 5.1 and Sonnet 5.5; GPT-5.6 Sol doubled
+in price):
 
-- Seasonal: Fable 5.1 + Opus 5.5 + GPT-5.6 Sol + 2 Flash (free key first,
-  then paid Flash), the same 5 for every question type, no round 2.
-- MiniBench: Opus 5.5 + Sonnet 5.5 + today's Flash path (unchanged caps).
-- Backups: Fable -> Opus 5.5; Opus 5.5 -> Opus 5; Sonnet -> Haiku 5.5; GPT
-  (any failure) -> the Flash chain. Claude errors are never retried; a credit
-  error is never retried and switches Claude off until the next cycle.
+- Seasonal: Opus 5.5 (effort high) x2 + Flash x2 (free key first, then paid
+  Flash), every question type, no round 2.
+- MiniBench: Opus 5.5 x1 + Flash x2, no round 2.
+- At most 2 Flash forecasts per question (no extra-forecast top-ups: Flash
+  never outvotes Claude); paid Flash only to reach those 2. A question with no
+  Claude slot (a step-down, every slot refused by a cap) gets today's setup.
+- Backups: Opus 5.5 -> Opus 5 -> Haiku 5.5 (a cap-refused backup passes to the
+  next). Claude errors are never retried; a credit error is never retried and
+  switches Claude off until the next cycle.
+- GPT-5.6 Sol: behind bot_config.FRONTIER_GPT_ENABLED (OFF). When on: one
+  seasonal slot; any failure -> the Flash chain; $0.30 per seasonal question
+  (GPT + paid Flash); none when the OpenRouter key has under $2 left.
 - Budget (ClaudeBudget, fall26-data status/claude_spend.json): one setting,
   CLAUDE_BUDGET_PER_CYCLE, plus the cycle reset date; ledger caps $12 per UTC
   day, $1.50 per seasonal question, $0.60 per MiniBench question. Each call
   reserves its worst case (max_tokens of output), so a cap is never passed.
 - Step-down (claude_mode, once per run): under 25% of the cycle budget left ->
-  MiniBench Sonnet only, seasonal without Fable; under 10% -> no Claude on
-  MiniBench, seasonal Opus only; a credit error, an unreadable ledger or no
-  reset date -> no Claude and no GPT: today's setup.
-- OpenRouter: $0.30 per seasonal question (GPT + paid Flash); no GPT when the
-  key has under $2 left (its slot goes to a third Flash).
+  seasonal Opus x1; under 10% -> seasonal Opus x1, no Claude on MiniBench; a
+  credit error, an unreadable ledger or no reset date -> no Claude: today's setup.
 """
 from __future__ import annotations
 
@@ -43,29 +48,25 @@ from spend import SpendGuard, http_status, utc_day
 
 logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 
-FABLE = "anthropic/claude-fable-5-1"
 OPUS_55 = "anthropic/claude-opus-5-5"
 OPUS_5 = "anthropic/claude-opus-5"
-SONNET = "anthropic/claude-sonnet-5-5"
 HAIKU = "anthropic/claude-haiku-5-5"
 GPT_SOL = ensemble.GPT_SOL  # openrouter/openai/gpt-5.6-sol
 
-CLAUDE_BACKUPS: dict[str, list[str]] = {FABLE: [OPUS_55], OPUS_55: [OPUS_5], SONNET: [HAIKU]}
+CLAUDE_BACKUPS: dict[str, list[str]] = {OPUS_55: [OPUS_5, HAIKU]}
 
 # Anthropic first-party prices, dollars per million tokens (input, output),
 # from the Claude API reference (cached 6 Oct 2026). Confirmed by the pre-flight.
 CLAUDE_PRICES: dict[str, tuple[float, float]] = {
-    FABLE: (10.00, 50.00),
     OPUS_55: (4.00, 20.00),
     OPUS_5: (5.00, 25.00),
-    SONNET: (2.00, 10.00),
     HAIKU: (0.10, 0.50),
 }
 CLAUDE_EFFORT = "high"
 # Output cap per call (thinking included). Each call reserves its worst case:
-# CLAUDE_RESERVE_PROMPT_TOKENS in, CLAUDE_MAX_TOKENS out (Fable $0.90, Opus 5.5
-# $0.36, Opus 5 $0.45, Sonnet $0.18, Haiku $0.01), so Fable + Opus fit the
-# $1.50 seasonal cap and Opus + Sonnet the $0.60 MiniBench cap.
+# CLAUDE_RESERVE_PROMPT_TOKENS in, CLAUDE_MAX_TOKENS out (Opus 5.5 $0.36,
+# Opus 5 $0.45, Haiku $0.01): 2 Opus 5.5 fit the $1.50 seasonal cap and 1 the
+# $0.60 MiniBench cap.
 CLAUDE_MAX_TOKENS = 16000
 CLAUDE_RESERVE_PROMPT_TOKENS = 10000
 # One call at most 6 minutes (the planned-forecast wait is 9): a backup still has time.
@@ -81,13 +82,14 @@ OPENROUTER_SEASONAL_QUESTION_CAP = 0.30
 GPT_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, no GPT
 STEP_DOWN_LOW = 0.25
 STEP_DOWN_MINIMAL = 0.10
-SEASONAL_FLASH_FORECASTS = 2
+FLASH_FORECASTS = 2  # per question, at most, while a Claude slot runs
 CYCLES_KEPT = 3
 
-# The Claude slots per mode: (seasonal, MiniBench). GPT is added on seasonal.
+# The Claude slots per mode: (seasonal, MiniBench). GPT (when switched on) is
+# added on seasonal.
 MODE_SLOTS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "full": ((FABLE, OPUS_55), (OPUS_55, SONNET)),
-    "low": ((OPUS_55,), (SONNET,)),
+    "full": ((OPUS_55, OPUS_55), (OPUS_55,)),
+    "low": ((OPUS_55,), (OPUS_55,)),
     "minimal": ((OPUS_55,), ()),
 }
 CREDIT_ERROR_TEXT = "credit balance is too low"
@@ -288,6 +290,7 @@ class FrontierPlanner(bot_config.GeminiPool):
     mode: str = "off"
     mode_reason: str = "not started"
     gpt_allowed: bool = False
+    gpt_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_GPT_ENABLED)
     # The class and model-name prefix of the Claude and GPT slots (the
     # rehearsal swaps in recorded replies: ReplayChainLlm, "replay/").
     claude_llm_class: type = ClaudeLlm
@@ -308,10 +311,11 @@ class FrontierPlanner(bot_config.GeminiPool):
         has_key = bool(os.getenv("ANTHROPIC_API_KEY")) if api_key is None else api_key
         self.mode, self.mode_reason = claude_mode(self.claude, has_key)
         self.gpt_allowed = (
-            self.mode != "off" and self.spend is not None and self.spend.blocked is None
+            self.gpt_enabled and self.mode != "off" and self.spend is not None and self.spend.blocked is None
             and key_left is not None and key_left >= GPT_MIN_KEY_LEFT
         )
-        gpt = "on" if self.gpt_allowed else f"off ({'key under $2 left or unknown' if self.mode != 'off' else 'frontier off'})"
+        why = "switched off" if not self.gpt_enabled else ("frontier off" if self.mode == "off" else "key under $2 left or unknown")
+        gpt = "on" if self.gpt_allowed else f"off ({why})"
         return f"Frontier lineup: {self.mode} ({self.mode_reason}); GPT-5.6 Sol {gpt}"
 
     def _claude_chain(self, model: str) -> ThrottledLlm:
@@ -319,7 +323,7 @@ class FrontierPlanner(bot_config.GeminiPool):
         for name in reversed([model, *CLAUDE_BACKUPS.get(model, [])]):
             llm = self.claude_llm_class(
                 model=self.model_prefix + name, pacer=self.claude_pacer, backup=llm, spend=self.claude,
-                temperature=None, timeout=CLAUDE_TIMEOUT_SECONDS, allowed_tries=1,
+                temperature=None, timeout=CLAUDE_TIMEOUT_SECONDS, allowed_tries=1, spend_backups=True,
             )
         assert llm is not None
         return llm
@@ -335,34 +339,49 @@ class FrontierPlanner(bot_config.GeminiPool):
     def _claude_ok(self, model: str) -> bool:
         return self.claude is not None and self.claude.refusal(self.model_prefix + model) is None
 
+    def _todays_setup(self) -> None:
+        """Paid Flash as today: until a question has 3 real forecasts."""
+        if self.spend is not None:
+            self.spend.forecast_target = bot_config.PAID_FLASH_TARGET_FORECASTS
+
+    def _frontier_on(self) -> bool:
+        return self.mode != "off" and not (self.claude is not None and self.claude.blocked)
+
     def plan(self, seasonal: bool, only_model: str | None = None, binary: bool = True, limit: int | None = None) -> list[ThrottledLlm]:
-        if only_model or self.mode == "off" or (self.claude is not None and self.claude.blocked):
+        if only_model or not self._frontier_on():
+            self._todays_setup()
             return super().plan(seasonal, only_model=only_model, binary=binary, limit=limit)
         question = current_question_key.get()
         assert self.claude is not None
         self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
-        wanted = MODE_SLOTS[self.mode][0 if seasonal else 1]
-        claude_models = [m for m in wanted if self._claude_ok(m)]
-        refused = len(wanted) - len(claude_models)  # a cap refused it: that slot goes to Flash
+        # A slot whose model a cap refuses now is left out (its backups may still fit).
+        claude_models = [m for m in MODE_SLOTS[self.mode][0 if seasonal else 1] if self._claude_ok(m)]
         gpt = False
-        if seasonal:
-            if self.gpt_allowed and self.spend is not None:
-                self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
-                gpt = self.spend.refusal(self.model_prefix + GPT_SOL) is None
-            # No GPT (key low, a cap): its slot goes to a third Flash; so does a refused Claude slot.
-            flash = super().plan(seasonal, binary=binary, limit=SEASONAL_FLASH_FORECASTS + (0 if gpt else 1) + refused)
-            if self.spend is not None:
+        if seasonal and self.gpt_allowed and self.spend is not None:
+            self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
+            gpt = self.spend.refusal(self.model_prefix + GPT_SOL) is None
+        if not claude_models and not gpt:
+            # No Claude slot for this question: today's setup.
+            self._todays_setup()
+            self.last_plan = {"frontier": self.mode, "claude": [], "reason": "no Claude slot: today's setup"}
+            plan = super().plan(seasonal, binary=binary)
+            self.last_plan.update(frontier=self.mode, claude=[])
+            return plan
+        # At most 2 Flash, no top-ups; paid Flash may fill both of them (the
+        # 'enough forecasts' rule would count the Claude forecasts).
+        flash = super().plan(seasonal, binary=binary, limit=FLASH_FORECASTS)
+        if self.spend is not None:
+            self.spend.forecast_target = None
+            if gpt:
                 # After the pool set its $0.10: GPT + paid Flash share $0.30 per seasonal question.
                 self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
-        else:
-            flash = super().plan(seasonal, binary=binary, limit=limit)
         chains = [self._claude_chain(m) for m in claude_models] + ([self._gpt_chain()] if gpt else []) + flash
         self.last_plan.update(frontier=self.mode, claude=claude_models, gpt=gpt, flash=len(flash), count=len(chains))
         return chains
 
     def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:
-        # Seasonal: the same 5 forecasts for every question, no round 2.
-        if seasonal and self.mode != "off" and not (self.claude is not None and self.claude.blocked):
+        # Frontier: the planned forecasts only, no round 2 (Flash never outvotes Claude).
+        if self._frontier_on():
             return []
         return super().round2(seasonal, used_models)
 
