@@ -141,8 +141,10 @@ def test_question_record_has_everything(dummy, monkeypatch):  # noqa: F811
 
 
 def test_log_writer_failure_never_raises(capsys):
-    writer = QuestionLogWriter(token="")
+    writer = QuestionLogWriter(token="", pause=lambda s: None)
     assert writer.save("questions/x.json", {"question": {"id_of_post": 9}}) is False
+    assert "::warning" not in capsys.readouterr().out  # not yet: the end-of-run retry pass comes first
+    assert writer.retry_failed() == 1
     assert "::warning title=question-log-failed::" in capsys.readouterr().out
 
 
