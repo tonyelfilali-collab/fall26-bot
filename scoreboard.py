@@ -210,6 +210,35 @@ def score_records(records: list[dict], resolution_of) -> list[dict]:  # type: ig
     return scored
 
 
+def resolution_lookup():  # type: ignore[no-untyped-def]
+    """post id -> the Metaculus resolution string (or None), cached. Uses the
+    bot's METACULUS_TOKEN (forecasting_tools)."""
+    from forecasting_tools import MetaculusClient
+
+    client = MetaculusClient()
+    cache: dict[Any, str | None] = {}
+
+    def resolution_of(post: Any) -> str | None:
+        if post not in cache:
+            question = client.get_question_by_post_id(post)
+            if isinstance(question, list):
+                question = question[0]
+            cache[post] = getattr(question, "resolution_string", None)
+        return cache[post]
+
+    return resolution_of
+
+
+def save_markdown(path: str, text: str, token: str, message: str) -> None:
+    """Write (or overwrite) a markdown file in fall26-data."""
+    body = {"message": message, "content": base64.b64encode(text.encode()).decode()}
+    try:
+        body["sha"] = _github(f"contents/{path}", token)["sha"]
+    except requests.HTTPError:
+        pass
+    _github(f"contents/{path}", token, method="PUT", body=body)
+
+
 def lab_section(token: str) -> str:
     """The replay lab's paired results so far (lab/results.json), or a note."""
     try:
@@ -226,20 +255,8 @@ def main() -> None:
     from bot_helpers import silence_noisy_dependencies
 
     silence_noisy_dependencies()
-    from forecasting_tools import MetaculusClient
-
     token = os.environ["DATA_REPO_TOKEN"]
-    client = MetaculusClient()
-    cache: dict[Any, str | None] = {}
-
-    def resolution_of(post: Any) -> str | None:
-        if post not in cache:
-            question = client.get_question_by_post_id(post)
-            if isinstance(question, list):
-                question = question[0]
-            cache[post] = getattr(question, "resolution_string", None)
-        return cache[post]
-
+    resolution_of = resolution_lookup()
     every = all_tournament_records(token)
     records = latest_submitted_records(token, every)
     scored = score_records(records, resolution_of)
@@ -255,13 +272,7 @@ def main() -> None:
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(report)
-    path = f"scoreboard/{stamp}.md"
-    body = {"message": f"Scoreboard {stamp}", "content": base64.b64encode(report.encode()).decode()}
-    try:
-        body["sha"] = _github(f"contents/{path}", token)["sha"]
-    except requests.HTTPError:
-        pass
-    _github(f"contents/{path}", token, method="PUT", body=body)
+    save_markdown(f"scoreboard/{stamp}.md", report, token, f"Scoreboard {stamp}")
 
 
 if __name__ == "__main__":
