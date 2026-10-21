@@ -244,13 +244,13 @@ def test_lab_records_loads_only_what_it_needs_and_stops_in_time():
         looked_up.append(post)
         return {5: "yes", 6: None, 7: "no"}[post]
 
-    pairs = lab.lab_records(paths, load, resolution_of, skip_post=lambda post: False, may_start=lambda s: True)
+    pairs = list(lab.lab_records(paths, load, resolution_of, skip_post=lambda post: False, may_start=lambda s: True))
     assert [(r["id"], res) for r, res in pairs] == [("5", "yes"), ("7", "no")]
     assert looked_up == [5, 6, 7] and not any("shadows" in p or "test_questions" in p for p in loaded)
     loaded.clear(), looked_up.clear()
-    assert lab.lab_records(paths, load, resolution_of, skip_post=lambda post: post == 5, may_start=lambda s: True)[0][0]["id"] == "7"
+    assert next(lab.lab_records(paths, load, resolution_of, skip_post=lambda post: post == 5, may_start=lambda s: True))[0]["id"] == "7"
     assert 5 not in looked_up
-    assert lab.lab_records(paths, load, resolution_of, skip_post=lambda post: False, may_start=lambda s: False) == []
+    assert list(lab.lab_records(paths, load, resolution_of, skip_post=lambda post: False, may_start=lambda s: False)) == []
 
 
 def test_the_lab_workflow_never_uses_the_live_queue_or_gemini():

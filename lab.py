@@ -41,7 +41,7 @@ import statistics
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from zoneinfo import ZoneInfo
 
 from bench import bootstrap_ci
@@ -438,10 +438,11 @@ def time_check(started: float, clock: Callable[[], float] = time.monotonic) -> C
 
 
 def lab_records(paths: list[str], load: Callable[[str], dict], resolution_of: Callable[[Any], str | None],
-                skip_post: Callable[[int], bool], may_start: Callable[[float], bool]) -> list[tuple[dict, str]]:
+                skip_post: Callable[[int], bool], may_start: Callable[[float], bool]) -> Iterator[tuple[dict, str]]:
     """(record, resolution) for each resolved question the lab still has work
     on: its latest submitted tournament log, found newest first. Loads only
-    what it needs (one file at a time) and stops when time is up."""
+    what it needs, one file at a time and one question at a time (so the
+    caller forecasts each before the next is loaded), and stops when time is up."""
     by_post: dict[int, list[str]] = {}
     for path in paths:
         name = path.rsplit("/", 1)[-1]
@@ -451,7 +452,6 @@ def lab_records(paths: list[str], load: Callable[[str], dict], resolution_of: Ca
             by_post.setdefault(int(name.split("_", 1)[0]), []).append(path)
         except ValueError:
             continue
-    out: list[tuple[dict, str]] = []
     for post in sorted(by_post):
         if skip_post(post):
             continue
@@ -465,15 +465,14 @@ def lab_records(paths: list[str], load: Callable[[str], dict], resolution_of: Ca
             continue
         for path in sorted(by_post[post], reverse=True):  # <day>/<post>_<HHMMSS>: newest first
             if not may_start(LOOKUP_SECONDS):
-                return out
+                return
             try:
                 record = load(path)
             except Exception:
                 continue
             if record.get("submitted"):
-                out.append((record, resolution))
+                yield record, resolution
                 break
-    return out
 
 
 # ---------------------------------------------------------------- entry point
@@ -628,9 +627,10 @@ def main_run() -> str:
         paths = [t["path"] for t in scoreboard._github("git/trees/HEAD?recursive=1", token)["tree"]]
     except Exception:
         paths = []
-    pairs = lab_records(paths, load, resolution_of, lambda post: (post, EXPERIMENTS[3]) in done, may_start)
     results: list[LabResult] = []
-    for record, resolution in pairs:
+    looked_at = 0
+    for record, resolution in lab_records(paths, load, resolution_of, lambda post: (post, EXPERIMENTS[3]) in done, may_start):
+        looked_at += 1
         results += run_question(ctx, record, resolution)
     kept = [r for r in rows if (r["post"], r["experiment"]) in done]
     new_rows = to_rows([r for r in results if (r.question, r.experiment) not in done], now.isoformat())
@@ -640,7 +640,7 @@ def main_run() -> str:
     all_rows = kept + new_rows
     text = report([LabResult(r["post"], r["type"], r["experiment"], r["diff"], r.get("note", "")) for r in all_rows])
     return text + (f"\n\nGemini this run: not allowed ({quota.gemini_window()}); Nemotron: {quota.nemotron_started}; "
-                   f"questions looked at: {len(pairs)}; lab time {time.monotonic() - started:.0f} s; nothing submitted.")
+                   f"questions looked at: {looked_at}; lab time {time.monotonic() - started:.0f} s; nothing submitted.")
 
 
 if __name__ == "__main__":
