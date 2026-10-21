@@ -40,6 +40,11 @@ P. A question already near its cap: the agent is refused; seasonal plain Opus
    (or Haiku) within $1.50; MiniBench with no Claude room: today's setup.
 Q. The Claude day at $14.00: no seasonal agent ($2.28 would pass $15): plain
    Opus; MiniBench no Claude (the day is over its $9 limit).
+S. Two seasonal agents (FRONTIER_SEASONAL_AGENTS = 2, set for the phase only):
+   seasonal = agent + agent2 + Flash x2 (caps 8/3 and 4/2), MiniBench as K;
+   question cap $4.70, Claude day cap $20.
+S2. Both seasonal agents past their 7-minute cap: both cancelled at their
+   worst case, each one's own Opus fallback answers inside the planned wait.
 
 Prints a report; exits 1 if a check fails.
 
@@ -60,7 +65,7 @@ import litellm
 import bot_config
 import frontier
 import main
-from frontier import AGENT, GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget, FrontierPlanner
+from frontier import AGENT, AGENT2, GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget, FrontierPlanner
 from gemini_budget import MemoryStore
 from llm_throttle import RequestPacer
 from replay import ReplayChainLlm, _RecordedAnswer
@@ -154,7 +159,7 @@ def _info(record: dict, planner: FrontierPlanner) -> dict:
         "post": int(post), "type": record["question"]["question_type"], "seasonal": record.get("seasonal"),
         "forecasts": len(ok), "models": models, "round2": record.get("round2"),
         "claude": sum(m.startswith("anthropic/") for m in models), "gpt": models.count(GPT_SOL),
-        "opus": models.count(OPUS_55), "flash": sum("flash" in m for m in models), "agent": models.count(AGENT),
+        "opus": models.count(OPUS_55), "flash": sum("flash" in m for m in models), "agent": models.count(AGENT), "agent2": models.count(AGENT2),
         "agent_runs": [a for f in record.get("forecasts", []) for a in f.get("agent", [])],
         "paid_flash": models.count(bot_config.PAID_FLASH_MODEL), "submitted": record.get("final_forecast") is not None,
         "claude_spent": planner.claude.question_spent(post) if planner.claude else 0.0,
@@ -278,7 +283,8 @@ class RecordedAnthropic:
         raise ValueError(self.script)
 
 
-def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake: RecordedAnthropic) -> tuple[list[dict], FrontierPlanner, list[str]]:
+def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake: RecordedAnthropic,
+                    seasonal_agents: int = 1) -> tuple[list[dict], FrontierPlanner, list[str]]:
     import anthropic
 
     original = anthropic.AsyncAnthropic
@@ -288,6 +294,7 @@ def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake:
         planner = frontier._frontier_pool(MemoryStore(), spend, claude, llm_class=ReplayChainLlm)
         planner.claude_llm_class, planner.agent_llm_class = frontier.ClaudeLlm, frontier.AgentLlm
         planner.agent_enabled = True
+        planner.seasonal_agents = seasonal_agents
         planner.pacers = {m: RequestPacer(60000) for m in planner.pacers}
         planner.claude_pacer = planner.gpt_pacer = RequestPacer(60000)
         planner.start_run(5.0, api_key=True)
@@ -352,12 +359,13 @@ def run() -> dict:
         phase("J", 90000, _budget(), fail={m: lambda: litellm.ServiceUnavailableError(
             message="rehearsal: overloaded", llm_provider="gemini", model="gemini") for m in bot_config.GEMINI_FORECAST_MODELS})
 
-        def agent_phase(name: str, base: int, claude: ClaudeBudget, fake: RecordedAnthropic, prespent: tuple = ()) -> None:
+        def agent_phase(name: str, base: int, claude: ClaudeBudget, fake: RecordedAnthropic, prespent: tuple = (),
+                        seasonal_agents: int = 1) -> None:
             seasonal = [_question(base + i, kind) for i, kind in enumerate(SEASONAL_TYPES)]
             minibench = [_question(base + 9, "binary")]
             for post, dollars in prespent:
                 claude.questions[str(post)] = {"spent": dollars}
-            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake)
+            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake, seasonal_agents)
             out[name] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": [], "fake": fake,
                          "report": frontier.frontier_report(planner)}
 
@@ -369,6 +377,7 @@ def run() -> dict:
         main.PLANNED_WAIT_SECONDS = wait / 100
         agent_phase("L", 82000, _budget(), RecordedAnthropic("full", agent_delay=30.0))
         agent_phase("L2", 83000, _budget(), RecordedAnthropic("full", agent_delay=30.0, plain_delay=30.0))
+        agent_phase("S2", 91000, _budget(), RecordedAnthropic("full", agent_delay=30.0), seasonal_agents=2)
         for attr, value in times.items():
             setattr(frontier, attr, value)
         main.PLANNED_WAIT_SECONDS = wait
@@ -381,6 +390,7 @@ def run() -> dict:
         agent_phase("P", 88000, _budget(), RecordedAnthropic("full"),
                     prespent=tuple((88000 + i, 1.00) for i in range(4)) + ((88009, 0.80),))
         agent_phase("Q", 89000, _budget(day=14.00), RecordedAnthropic("full"))
+        agent_phase("S", 90000, _budget(), RecordedAnthropic("full"), seasonal_agents=2)
         return out
     finally:
         for attr, value in times.items():
@@ -406,6 +416,9 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
     continued = [r for r in reqs("K") if r["messages"][-1]["role"] == "assistant"]
     o_fake, q_day = out["O"]["fake"], out["Q"]["planner"].claude.day_spent()
     s_reserve = frontier.agent_reserve(True)
+    two_reserve = s_reserve + frontier.agent_reserve(True, AGENT2)
+    s_planner, s2_day = out["S"]["planner"], out["S2"]["planner"].claude.day_spent()
+    s2_calls = [c for e in out["S2"]["planner"].claude.questions.values() for c in e.get("calls", []) if c["model"] in (AGENT, AGENT2)]
     return [
         ("K: seasonal, every type = agent + Opus 5.5 + Flash x2 (4 forecasts)",
          len(k_s) == 4 and all(i["forecasts"] == 4 and i["agent"] == 1 and i["opus"] == 1 and i["flash"] == 2 for i in k_s)),
@@ -459,8 +472,26 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          all(i["agent"] == 0 and i["opus"] >= 1 and i["submitted"] for i in infos("Q", True))
          and all(i["claude"] == 0 and i["submitted"] for i in infos("Q", False))
          and q_day <= frontier.CLAUDE_DAILY_CAP + 1e-9),
+        ("S: two seasonal agents (test switch 2) -> seasonal = agent + agent2 + Flash x2; MiniBench = agent + Opus + Flash x2; caps $4.70 / $1.60; day cap $20",
+         all(i["forecasts"] == 4 and i["agent"] == 1 and i["agent2"] == 1 and i["flash"] == 2 and i["submitted"] for i in infos("S", True))
+         and all(i["agent"] == 1 and i["opus"] == 1 and i["agent2"] == 0 and i["submitted"] for i in infos("S", False))
+         and all(s_planner.claude.caps[str(i["post"])] == (frontier.AGENT2_SEASONAL_QUESTION_CAP if i["seasonal"]
+                 else frontier.AGENT_MINIBENCH_QUESTION_CAP) for i in infos("S"))
+         and all(i["claude_spent"] <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9 for i in infos("S"))
+         and s_planner.claude.daily_cap == frontier.CLAUDE_DAILY_CAP_TWO_AGENTS
+         # First requests (continuations get what is left): agent 8/3, agent2 4/2, MiniBench agent 3/2.
+         and {(8, 3), (4, 2), (3, 2)} <= {tuple(t["max_uses"] for t in r["tools"]) for r in reqs("S")}),
+        (f"S2: both agents past their cap -> both cancelled at their worst case, both Opus fallbacks answer inside the wait; "
+         f"8 running agents hold ${4 * two_reserve:.2f} > $9: MiniBench today's setup; ${s2_day:.2f} <= $20.00",
+         len(runs("S2")) == 8 and all(r["outcome"] == "timed out" for r in runs("S2"))
+         and len([c for c in s2_calls if c["model"] == AGENT2]) == 4 and not any(c["ok"] for c in s2_calls)
+         and all(i["submitted"] and i["opus"] == 2 and i["agent"] == 0 and i["agent2"] == 0 for i in infos("S2", True))
+         and all(i["submitted"] and i["claude"] == 0 for i in infos("S2", False))
+         and all(i["claude_spent"] >= two_reserve - 1e-9 and i["claude_spent"] <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
+                 for i in infos("S2", True))
+         and s2_day <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
         ("Agent phases: 0 real calls (every Anthropic request went to the recorded client)",
-         all(out[p]["fake"].agent_requests or out[p]["fake"].plain_requests for p in ("K", "L", "M", "N", "N2", "O", "P", "Q"))),
+         all(out[p]["fake"].agent_requests or out[p]["fake"].plain_requests for p in ("K", "L", "M", "N", "N2", "O", "P", "Q", "S", "S2"))),
     ]
 
 
@@ -540,7 +571,8 @@ def report() -> tuple[bool, str]:
               "J": "J. Every free Flash 503", "K": "K. Agent: full path", "L": "L. Agent past its 7-minute cap",
               "L2": "L2. Agent and plain Opus too slow", "M": "M. Agent tool failures", "N": "N. Agent near its tool caps",
               "N2": "N2. Agent tool caps used at a pause", "O": "O. Agent credit error", "P": "P. Question near its cap",
-              "Q": "Q. Claude day at $14.00", "R": "R. MiniBench burst of 40 from a $8 Claude day"}
+              "Q": "Q. Claude day at $14.00", "R": "R. MiniBench burst of 40 from a $8 Claude day",
+              "S": "S. Two seasonal agents (test switch)", "S2": "S2. Two seasonal agents both past their cap"}
     for phase, title in titles.items():
         lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]

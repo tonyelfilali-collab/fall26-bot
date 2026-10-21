@@ -507,7 +507,11 @@ def test_frontier_agent_flag_is_test_only():
     assert '"--frontier-agent"' in source and "--frontier-agent only runs with --mode test_questions --lineup frontier." in source
     workflow = open(".github/workflows/test_bot.yaml").read()
     assert "args=(--mode test_questions --lineup frontier --frontier-agent)" in workflow
-    assert "inputs.lineup == 'frontier-agent' || inputs.lineup == 'claude-preflight') && secrets.ANTHROPIC_API_KEY" in workflow
+    assert ("inputs.lineup == 'frontier-agent' || inputs.lineup == 'frontier-agents2' || inputs.lineup == 'claude-preflight')"
+            " && secrets.ANTHROPIC_API_KEY") in workflow
+    # Two seasonal agents: test only, on top of the agent flag.
+    assert "args=(--mode test_questions --lineup frontier --frontier-agent --seasonal-agents 2)" in workflow
+    assert "--seasonal-agents only runs with --frontier-agent." in source
 
 
 def test_the_run_summary_has_one_row_per_agent_call():

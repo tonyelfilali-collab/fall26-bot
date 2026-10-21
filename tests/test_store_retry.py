@@ -60,8 +60,9 @@ def test_ledger_save_failure_still_never_raises(monkeypatch):
 
 def test_test_bot_groups():
     text = open(".github/workflows/test_bot.yaml").read()
-    # The lineups with the live Gemini key (gemini-free, frontier, frontier-agent) share the live queue.
-    gemini = "(inputs.lineup == 'gemini-free' || inputs.lineup == 'frontier' || inputs.lineup == 'frontier-agent')"
+    # The lineups with the live Gemini key (gemini-free, frontier, frontier-agent(s2)) share the live queue.
+    gemini = ("(inputs.lineup == 'gemini-free' || inputs.lineup == 'frontier' || inputs.lineup == 'frontier-agent'"
+              " || inputs.lineup == 'frontier-agents2')")
     assert f"{gemini} && 'forecast-bot' || 'test-bot-no-gemini'" in text
     assert f"{gemini} && secrets.GEMINI_API_KEY || ''" in text
     for workflow in ("run_bot_on_tournament.yaml", "probe.yaml"):

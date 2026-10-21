@@ -116,6 +116,9 @@ CREDIT_ERROR_TEXT = "credit balance is too low"
 
 # ---- the agent (PR 4, OFF): Opus 5.5 + web_search / web_fetch (server tools).
 AGENT = "anthropic/claude-opus-5-5-agent"  # ledger name; the call is Opus 5.5
+# The second seasonal agent (bot_config.FRONTIER_SEASONAL_AGENTS = 2; built OFF): smaller caps.
+AGENT2 = "anthropic/claude-opus-5-5-agent2"
+AGENTS = (AGENT, AGENT2)
 AGENT_SEARCH_TOOL = "web_search_20260209"  # current versions for Opus 5.5 (dynamic filtering)
 AGENT_FETCH_TOOL = "web_fetch_20260209"
 # Question pages show the community prediction, which we don't use (architect, 21 Oct).
@@ -131,6 +134,10 @@ FALLBACK_MIN_SECONDS = 45  # under this, the fallback is not started
 AGENT_MAX_CONTINUATIONS = 3  # pause_turn continuations per agent turn
 AGENT_MIN_OUTPUT_TOKENS = 2000  # a continuation needs at least this much output left
 AGENT_SEASONAL_QUESTION_CAP = 3.00
+# Two seasonal agents (architect, 21 Oct): agent $2.28 + agent2 $1.64 + their
+# two Opus fallbacks ($0.72) = $4.64; the Claude day cap rises to $20 with them.
+AGENT2_SEASONAL_QUESTION_CAP = 4.70
+CLAUDE_DAILY_CAP_TWO_AGENTS = 20.00
 AGENT_MINIBENCH_QUESTION_CAP = 1.60
 
 
@@ -153,6 +160,13 @@ AGENT_CAPS = {
     True: AgentCaps(searches=8, fetches=3, output_tokens=20000, input_tokens=450000),
     False: AgentCaps(searches=3, fetches=2, output_tokens=12000, input_tokens=150000),
 }
+# agent2 (seasonal only): $1.20 + $0.40 + $0.04 = $1.64 (architect, 21 Oct: a test
+# call read 215k input, so 300k; the dollar reservation is the guard).
+AGENT2_CAPS = AgentCaps(searches=4, fetches=2, output_tokens=20000, input_tokens=300000)
+
+
+def agent_caps(seasonal: bool, name: str = AGENT) -> AgentCaps:
+    return AGENT2_CAPS if name.removeprefix("replay/") == AGENT2 else AGENT_CAPS[seasonal]
 AGENT_SYSTEM = (
     "You are forecasting the question in the user message. The research assistant's report in it is "
     "your starting point. You have web_search (at most {searches} searches) and web_fetch (at most "
@@ -172,9 +186,9 @@ def claude_reserve(model: str) -> float:
     return (CLAUDE_RESERVE_PROMPT_TOKENS * prompt + CLAUDE_MAX_TOKENS * completion) / 1_000_000
 
 
-def agent_reserve(seasonal: bool) -> float:
+def agent_reserve(seasonal: bool, name: str = AGENT) -> float:
     """The agent's worst case: its token and search caps at Opus 5.5 prices."""
-    caps, (prompt, completion) = AGENT_CAPS[seasonal], CLAUDE_PRICES[OPUS_55]
+    caps, (prompt, completion) = agent_caps(seasonal, name), CLAUDE_PRICES[OPUS_55]
     return (caps.input_tokens * prompt + caps.output_tokens * completion) / 1_000_000 + caps.searches * AGENT_SEARCH_PRICE
 
 
@@ -252,21 +266,21 @@ class ClaudeBudget(SpendGuard):
         self.daily_cap = CLAUDE_DAILY_CAP
         self.minibench_daily_cap = CLAUDE_MINIBENCH_DAY_LIMIT
         self.estimates = {m: claude_reserve(m) for m in CLAUDE_PRICES}
-        self.agent_stats: dict[str, dict] = {}  # question -> searches, fetches of the agent call finishing
+        self.agent_stats: dict[tuple, dict] = {}  # (question, agent) -> searches, fetches of the call finishing
         self.agent_off: str | None = None  # set: no agent for the rest of this run
         self.agent_overruns = 0  # agent calls over their reservation this run
 
     def estimate(self, model: str) -> float:
         name = model.removeprefix("replay/")
-        if name == AGENT:
-            return agent_reserve(agent_seasonal())
+        if name in AGENTS:
+            return agent_reserve(agent_seasonal(), name)
         return claude_reserve(name) if name in CLAUDE_PRICES else super().estimate(model)
 
-    def note_agent(self, question: str | None, stats: dict) -> None:
+    def note_agent(self, question: str | None, stats: dict, agent: str = AGENT) -> None:
         """The agent call that is about to finish: searches, fetches, pauses,
         tokens, outcome, stop reason, tool error codes (numbers and labels only)."""
         if question is not None:
-            self.agent_stats[question] = stats
+            self.agent_stats[(question, agent.removeprefix("replay/"))] = stats
 
     def cycle_spent(self) -> float:
         return self.cycles.get(self.cycle.isoformat(), 0.0) if self.cycle else 0.0
@@ -282,7 +296,8 @@ class ClaudeBudget(SpendGuard):
         before = self.day_spent()
         super().finish(model, succeeded, cost=cost, error=error, timed_out=timed_out, **details)
         question = current_question_key.get()
-        stats = self.agent_stats.pop(question, None) if model.removeprefix("replay/") == AGENT else None
+        name = model.removeprefix("replay/")
+        stats = self.agent_stats.pop((question, name), None) if name in AGENTS else None
         if stats and question in self.questions and self.questions[question].get("calls"):
             self.questions[question]["calls"][-1].update(stats)
         if self.cycle is not None:
@@ -414,6 +429,7 @@ class AgentRun:
     tool error codes go to the private question log only, never stdout."""
 
     seasonal: bool
+    name: str = AGENT
     requests: int = 0
     searches: int = 0
     fetches: int = 0
@@ -432,7 +448,7 @@ class AgentRun:
 
     @property
     def caps(self) -> AgentCaps:
-        return AGENT_CAPS[self.seasonal]
+        return agent_caps(self.seasonal, self.name)
 
     @property
     def cost(self) -> float:
@@ -498,15 +514,15 @@ class AgentRun:
         context = self.last_input + self.output_tokens
         nxt = (context * prompt + min(CLAUDE_MAX_TOKENS, self.output_left()) * completion) / 1_000_000
         if self.input_tokens + context > caps.input_tokens \
-                or self.cost + nxt + (caps.searches - self.searches) * AGENT_SEARCH_PRICE > agent_reserve(self.seasonal) + 1e-9:
+                or self.cost + nxt + (caps.searches - self.searches) * AGENT_SEARCH_PRICE > agent_reserve(self.seasonal, self.name) + 1e-9:
             return "reservation"
         return None
 
     def log_entry(self) -> dict:
         """For the private question log (fall26-data): never printed."""
-        reserve = agent_reserve(self.seasonal)
+        reserve = agent_reserve(self.seasonal, self.name)
         return {
-            "model": AGENT, "outcome": self.outcome, "stop_reason": self.stop, "requests": self.requests,
+            "model": self.name, "outcome": self.outcome, "stop_reason": self.stop, "requests": self.requests,
             "searches": self.searches, "fetches": self.fetches, "urls_read": list(self.urls_read),
             "urls_found": list(self.urls_found), "tool_errors": dict(self.tool_errors),
             "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
@@ -541,7 +557,7 @@ class _AgentCall(GeneralLlm):
         return cap
 
     async def _mockable_direct_call_to_model(self, prompt: Any) -> TextTokenCostResponse:
-        run = AgentRun(seasonal=agent_seasonal())
+        run = AgentRun(seasonal=agent_seasonal(), name=self.model.removeprefix("replay/"))
         cap = self._time_cap()
         started = time.monotonic()
         budget = getattr(self, "_spend", None)
@@ -561,8 +577,8 @@ class _AgentCall(GeneralLlm):
                 budget.note_agent(current_question_key.get(), {
                     "searches": run.searches, "fetches": run.fetches, "pauses": max(0, run.requests - 1),
                     "outcome": run.outcome[:60], "stop_reason": str(run.stop)[:20], "tool_errors": dict(run.tool_errors),
-                    "input_tokens": run.input_tokens, "output_tokens": run.output_tokens})
-                if run.cost > agent_reserve(run.seasonal) + 1e-9:
+                    "input_tokens": run.input_tokens, "output_tokens": run.output_tokens}, run.name)
+                if run.cost > agent_reserve(run.seasonal, run.name) + 1e-9:
                     # Fail closed: an agent over its reservation switches the agent off for this run.
                     logger.warning(f"Question {current_question_key.get()}: agent over its reservation "
                                    f"(${run.cost:.4f}); agent off for this run")
@@ -642,6 +658,7 @@ class FrontierPlanner(bot_config.GeminiPool):
     gpt_allowed: bool = False
     gpt_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_GPT_ENABLED)
     agent_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_AGENT_ENABLED)
+    seasonal_agents: int = field(default_factory=lambda: bot_config.FRONTIER_SEASONAL_AGENTS)
     # The class and model-name prefix of the Claude and GPT slots (the
     # rehearsal swaps in recorded replies: ReplayChainLlm, "replay/").
     claude_llm_class: type = ClaudeLlm
@@ -671,6 +688,9 @@ class FrontierPlanner(bot_config.GeminiPool):
         line = f"Frontier lineup: {self.mode} ({self.mode_reason}); GPT-5.6 Sol {gpt}"
         if self.agent_enabled:
             line += f"; agent {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
+            if self.seasonal_agents >= 2 and self.claude is not None:
+                self.claude.daily_cap = CLAUDE_DAILY_CAP_TWO_AGENTS  # the MiniBench limit stays $9
+                line += "; 2 seasonal agents"
         return line
 
     def _claude_chain(self, model: str, deadline_aware: bool = False) -> ThrottledLlm:
@@ -685,11 +705,11 @@ class FrontierPlanner(bot_config.GeminiPool):
         assert llm is not None
         return llm
 
-    def _agent_chain(self) -> ThrottledLlm:
+    def _agent_chain(self, name: str = AGENT) -> ThrottledLlm:
         # Any agent failure (time cap, tool or request error, no answer, a cap
-        # refusal): the plain Opus chain, with the time the planned wait has left.
+        # refusal): its own plain Opus chain, with the time the planned wait has left.
         return self.agent_llm_class(
-            model=self.model_prefix + AGENT, pacer=self.claude_pacer, backup=self._claude_chain(OPUS_55, deadline_aware=True),
+            model=self.model_prefix + name, pacer=self.claude_pacer, backup=self._claude_chain(OPUS_55, deadline_aware=True),
             spend=self.claude, temperature=None, timeout=AGENT_TIMEOUT_SECONDS, allowed_tries=1,
             spend_backups=True, backup_on_any_error=True,
         )
@@ -744,11 +764,16 @@ class FrontierPlanner(bot_config.GeminiPool):
             # The agent replaces one Opus slot; the question cap rises while it runs.
             # Its reservation follows the question kind (main.py sets the same value).
             question_seasonal.set(seasonal)
-            self.claude.set_cap(question, AGENT_SEASONAL_QUESTION_CAP if seasonal else AGENT_MINIBENCH_QUESTION_CAP)
+            two = seasonal and self.seasonal_agents >= 2
+            self.claude.set_cap(question, AGENT2_SEASONAL_QUESTION_CAP if two else
+                                AGENT_SEASONAL_QUESTION_CAP if seasonal else AGENT_MINIBENCH_QUESTION_CAP)
             agent = self._claude_ok(AGENT)
             if agent:
-                # Both kinds: agent + plain Opus 5.5 (+ Flash x2 below).
-                slots = [AGENT, OPUS_55]
+                # Agent + plain Opus 5.5 (+ Flash x2 below); two seasonal agents: agent2 replaces plain Opus.
+                second = AGENT2 if two and self._claude_ok(AGENT2) else OPUS_55
+                if two and second == OPUS_55:
+                    self.claude.set_cap(question, AGENT_SEASONAL_QUESTION_CAP)
+                slots = [AGENT, second]
             else:  # refused (e.g. the day cap): plain Opus slots and caps, as without the agent
                 self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
         # A slot whose model a cap refuses now is left out (its backups may still fit).
@@ -772,7 +797,7 @@ class FrontierPlanner(bot_config.GeminiPool):
             if gpt:
                 # After the pool set its $0.10: GPT + paid Flash share $0.30 per seasonal question.
                 self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
-        claude_chains = [self._agent_chain() if m == AGENT else self._claude_chain(m) for m in claude_models]
+        claude_chains = [self._agent_chain(m) if m in AGENTS else self._claude_chain(m) for m in claude_models]
         chains = claude_chains + ([self._gpt_chain()] if gpt else []) + flash
         self.last_plan.update(frontier=self.mode, claude=claude_models, gpt=gpt, flash=len(flash), count=len(chains))
         if self.agent_enabled:
