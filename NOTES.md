@@ -8,6 +8,8 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Switch / setting | Where | Now | What it does | PR |
 |---|---|---|---|---|
 | `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
+| Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the PR 2 caps; OpenRouter paid: GPT-5.6 Sol (seasonal only) + Gemini 3.6 Flash (as now) | OpenRouter daily stop rule $2.00; spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
+| `FRONTIER_ENABLED` | `bot_config.py` (PR 2) | not built yet; will be built OFF | Claude Fable/Opus/Sonnet + GPT-5.6 Sol lineup with its budget, caps and step-downs | PR 2 |
 | `ACTIVE_LINEUP` | `bot_config.py` | `gemini-free` | Free Google AI Studio key: 4 Flash forecasters, Flash-Lite for research/parsing | #8, #9 |
 | Credits lineup | `bot_config.py` (`credits`) | OFF all season: no credits (Metaculus, 5 Oct) | Opus 5.5 / GPT-5.6 Sol / Gemini 3.6 Flash tiers; Flash slot tries the free key first; switch-on checklist PLAN.md 6b | #23, #74, #79 |
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
