@@ -26,7 +26,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Official data line | `hard_data.py` (no switch) | ON | FRED / CoinGecko line in the dossier; exact match feeds the unit check; stand-in warning | #62, #68 |
 | `YAHOO_ENABLED` | `hard_data.py` | ON, but Yahoo answers 429 | Stocks/indices/commodities/FX via Yahoo; blocked, skipped gracefully (stocks not covered) | #87 |
 | Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
-| Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct) | #27, #44, #63, #110 |
+| Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct), window-blend (50/50 live + window, 21 Oct) | #27, #44, #63, #110 |
 | Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
 | Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; since PR L (21 Oct): own queue (`replay-lab`, never delays a live run), no Gemini, ends by minute 8 | #92, PR L |
 | Spend guards | `spend.py` | ON (credits only) | Per-question cap 2x tier cost, daily cap 2x target, key backstop, never re-buy, fail closed | #81 |
@@ -451,6 +451,12 @@ scored by the Scoreboard, never submitted. Old logs keep their `random-walk` sha
 - 45868 (VIX intraday high, 86 days, real FRED history 1990-2026): 4,997 similar windows; median 21.4,
   10%: 17.1, 90%: 33.1, P(>40) 5.5% (live: 28.7 / 19.9 / above 40 / 19.3%; random walk: 16.4 / 7.1 / 36.9 / 7.6%).
   Raw check: 5.5% of the 4,991 windows starting with the VIX at 12-20 closed above 40 within 86 days.
+- **Window blend (21 Oct, shadow `window-blend`):** where a `window` shadow exists (numeric and discrete),
+  0.5 x the live CDF + 0.5 x the window CDF, point by point on the question's grid (`shadow.window_blend`,
+  called in `main._window_blend_shadow` right after the final forecast, before the log is saved). The window
+  CDF is put on the live grid (question's own x-axis, interpolated if its points differ); the result must
+  pass `distribution_problems` or it is dropped. 0 model calls; no baseline = no blend; a failure is only
+  logged (public log: status only). Scored by the Scoreboard as its own shadow row, like `window`.
 
 ## Paid-Flash fallback (30 Sep 2026, ON)
 

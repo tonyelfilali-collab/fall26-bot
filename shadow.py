@@ -15,6 +15,9 @@ Zero-cost variants (no model call, computed from the forecasts already made):
   below ~1%, so it could never be submitted.)
 - Numeric / discrete (live: pointwise median of the CDFs, 5% uniform):
   "mean-cdf" (pointwise mean), "uniform-2%" (median, 2% uniform).
+- Numeric / discrete with a window baseline (window_baseline.py, shadow
+  "window"): "window-blend" = 0.5 x the live CDF + 0.5 x the window CDF,
+  pointwise on the question's grid (21 Oct). No baseline: no blend.
 - "referee": a model sees each forecaster's number and a two-line reason and
   gives its own number, kept between the lowest and highest forecast; the
   candidate is the average of the referee and the median. SWITCHED OFF until
@@ -38,6 +41,8 @@ logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 ZERO_COST_VARIANTS = ("stretch-1.2", "stretch-1.5", "mean", "geo-mean-odds", "trimmed-mean")
 MULTIPLE_CHOICE_VARIANTS = ("mean",)
 NUMERIC_VARIANTS = ("mean-cdf", "uniform-2%")
+WINDOW_BLEND = "window-blend"
+WINDOW_BLEND_WEIGHT = 0.5  # share of the window baseline in the blend
 TRIM_FROM = 5  # trimmed mean drops the highest and lowest from this many forecasts
 _ODDS_CLAMP = 1e-3
 REFEREE_ENABLED = False
@@ -108,6 +113,51 @@ def numeric_shadows(distributions: list[Any], question: Any) -> dict[str, Any]:
         except Exception as e:  # a shadow never stops the live forecast
             logger.warning(f"Shadow {name} could not be built ({type(e).__name__})")
     return shadows
+
+
+def _cdf_on_grid(forecast: Any, question: Any) -> Any:
+    """A forecast's CDF on the question's grid, from a distribution or its saved
+    JSON form. Its points are put in the question's own x-axis (log-scaled
+    questions) and interpolated onto the grid, so a different point set still
+    lines up with the live CDF."""
+    import numpy as np
+
+    from distributions import _grid, _template
+
+    if isinstance(forecast, dict):
+        points = [(float(p["value"]), float(p["percentile"])) for p in forecast.get("declared_percentiles") or []]
+    else:
+        points = [(float(p.value), float(p.percentile)) for p in forecast.declared_percentiles]
+    if len(points) < 2:
+        raise ValueError("need at least 2 CDF points")
+    template = _template(question)
+    located = sorted((template._nominal_location_to_cdf_location(v), h) for v, h in points)
+    return np.interp(_grid(question), [x for x, _ in located], [h for _, h in located])
+
+
+def window_blend(live: Any, window: Any, question: Any, weight: float = WINDOW_BLEND_WEIGHT) -> Any | None:
+    """(1 - weight) x the live CDF + weight x the window baseline's CDF, point by
+    point on the question's grid. None if the blend breaks the platform rules
+    (forecast_safety.distribution_problems)."""
+    from forecasting_tools import NumericDistribution, Percentile
+
+    from distributions import _grid, _template, _to_distribution
+    from forecast_safety import distribution_problems
+
+    blend = (1 - weight) * _cdf_on_grid(live, question) + weight * _cdf_on_grid(window, question)
+    template = _template(question)
+    values = [template._cdf_location_to_nominal_location(loc) for loc in _grid(question)]
+    try:
+        distribution = NumericDistribution.from_question(
+            [Percentile(value=v, percentile=float(p)) for v, p in zip(values, blend)], question
+        )
+    except ValueError:
+        # As combine_numeric: let the library standardise an open tail just off.
+        try:
+            distribution = _to_distribution(blend, question, template)
+        except ValueError:
+            return None
+    return None if distribution_problems(distribution, question) else distribution
 
 
 # ---------------------------------------------------------------- referee (off)
