@@ -104,7 +104,8 @@ def _budget(spent: float = 0.0, day: float = 0.0, store: Any = None) -> ClaudeBu
 
 
 def run_phase(seasonal: list, minibench: list, claude: ClaudeBudget, key_left: float = 5.0,
-              fail: dict | None = None, slow: dict | None = None, gpt: bool = False) -> tuple[list[dict], FrontierPlanner, list[str]]:
+              fail: dict | None = None, slow: dict | None = None, gpt: bool = False,
+              question_log: Any = None) -> tuple[list[dict], FrontierPlanner, list[str]]:
     """One live-like run; returns (question records, planner, real model of each recorded call)."""
     fail, slow, calls = fail or {}, slow or {}, []
     original = _RecordedAnswer._mockable_direct_call_to_model
@@ -135,7 +136,7 @@ def run_phase(seasonal: list, minibench: list, claude: ClaudeBudget, key_left: f
             predictions_per_research_report=3, required_successful_predictions=0,
         )
         bot.planner = planner
-        bot.question_log = None
+        bot.question_log = question_log  # None: no files (a test may pass a recorder)
         bot.keep_records = True
         bot.run_mode = "test_questions"
         queued, bot.seasonal_by_post = main.run_queue(seasonal, minibench)

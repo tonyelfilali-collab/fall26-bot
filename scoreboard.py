@@ -311,7 +311,7 @@ SHADOWS_SUFFIX = "_shadows.json"
 
 def merge_shadow_files(files: dict[str, dict]) -> list[dict]:
     """Question logs (path -> record) with each '<log>_shadows.json' (the
-    end-of-run shadow forecaster, run timing) merged into its log."""
+    end-of-run shadow forecaster and referee, run timing) merged into its log."""
     records = {path: record for path, record in files.items() if not path.endswith(SHADOWS_SUFFIX)}
     for path, extra in files.items():
         if not path.endswith(SHADOWS_SUFFIX):
@@ -321,6 +321,8 @@ def merge_shadow_files(files: dict[str, dict]) -> list[dict]:
             continue
         if "shadow_model" in extra:
             record["shadow_model"] = extra["shadow_model"]
+        if "referee" in extra:
+            record["referee"] = extra["referee"]
         record.setdefault("shadow", {}).update(extra.get("shadow") or {})
     return list(records.values())
 

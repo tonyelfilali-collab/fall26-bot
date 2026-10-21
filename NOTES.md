@@ -21,7 +21,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Emergency window | `main.EMERGENCY_WINDOW` | 45 min | When the backup chain may use the Flash-Lite reserve | #59, #67 |
 | `STRETCH_K` | `forecast_safety.py` | 1.0 (off) | Log-odds stretch of the binary median (shadows 1.2 / 1.5 are logged) | #16, #44 |
 | `MARKET_MODE` | `bot_config.py` | `off` | Market matching (code kept; manual Market matches workflow) | #26, #30 |
-| `REFEREE_ENABLED` | `shadow.py` | `False` | Referee shadow; Opus 5.5 version (Claude budget, disagreeing binaries only, never submitted) built in #148 (not merged; after #146); switch-on = one-line PR after PR 3 is live | #27, #148 |
+| `REFEREE_ENABLED` | `shadow.py` | `False` | Referee shadow: Opus 5.5 via the Claude budget on disagreeing binary questions, never submitted (built off in #148, after #146; switch-on is its own one-line PR once the agent is live) | #27, #148 |
 | `FOLLOWUP_ENABLED` | `followup.py` | ON | Round 1 disagrees: 2 follow-up queries, "Follow-up findings" section, round 2 uses it | #86 |
 | `WIKIPEDIA_ENABLED` | `wikipedia.py` | ON | Up to 3 entity summaries as "Background (Wikipedia)" (<= 800 tokens) | #87 |
 | Official data line | `hard_data.py` (no switch) | ON | FRED / CoinGecko line in the dossier; exact match feeds the unit check; stand-in warning | #62, #68 |
@@ -605,10 +605,21 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   **never submitted** (tested: the live answer is unchanged).
 - **Free variants (on):** `stretch-1.2` (the PLAN's stretch setting, off live, so Step 11 gets
   data) and `mean` (mean instead of median); both go through the same final steps. No model calls.
-- **Referee (OFF until credits, `shadow.REFEREE_ENABLED`):** sees each forecaster's number plus a
-  two-line reason, answers "Probability: ZZ%", is kept between the lowest and highest forecast;
-  candidate = average of the referee and the median. Uses the planner's quick forecaster (Opus
-  5.5 on credits).
+- **Referee (built OFF, `shadow.REFEREE_ENABLED`; D1, 21 Oct):** binary only, only when 2+ forecasts
+  finished and their spread (max - min) is over 15 percentage points. Never changes the submitted
+  forecast: when the question's log is saved, its finished forecasts and submitted value are queued;
+  the referee runs at the END of the run beside the shadow forecaster (`main._finish_run`), each
+  call in its own task with that question's `current_question_key` / `question_seasonal` set again
+  (MiniBench or unknown: the $9 rule). None started at or after minute 45; each call at most
+  min(240 s, time left until minute 47). `FrontierPlanner.referee_llm()`:
+  `claude-opus-5-5`, effort high, through the Claude budget (day $15, MiniBench under $9, question and
+  cycle caps; in the Claude ledger and `frontier_report` like any Claude call); one try, NO backups (a
+  cap refusal = no referee). Claude mode off, no Claude budget, blocked or a credit error -> no referee
+  call. Over its limit: cancelled and charged its worst case (as any Claude timeout), no value.
+  It sees each forecaster's number plus a two-line reason and answers "Probability: ZZ%". Shadow
+  `referee` = mean of its answer and the submitted forecast, kept between the lowest and highest
+  finished forecast; saved in `<log>_shadows.json` (`shadow.referee` + `referee` = model, status,
+  seconds, cost), never in the question's log; the Scoreboard merges it in. Public log: `Question N: referee <status>, $cost` only.
 - **Scoring:** see Scoreboard below. PLAN.md: the referee goes live only after ≥80 resolved
   binary questions and only if it beats the median.
 

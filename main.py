@@ -110,10 +110,12 @@ from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
 from shadow import (
     REFEREE_ENABLED,
+    REFEREE_TIMEOUT_SECONDS,
     WINDOW_BLEND,
     combine_with_shadow,
     multiple_choice_shadows,
     numeric_shadows,
+    referee_needed,
     referee_shadow,
     two_line_reason,
     window_blend,
@@ -135,7 +137,7 @@ from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from frontier import FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
-from spend import SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
+from spend import SpendCapReached, SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, window_baseline
 from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
@@ -1113,24 +1115,6 @@ class FallBot2026(ForecastBot):
         submitted = await self._submit_if_still_open(question, report)
         if submitted and isinstance(question, BinaryQuestion):
             self._consistency_shadow(question, record, report.prediction)
-        # Step 10: the referee shadow (OFF until credits), saved, never submitted.
-        if REFEREE_ENABLED and isinstance(question, BinaryQuestion) and self.planner is not None:
-            try:
-                finished = [
-                    (float(f["parsed"]), two_line_reason(f["raw_output"]))
-                    for f in record["forecasts"]
-                    if f.get("status") == "ok"
-                ]
-                referee = await referee_shadow(
-                    question.question_text,
-                    finished,
-                    self.planner.quick_forecaster().invoke,
-                    parse_binary_answer,
-                )
-                if referee is not None:
-                    record.setdefault("shadow", {})["referee"] = referee
-            except Exception as e:
-                logger.warning(f"Question {question.id_of_post}: referee shadow failed ({type(e).__name__})")
         # Step 9, log-only: after submitting, find and judge matching markets
         # and save them. Never changes the forecast; a failure is only logged.
         if MARKET_MODE == "log-only" and isinstance(question, BinaryQuestion):
@@ -1158,7 +1142,86 @@ class FallBot2026(ForecastBot):
         # Saved at once: a job killed later still leaves this question's log.
         await self._save_record(question, record, started)
         self._shadow_later(question, record, started)
+        # Step 10: the referee shadow (built OFF), at the end of the run, in
+        # the '<log>_shadows.json' file, never submitted.
+        if REFEREE_ENABLED and isinstance(question, BinaryQuestion):
+            self._referee_later(question, record, report.prediction, started)
         return report
+
+    def _referee_llm(self):  # type: ignore[no-untyped-def]
+        referee_llm = getattr(self.planner, "referee_llm", None)
+        return referee_llm() if referee_llm is not None else None
+
+    def _referee_later(self, question: BinaryQuestion, record: dict, submitted: Any, started: datetime) -> None:
+        """Called once the question's log is saved: keep its finished
+        forecasts, the submitted value and the question's budget context; the
+        referee runs at the end of the run (only 2+ finished forecasts over 15
+        points apart)."""
+        try:
+            finished = [
+                (float(f["parsed"]), two_line_reason(f.get("raw_output") or ""))
+                for f in record["forecasts"] if f.get("status") == "ok"
+            ]
+            if not referee_needed([p for p, _ in finished]):
+                return
+            item = {
+                "question": question, "record": record, "started": started, "finished": finished,
+                "submitted": float(submitted), "key": current_question_key.get() or str(question.id_of_post),
+                # MiniBench (False) or unknown (None): the $9 rule (fail closed).
+                "seasonal": spend_question_seasonal.get(), "flag": _question_seasonal.get(),
+            }
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: referee shadow failed ({type(e).__name__})")
+            return
+        self.__dict__.setdefault("_pending_referees", []).append(item)
+
+    async def _referee_at_end(self, item: dict) -> None:
+        """The referee (shadow.py) in its own task at the end of the run: not
+        at or after minute 45, at most min(240 s, the time left until minute
+        47), with Claude on. Its cost goes in the Claude ledger; the result
+        waits for the '<log>_shadows.json' file; the public log gets the status
+        and cost only."""
+        question = item["question"]
+        # It runs outside the question's own task: set the question's budget context.
+        replay_question.set(question)
+        current_question_key.set(item["key"])
+        spend_question_seasonal.set(item["seasonal"])
+        if item["flag"] is not None:
+            _question_seasonal.set(item["flag"])
+        try:
+            elapsed = self._run_elapsed()
+            seconds = shadow_seconds(elapsed, REFEREE_TIMEOUT_SECONDS)
+            if seconds <= 0:
+                logger.info(f"Question {question.id_of_post}: referee skipped (run at minute {int(elapsed // 60)})")
+                return
+            llm = self._referee_llm()
+            if llm is None:
+                logger.info(f"Question {question.id_of_post}: referee skipped (Claude off)")
+                return
+        except Exception as e:
+            logger.warning(f"Question {question.id_of_post}: referee shadow failed ({type(e).__name__})")
+            return
+        budget, key = llm._spend, item["key"]
+        before = budget.question_spent(key)
+        value, started = None, time.monotonic()
+        try:
+            value = await referee_shadow(
+                question.question_text, item["finished"], item["submitted"], llm.invoke, parse_binary_answer, timeout=seconds,
+            )
+            status = "saved" if value is not None else "no answer"
+        except asyncio.TimeoutError:
+            status = "timed out"
+        except SpendCapReached:
+            status = "refused (cap)"
+        except Exception as e:
+            status = f"failed ({type(e).__name__})"
+        cost = budget.question_spent(key) - before
+        result = {"model": str(getattr(llm, "model", "")), "status": status,
+                  "seconds": round(time.monotonic() - started, 1), "cost": round(cost, 6)}
+        if value is not None:
+            result["value"] = value
+        self.__dict__.setdefault("_referee_results", {})[id(question)] = result
+        logger.info(f"Question {question.id_of_post}: referee {status}, ${cost:.4f}")
 
     def _shadow_later(self, question: MetaculusQuestion, record: dict, started: datetime) -> None:
         """Run timing: the shadow forecast waits for the end of the run."""
@@ -1166,43 +1229,62 @@ class FallBot2026(ForecastBot):
             self.__dict__.setdefault("_pending_shadows", []).append((question, record, started))
 
     async def _finish_run(self) -> None:
-        """End of the run: every pending shadow forecast at once, only if the
-        run is before minute 45 (ending by minute 47); each result goes in the
-        question's '<log>_shadows.json' file."""
+        """End of the run: every pending shadow forecast and referee at once,
+        only if the run is before minute 45 (ending by minute 47); each
+        question's results go in its '<log>_shadows.json' file."""
         pending = self.__dict__.pop("_pending_shadows", [])
-        if not pending:
+        referees = self.__dict__.pop("_pending_referees", [])
+        if not pending and not referees:
             return
         elapsed = self._run_elapsed()
         seconds = shadow_seconds(elapsed, SHADOW_FORECAST_TIMEOUT_SECONDS)
-        if seconds <= 0:
+        if pending and seconds <= 0:
             for question, _, _ in pending:
                 self.__dict__.get("_shadow_research", {}).pop(id(question), None)
                 self.__dict__.get("_live_predictions", {}).pop(id(question), None)
             logger.info(f"shadows skipped: time (run at minute {int(elapsed // 60)}, {len(pending)} question(s))")
-            return
+            pending = []
         results = await asyncio.gather(
             *[self._finish_shadow_forecast(question, record, seconds) for question, record, _ in pending],
+            *[asyncio.create_task(self._referee_at_end(item)) for item in referees],
             return_exceptions=True,
         )
+        # One file per question: [question, record, started, the shadow forecaster finished].
+        to_save: dict[int, list] = {}
         for (question, record, started), result in zip(pending, results):
             if isinstance(result, BaseException):
                 logger.warning(f"Question {question.id_of_post}: shadow forecaster failed ({type(result).__name__})")
-                continue
-            await self._save_shadows(question, record, started)
+            to_save[id(question)] = [question, record, started, not isinstance(result, BaseException)]
+        for item, result in zip(referees, results[len(pending):]):
+            if isinstance(result, BaseException):
+                logger.warning(f"Question {item['question'].id_of_post}: referee shadow failed ({type(result).__name__})")
+            to_save.setdefault(id(item["question"]), [item["question"], item["record"], item["started"], False])
+        for question, record, started, with_shadow in to_save.values():
+            await self._save_shadows(question, record, started, with_shadow)
 
-    async def _save_shadows(self, question, record: dict, started: datetime) -> None:  # type: ignore[no-untyped-def]
-        """The shadow forecaster's result in its own file next to the log."""
-        if self.question_log is None or "shadow_model" not in record:
+    async def _save_shadows(self, question, record: dict, started: datetime, with_shadow: bool = True) -> None:  # type: ignore[no-untyped-def]
+        """The shadow forecaster's and the referee's results in their own file
+        next to the log (the log itself is never rewritten)."""
+        referee = self.__dict__.get("_referee_results", {}).pop(id(question), None)
+        with_shadow = with_shadow and "shadow_model" in record
+        if self.question_log is None or (not with_shadow and referee is None):
             return
-        variants = {k: v for k, v in (record.get("shadow") or {}).items() if SHADOW_VARIANT in k}
         path = record_path(self.run_mode, question, started)
-        payload = {
+        payload: dict = {
             "question": {"id_of_post": question.id_of_post, "question_type": record["question"].get("question_type")},
             "log": path,
-            "shadow_model": record["shadow_model"],
-            "shadow": variants,
-            "saved_at": utc_now(),
         }
+        variants: dict = {}
+        if with_shadow:
+            payload["shadow_model"] = record["shadow_model"]
+            variants = {k: v for k, v in (record.get("shadow") or {}).items() if SHADOW_VARIANT in k}
+        if referee is not None:
+            value = referee.pop("value", None)
+            payload["referee"] = referee
+            if value is not None:
+                variants["referee"] = value
+        payload["shadow"] = variants
+        payload["saved_at"] = utc_now()
         await asyncio.to_thread(self.question_log.save, shadows_path(path), payload)
 
     def _consistency_shadow(self, question: MetaculusQuestion, record: dict, prediction) -> None:  # type: ignore[no-untyped-def]
