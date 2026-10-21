@@ -134,7 +134,7 @@ from gemini_budget import current_question_key
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
-from frontier import FrontierPlanner, agent_log, forecast_deadline, frontier_report
+from frontier import FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
 from spend import SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, window_baseline
@@ -2622,6 +2622,9 @@ if __name__ == "__main__":
     if isinstance(lineup.planner, GeminiPool) and lineup.planner.spend is not None:
         # Paid-Flash fallback: any paid call with unknown cost opens an alert.
         unknown_cost_alert(lineup.planner.spend, ensemble.open_alert_issue)
+    if isinstance(lineup.planner, FrontierPlanner):
+        # An agent call over its reservation: an alert issue (once a UTC day).
+        agent_overrun_alert(lineup.planner, ensemble.open_alert_issue)
     if isinstance(lineup.planner, CreditsPlanner) and lineup.planner.spend is not None:
         guard = lineup.planner.spend
         # 4d: a run with any unknown-cost paid call opens an alert (once a day).

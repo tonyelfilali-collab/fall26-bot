@@ -27,9 +27,10 @@ The agent (PR 4; the real agent code, the Anthropic client swapped for
 recorded replies with tool results; FRONTIER_AGENT_ENABLED stays off):
 K. Full agent path: seasonal = agent + Opus 5.5 + Flash x2, MiniBench = agent +
    Flash x2; pause_turn continued; searches / fetches / URLs in the private log;
-   Claude <= $2.00 / $1.00 per question.
+   Claude <= $3.00 / $1.25 per question.
 L. Agent past its 7-minute cap (1:100 clock): cancelled, charged its worst
-   case, the plain Opus fallback answers inside the planned wait.
+   case, the plain Opus fallback answers inside the planned wait; the 4
+   seasonal agents' reservations ($9.12) keep MiniBench to today's setup.
 L2. Agent and plain Opus both too slow: every question still forecast (Flash).
 M. Tool failures (search unavailable, page not reachable): counted, answer kept.
 N. One search and one fetch left at a pause: the continuation gets max_uses 1.
@@ -37,7 +38,7 @@ N2. Every search and fetch used at a pause: not continued, plain Opus answers.
 O. Credit error on the agent: never retried, no fallback, no more Claude.
 P. A question already near its cap: the agent is refused; seasonal plain Opus
    (or Haiku) within $1.50; MiniBench with no Claude room: today's setup.
-Q. The Claude day at $14.00: no seasonal agent ($1.28 would pass $15): plain
+Q. The Claude day at $14.00: no seasonal agent ($2.28 would pass $15): plain
    Opus; MiniBench no Claude (the day is over its $9 limit).
 
 Prints a report; exits 1 if a check fails.
@@ -404,7 +405,6 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
     continued = [r for r in reqs("K") if r["messages"][-1]["role"] == "assistant"]
     o_fake, q_day = out["O"]["fake"], out["Q"]["planner"].claude.day_spent()
     s_reserve = frontier.agent_reserve(True)
-    m_reserve = frontier.agent_reserve(False)
     return [
         ("K: seasonal, every type = agent + Opus 5.5 + Flash x2 (4 forecasts)",
          len(k_s) == 4 and all(i["forecasts"] == 4 and i["agent"] == 1 and i["opus"] == 1 and i["flash"] == 2 for i in k_s)),
@@ -412,9 +412,9 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
         ("K: pause_turn continued with the paused content, no extra user message (2 requests per agent turn)",
          len(k_runs) == 5 and all(r["requests"] == 2 for r in k_runs) and len(continued) == 5
          and all(len(r["messages"]) == 2 for r in continued)),
-        ("K: tools web_search_20260209 / web_fetch_20260209, max_uses 8/5 seasonal and 4/3 MiniBench, max_content_tokens set",
+        ("K: tools web_search_20260209 / web_fetch_20260209, max_uses 8/3 seasonal and 3/2 MiniBench, max_content_tokens set",
          {(r["tools"][0]["type"], r["tools"][1]["type"]) for r in reqs("K")} == {("web_search_20260209", "web_fetch_20260209")}
-         and {(r["tools"][0]["max_uses"], r["tools"][1]["max_uses"]) for r in reqs("K") if r["messages"][-1]["role"] == "user"} == {(8, 5), (4, 3)}
+         and {(r["tools"][0]["max_uses"], r["tools"][1]["max_uses"]) for r in reqs("K") if r["messages"][-1]["role"] == "user"} == {(8, 3), (3, 2)}
          and all(r["tools"][1]["max_content_tokens"] == frontier.AGENT_FETCH_MAX_CONTENT_TOKENS for r in reqs("K"))),
         ("K: private log: URLs read, 3 searches, 1 fetch, seconds and cost (incl. $0.01 per search) per agent turn",
          all(r["urls_read"] == [AGENT_URL] and r["searches"] == 3 and r["fetches"] == 1 and r["seconds"] >= 0
@@ -425,11 +425,14 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
         ("K: step summary has the agent numbers (5 calls, 15 searches, 5 fetches) and no URL",
          "| 5 | 5 | 15 | 5 |" in out["K"]["report"] and "example.org" not in out["K"]["report"]),
         ("L: agent past its cap -> cancelled, charged its worst case, the plain Opus fallback answers in the wait",
-         all(r["outcome"] == "timed out" for r in runs("L")) and len(runs("L")) == 5
-         and all(abs(c["charged"] - (s_reserve if c["charged"] > m_reserve + 1e-9 else m_reserve)) < 1e-9 and not c["ok"] for c in agent_calls("L"))
-         and all(i["submitted"] and i["opus"] == (2 if i["seasonal"] else 1) and i["agent"] == 0 for i in infos("L"))),
+         all(r["outcome"] == "timed out" for r in runs("L")) and len(runs("L")) == 4
+         and all(abs(c["charged"] - s_reserve) < 1e-9 and not c["ok"] for c in agent_calls("L"))
+         and all(i["submitted"] and i["opus"] == 2 and i["agent"] == 0 for i in infos("L", True))),
+        (f"L: 4 seasonal agents running hold ${4 * s_reserve:.2f} > the $9 MiniBench limit -> MiniBench today's setup (Flash), forecast",
+         all(i["submitted"] and i["claude"] == 0 and i["flash"] >= 3 for i in infos("L", False))),
         ("L2: agent and plain Opus both too slow -> every question still forecast (Flash)",
-         all(i["submitted"] and i["claude"] == 0 and i["flash"] == 2 for i in infos("L2"))),
+         all(i["submitted"] and i["claude"] == 0 and i["flash"] == 2 for i in infos("L2", True))
+         and all(i["submitted"] for i in infos("L2", False))),
         ("M: tool failures counted in the private log, the agent's answer kept",
          all(i["agent"] == 1 and i["submitted"] for i in infos("M"))
          and all(r["tool_errors"] == {"web_search:unavailable": 1, "web_fetch:url_not_accessible": 1, "web_fetch:unsupported_content_type": 1}
@@ -448,7 +451,7 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
         ("P: question near its cap -> no agent; seasonal plain Opus / Haiku within $1.50; MiniBench today's setup; all forecast",
          all(i["agent"] == 0 and i["submitted"] and i["claude_spent"] <= (frontier.CLAUDE_SEASONAL_QUESTION_CAP if i["seasonal"]
              else frontier.CLAUDE_MINIBENCH_QUESTION_CAP) + 1e-9 for i in infos("P")) and all(i["claude"] >= 1 for i in infos("P", True))),
-        (f"Q: Claude day at $14.00 -> no seasonal agent ($1.28 would pass $15), plain Opus; MiniBench no Claude (over $9); ${q_day:.2f} <= $15.00",
+        (f"Q: Claude day at $14.00 -> no seasonal agent ($2.28 would pass $15), plain Opus; MiniBench no Claude (over $9); ${q_day:.2f} <= $15.00",
          all(i["agent"] == 0 and i["opus"] >= 1 and i["submitted"] for i in infos("Q", True))
          and all(i["claude"] == 0 and i["submitted"] for i in infos("Q", False))
          and q_day <= frontier.CLAUDE_DAILY_CAP + 1e-9),

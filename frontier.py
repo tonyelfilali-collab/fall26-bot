@@ -29,8 +29,9 @@ in price):
 - Agent (PR 4, behind bot_config.FRONTIER_AGENT_ENABLED, OFF): in full mode one
   Opus slot becomes an agent (Opus 5.5 with Anthropic's web_search + web_fetch
   server tools, same prompt and answer format, the dossier as its start).
-  Caps: 8 searches / 5 fetches seasonal, 4 / 3 MiniBench, 7 minutes, then the
-  plain Opus chain with the time left. Question caps $2.00 / $1.00 while it runs.
+  Caps: 8 searches / 3 fetches seasonal, 3 / 2 MiniBench, 3,000 tokens a page,
+  7 minutes, then the plain Opus chain with the time left. Question caps
+  $3.00 / $1.25 while it runs; an overrun: agent off for the run + an alert.
   Low and minimal modes: plain Opus only (the agent is the dear slot).
 """
 from __future__ import annotations
@@ -59,7 +60,7 @@ import ensemble
 from bot_helpers import PUBLIC_LOGGER_NAME
 from gemini_budget import current_question_key
 from llm_throttle import NoAnswer, RequestPacer, ThrottledLlm
-from spend import SpendGuard, http_status, question_seasonal, utc_day
+from spend import SpendGuard, _alert, http_status, question_seasonal, utc_day
 
 logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 
@@ -120,8 +121,8 @@ AGENT_FETCH_TOOL = "web_fetch_20260209"
 # Question pages show the community prediction, which we don't use (architect, 21 Oct).
 AGENT_BLOCKED_DOMAINS = ("metaculus.com",)
 AGENT_SEARCH_PRICE = 0.01  # dollars per search ($10 per 1,000)
-# Page text per fetch, in tokens (about 20 kB; PDFs are not cut by it).
-AGENT_FETCH_MAX_CONTENT_TOKENS = 5000
+# Page text per fetch, in tokens (about 12 kB; PDFs are not cut by it).
+AGENT_FETCH_MAX_CONTENT_TOKENS = 3000
 AGENT_TIMEOUT_SECONDS = 420  # 7 minutes, then the plain Opus chain
 AGENT_FALLBACK_SECONDS = 120  # kept for the plain Opus fallback inside the planned wait
 AGENT_MIN_SECONDS = 60  # under this, no agent (the fallback runs at once)
@@ -129,8 +130,8 @@ PARSE_MARGIN_SECONDS = 20  # a deadline-aware fallback ends this long before the
 FALLBACK_MIN_SECONDS = 45  # under this, the fallback is not started
 AGENT_MAX_CONTINUATIONS = 3  # pause_turn continuations per agent turn
 AGENT_MIN_OUTPUT_TOKENS = 2000  # a continuation needs at least this much output left
-AGENT_SEASONAL_QUESTION_CAP = 2.00
-AGENT_MINIBENCH_QUESTION_CAP = 1.00
+AGENT_SEASONAL_QUESTION_CAP = 3.00
+AGENT_MINIBENCH_QUESTION_CAP = 1.25
 
 
 @dataclass(frozen=True)
@@ -141,13 +142,15 @@ class AgentCaps:
     input_tokens: int  # ASSUMED ceiling, all server-side iterations together
 
 
-# Worst case = input x $4 + output x $20 per million + searches x $0.01:
-# seasonal $0.80 + $0.40 + $0.08 = $1.28, so agent + plain Opus ($0.36) + the
-# agent's Opus fallback ($0.36) = $2.00; MiniBench $0.36 + $0.24 + $0.04 =
-# $0.64, + its fallback = $1.00.
+# Worst case = input x $4 + output x $20 per million + searches x $0.01
+# (architect, 21 Oct: the server-side loop re-reads its context, so a test
+# call read 413k input tokens; the input ceilings are set from that):
+# seasonal $1.80 + $0.40 + $0.08 = $2.28, so agent + plain Opus ($0.36) + the
+# agent's Opus fallback ($0.36) = $3.00; MiniBench $0.60 + $0.24 + $0.03 =
+# $0.87, + its fallback = $1.23 (cap $1.25).
 AGENT_CAPS = {
-    True: AgentCaps(searches=8, fetches=5, output_tokens=20000, input_tokens=200000),
-    False: AgentCaps(searches=4, fetches=3, output_tokens=12000, input_tokens=90000),
+    True: AgentCaps(searches=8, fetches=3, output_tokens=20000, input_tokens=450000),
+    False: AgentCaps(searches=3, fetches=2, output_tokens=12000, input_tokens=150000),
 }
 AGENT_SYSTEM = (
     "You are forecasting the question in the user message. The research assistant's report in it is "
@@ -250,6 +253,7 @@ class ClaudeBudget(SpendGuard):
         self.estimates = {m: claude_reserve(m) for m in CLAUDE_PRICES}
         self.agent_stats: dict[str, dict] = {}  # question -> searches, fetches of the agent call finishing
         self.agent_off: str | None = None  # set: no agent for the rest of this run
+        self.agent_overruns = 0  # agent calls over their reservation this run
 
     def estimate(self, model: str) -> float:
         name = model.removeprefix("replay/")
@@ -562,6 +566,7 @@ class _AgentCall(GeneralLlm):
                     logger.warning(f"Question {current_question_key.get()}: agent over its reservation "
                                    f"(${run.cost:.4f}); agent off for this run")
                     budget.agent_off = "over its reservation"
+                    budget.agent_overruns += 1
 
     async def _turn(self, prompt: Any, run: AgentRun, cap: float) -> TextTokenCostResponse:
         import anthropic
@@ -768,6 +773,19 @@ class FrontierPlanner(bot_config.GeminiPool):
         super().save()
         if self.claude is not None:
             self.claude.save()
+
+
+def agent_overrun_alert(planner: FrontierPlanner, notify: Any, today: str | None = None) -> bool:
+    """After a run: an agent call over its reservation (the agent was switched
+    off for the rest of the run) opens an alert issue, once a UTC day."""
+    claude = planner.claude
+    if claude is None or not claude.agent_overruns:
+        return False
+    _alert(claude, "agent-overrun", today or utc_day(), notify, "agent call over its reservation",
+           f"{claude.agent_overruns} agent call(s) this run cost more than the reservation (${agent_reserve(True):.2f} "
+           f"seasonal, ${agent_reserve(False):.2f} MiniBench); the agent was switched off for the rest of the run. "
+           "Each call is charged in full. Check the Frontier lineup table of the run.")
+    return True
 
 
 def frontier_report(planner: FrontierPlanner) -> str:
