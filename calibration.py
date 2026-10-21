@@ -19,6 +19,10 @@ Metaculus API, and the Scoreboard's log-score formulas.
   10-90% and 25-75% ranges. An outcome outside the question's range sits at
   the CDF's edge value (the Scoreboard uses the same tail).
 - Multiple choice: our probability on the option that happened, log score.
+- Every group is split before / since the frontier switch-on
+  (scoreboard.FRONTIER_SWITCH_ON; None = everything is before).
+- At the end, the Scoreboard's per-model and binary-subset tables
+  (scoreboard.per_model_markdown), same split.
 - MiniBench binary patterns: Yes-rate per wording template, and per
   "threshold above / below the current value" where both numbers can be read
   from the question text, background or our research dossier.
@@ -38,7 +42,16 @@ from typing import Any, Callable
 
 from bot_helpers import PUBLIC_LOGGER_NAME
 from forecast_safety import clip_binary, stretch
-from scoreboard import binary_score, forecast_score
+from scoreboard import (
+    FRONTIER_SWITCH_ON,
+    PERIOD_TITLES,
+    PERIODS,
+    binary_score,
+    forecast_score,
+    per_model_markdown,
+    period_of,
+    score_models,
+)
 
 logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 
@@ -310,10 +323,16 @@ def group_of(record: dict) -> str:
     return "MiniBench" if "minibench" in slugs.lower() else "unlabelled"
 
 
-def build_report(records: list[dict], resolution_of: Callable[[Any], str | None], stamp: str = "") -> tuple[str, int]:
-    """The markdown report from the latest submitted log per question; returns (report, questions scored)."""
-    by_group: dict[str, dict[str, list]] = {g: {"binary": [], "binary_records": [], "numeric": [], "discrete": [],
-                                                 "multiple_choice": []} for g in GROUPS}
+def build_report(records: list[dict], resolution_of: Callable[[Any], str | None], stamp: str = "",
+                 switch_on: str | None = None) -> tuple[str, int]:
+    """The markdown report from the latest submitted log per question; returns
+    (report, questions scored). Each group is split before / since the frontier
+    switch-on (scoreboard.FRONTIER_SWITCH_ON unless given), by the log's start time."""
+    switch_on = FRONTIER_SWITCH_ON if switch_on is None else switch_on
+    by_group: dict[tuple[str, str], dict[str, list]] = {
+        (period, g): {"binary": [], "binary_records": [], "numeric": [], "discrete": [], "multiple_choice": []}
+        for period in PERIODS for g in GROUPS
+    }
     scored = 0
     for record in records:
         question = record.get("question") or {}
@@ -324,7 +343,7 @@ def build_report(records: list[dict], resolution_of: Callable[[Any], str | None]
         score = forecast_score(kind, forecast, resolution)
         if score is None:
             continue  # annulled / ambiguous, or not scorable: the Scoreboard skips it too
-        bucket = by_group[group_of(record)]
+        bucket = by_group[(period_of(record.get("started_at"), switch_on), group_of(record))]
         if kind == "binary":
             bucket["binary"].append((float(forecast), resolution.lower() == "yes"))
             bucket["binary_records"].append((record, resolution.lower() == "yes"))
@@ -343,23 +362,30 @@ def build_report(records: list[dict], resolution_of: Callable[[Any], str | None]
         f"{scored} resolved question(s) scored. Live forecasts only: the latest submitted log per question "
         "(as the Scoreboard). Log scores are the Scoreboard's (natural log, higher = better). Stretch: "
         "logit(p') = k * logit(p) on the submitted p, then the live 2-98% clip.",
+        "",
+        f"Frontier switch-on: {switch_on or 'not set (everything is before)'}.",
     ]
-    for group in GROUPS:
-        bucket = by_group[group]
-        if not any(bucket[k] for k in ("binary", "numeric", "discrete", "multiple_choice")):
-            if group != "unlabelled":
-                lines += ["", f"### {group}", "", "No resolved questions yet."]
-            continue
-        lines += ["", f"### {group}"]
-        if bucket["binary"]:
-            lines += ["", *binary_section(bucket["binary"])]
-        for kind in ("numeric", "discrete"):
-            if bucket[kind]:
-                lines += ["", *numeric_section(kind.capitalize(), bucket[kind])]
-        if bucket["multiple_choice"]:
-            lines += ["", *multiple_choice_section(bucket["multiple_choice"])]
-        if group == "MiniBench" and bucket["binary_records"]:
-            lines += ["", *minibench_patterns(bucket["binary_records"])]
+    for period in PERIODS:
+        for group in GROUPS:
+            bucket = by_group[(period, group)]
+            title = f"### {group}, {PERIOD_TITLES[period].lower()}"
+            if not any(bucket[k] for k in ("binary", "numeric", "discrete", "multiple_choice")):
+                if group != "unlabelled":
+                    lines += ["", title, "", "No resolved questions yet."]
+                continue
+            lines += ["", title]
+            if bucket["binary"]:
+                lines += ["", *binary_section(bucket["binary"])]
+            for kind in ("numeric", "discrete"):
+                if bucket[kind]:
+                    lines += ["", *numeric_section(kind.capitalize(), bucket[kind])]
+            if bucket["multiple_choice"]:
+                lines += ["", *multiple_choice_section(bucket["multiple_choice"])]
+            if group == "MiniBench" and bucket["binary_records"]:
+                lines += ["", *minibench_patterns(bucket["binary_records"])]
+    # The Scoreboard's per-model and binary-subset tables (same split).
+    lines += ["", "### Per model and binary subsets", "",
+              per_model_markdown(score_models(records, resolution_of, switch_on), switch_on)]
     return "\n".join(lines) + "\n", scored
 
 

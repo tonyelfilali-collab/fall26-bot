@@ -571,6 +571,14 @@ question opened (OpenRouter `created` date) or of unknown date is never used.
   numeric/discrete inside/below/above our 10-90% and 25-75%; multiple choice p on the outcome;
   MiniBench Yes-rate by wording and threshold vs current value. Saved ONLY to
   `fall26-data/reports/calibration_<date>.md` (job log: path and count).
+- Per model (tests `tests/test_scoreboard_per_model.py`): each forecast entry's `forecast_model`
+  (else its first answered model; `replay/` dropped) scored alone, every type, with the mean diff
+  vs live; groups agent (`anthropic/claude-opus-5-5-agent`), claude (Opus 5.5 / Opus 5 / Haiku 5.5),
+  flash (any Gemini Flash, Flash-Lite too), other. Binary subset medians `claude-only` (agent +
+  Claude), `flash-only`, `no-agent` through the live final steps (`forecast_safety.adjust_binary`),
+  scored like shadows. Every table split before / since `scoreboard.FRONTIER_SWITCH_ON` (ISO UTC
+  string; None = everything before), also in the calibration report. Saved ONLY in the fall26-data
+  files (Scoreboard markdown, calibration report), never on the job page.
 
 ## Market prices (PLAN.md Step 9), LOG-ONLY
 
