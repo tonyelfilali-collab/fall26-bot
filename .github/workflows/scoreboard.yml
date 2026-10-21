@@ -3,10 +3,17 @@ name: Scoreboard
 # Scores every resolved tournament question logged in fall26-data: our live
 # log score per question type, and the shadow variants (binary). Read-only:
 # forecasts nothing, spends nothing. Weekly, plus a manual button.
+# Manual option "calibration": instead, the calibration report (calibration.py),
+# saved only to fall26-data reports/ (the job log shows the path and count only).
 on:
   schedule:
     - cron: "30 6 * * 1" # Mondays 06:30 UTC
   workflow_dispatch:
+    inputs:
+      calibration:
+        description: "Calibration report instead of the Scoreboard (saved to fall26-data reports/ only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,7 +37,14 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
       - name: Score resolved questions
+        if: ${{ inputs.calibration != true }}
         run: poetry run python scoreboard.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+      - name: Calibration report
+        if: ${{ inputs.calibration == true }}
+        run: poetry run python calibration.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}

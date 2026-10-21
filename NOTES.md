@@ -559,6 +559,12 @@ question opened (OpenRouter `created` date) or of unknown date is never used.
   = better), not Metaculus peer scores.
 - Shadow variants (binary) on the same questions, with the mean difference from live.
 - Counts and means overall and per type; saved to `fall26-data/scoreboard/<date>.md` and the job page.
+- Calibration report (`calibration.py`, tests `tests/test_calibration_report.py`): Scoreboard workflow,
+  manual input `calibration: true`. Same data and log scores; seasonal / MiniBench per type: binary
+  Yes-rate vs mean, stretch k 1.0-2.0 (logit(p') = k·logit(p), then 2-98% clip) with leave-one-out;
+  numeric/discrete inside/below/above our 10-90% and 25-75%; multiple choice p on the outcome;
+  MiniBench Yes-rate by wording and threshold vs current value. Saved ONLY to
+  `fall26-data/reports/calibration_<date>.md` (job log: path and count).
 
 ## Market prices (PLAN.md Step 9), LOG-ONLY
 
