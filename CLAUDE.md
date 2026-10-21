@@ -13,15 +13,18 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   AskNews free tier, and free public services. No Perplexity, no other paid APIs. Never buy credits,
   never turn on auto-reload or top-up (Anthropic or OpenRouter). No Metaculus credits this season.
 - Anthropic (architect, 21 Oct): Claude models via `ANTHROPIC_API_KEY` (Console org, workspace
-  "fall26-bot", no card, no auto-reload) are allowed, within the PR 2 caps (`CLAUDE_BUDGET_PER_CYCLE`,
-  $12 per UTC day, $1.50 per seasonal question, $0.60 per MiniBench question, step-downs). The credits
+  "fall26-bot", no card, no auto-reload) are allowed, within the frontier caps (#140): `CLAUDE_BUDGET_PER_CYCLE`
+  ($170, cycle 18 Oct - 17 Nov), $15 per UTC day, MiniBench Claude only while the day's Claude spend
+  (running calls included) is under $9, $1.50 per seasonal question, $0.60 per MiniBench question
+  ($2.00 / $1.00 while the agent runs, once switched on), step-downs at 25% / 10% left. The credits
   expire each billing cycle; when used up, calls fail with "credit balance is too low" and are never
   charged. Never retry a credit error.
-- OpenRouter: paid models allowed only: GPT-5.6 Sol (seasonal only; $0.30 per seasonal question; no
-  GPT when the key has under $2 left) and google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its
+- OpenRouter: paid models allowed only: google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its
   caps ($0.10/question, $1.00/UTC day, MiniBench paid only while the day's paid spend is under $0.50,
   paid only until a question has 3 real forecasts). Every other paid model stays refused. The key
-  limit ($8) is the hard ceiling. Keep free-model use under 600 requests a day.
+  limit ($8) is the hard ceiling. Keep free-model use under 600 requests a day. GPT-5.6 Sol is OFF
+  (`FRONTIER_GPT_ENABLED = False`; if the architect switches it on: seasonal only, $0.30 per seasonal
+  question with paid Flash, none when the key has under $2 left).
 - Spend check: the key's usage (Credit check workflow) must equal the key usage at the start of the
   day + today's spend in the ledger (fall26-data `status/spend.json`: `key_day_start[today]` +
   `days[today]`). If it is ever above that, or OpenRouter spend is above $2.00 in a UTC day, stop
@@ -38,7 +41,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   not a client ID + secret), `GEMINI_API_KEY` (Google AI Studio free tier, no billing),
   `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card).
 - All model choices are in `bot_config.py` (`ACTIVE_LINEUP`). Paid models only as allowed above
-  (Claude via `ANTHROPIC_API_KEY`, GPT-5.6 Sol, paid Flash); everything else must pass
+  (Claude via `ANTHROPIC_API_KEY`, paid Flash; GPT-5.6 Sol only if switched on); everything else must pass
   `bot_config.is_free_model`.
 - The free Gemini key allows 20 requests/day per Flash model (Flash-Lite: 500/day), and every attempt counts. Don't rerun
   Test Bot on Gemini casually; use `poetry run pytest` (dummy server) and the Test Bot
