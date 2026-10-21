@@ -2,9 +2,10 @@ name: Replay lab
 
 # Test-only: re-runs variant configurations on the frozen dossiers of RESOLVED
 # live questions and scores them against the live forecast (lab.py). Never
-# submits. Gemini only in the last 3 hours of the Pacific quota day, only from
-# spare non-reserve quota, never while MiniBench is busy; Nemotron (:free) at
-# most 300 calls a day. Started once a day by the tournament run
+# submits. Its own queue, never the live one, so it never delays or cancels a
+# live run; so no Gemini (no Gemini key). Nemotron (:free) at most 300 calls a
+# day. Ends by minute 8 (lab.py checks the time before every call; the job
+# timeout is only a backstop). Started once a day by the tournament run
 # (health_dispatch.py), or by hand. `synthetic`: an end-to-end run on a
 # synthetic resolved question (no real calls).
 on:
@@ -15,9 +16,9 @@ on:
         type: boolean
         default: false
 
-# It uses the Gemini key and the live quota ledger: one at a time with live runs.
+# Its own queue: it never waits in, or holds up, the live "forecast-bot" queue.
 concurrency:
-  group: forecast-bot
+  group: replay-lab
   cancel-in-progress: false
 
 permissions:
@@ -26,7 +27,7 @@ permissions:
 jobs:
   lab:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 9
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -51,6 +52,5 @@ jobs:
         env:
           SYNTHETIC: ${{ inputs.synthetic }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}

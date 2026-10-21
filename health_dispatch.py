@@ -18,8 +18,8 @@ import requests
 HEALTH_WORKFLOW = "health.yml"
 HEALTH_HOUR_UTC = 6
 API = "https://api.github.com"
-# The replay lab (lab.py): once a Pacific quota day, in its last 3 hours (the
-# only time the lab may use Gemini); it re-checks every rule itself.
+# The replay lab (lab.py): once a Pacific quota day, in its last 3 hours; it
+# runs in its own queue (no Gemini) and re-checks every rule itself.
 LAB_WORKFLOW = "replay_lab.yaml"
 LAB_FROM_PACIFIC_HOUR = 21
 
