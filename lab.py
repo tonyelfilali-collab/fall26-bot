@@ -21,7 +21,12 @@ out-of-range mass when it resolved outside).
 
 Quota rules (tested: the lab can never touch the live reserve):
 - Nemotron (:free): any time, at most 300 lab calls per UTC day.
-- Gemini: only in the last 3 hours of the Pacific quota day; only from
+- The real lab run (main_run) runs in its own queue, never the live one, so it
+  never delays or cancels a live run; it therefore never uses Gemini or saves
+  the Gemini ledger (E1-E3 wait unless live had 5+ forecasts). It ends by
+  minute 8 of its job: every call is checked first and starts only if it can
+  finish in time (LAB_LIMIT, SAVE_MARGIN).
+- Gemini (synthetic run and tests only): only in the last 3 hours of the Pacific quota day; only from
   non-reserve quota beyond 2 x the expected questions left today; never while
   a MiniBench question is open or was seen open in the last 6 hours; single-
   model chains without the reserve, one call per forecast.
@@ -33,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import math
 import statistics
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -64,9 +70,12 @@ class LabQuota:
     nemotron_used_today: int = 0
     gemini_started: int = 0
     nemotron_started: int = 0
+    gemini_off: str | None = None  # why this run never uses Gemini, if so
 
     def gemini_window(self) -> str | None:
         """None if Gemini may be used now, else why not."""
+        if self.gemini_off:
+            return self.gemini_off
         local = self.now.astimezone(PACIFIC)
         midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         if midnight - local > GEMINI_LAST_HOURS:
@@ -236,6 +245,7 @@ class LabContext:
     flash_models: tuple[str, ...]
     nemotron_model: str
     done: set = field(default_factory=set)  # (post, experiment) already in the results
+    may_start: Callable[[float], bool] = lambda seconds: True  # can a call this long still finish in time?
 
 
 def _question_object(snapshot: dict) -> Any:
@@ -271,6 +281,8 @@ def _gemini_forecasts(ctx: LabContext, question_obj: Any, research: str, count: 
     """`count` forecasts from different Flash models (leak-safe, lab quota), or None."""
     out, used = [], set()
     for _ in range(count):
+        if not ctx.may_start(GEMINI_CALL_SECONDS):
+            return None
         blocked = {m for m in ctx.flash_models if not leak_safe(m, opened, ctx.release_dates)}
         model = gemini_model_for_lab(ctx.ledger, ctx.quota, ctx.flash_models, used | blocked)
         if model is None:
@@ -336,6 +348,9 @@ def run_question(ctx: LabContext, record: dict, resolution: str) -> list[LabResu
             if not leak_safe(ctx.nemotron_model, opened, ctx.release_dates) or ctx.quota.nemotron_calls_left() <= 0:
                 results.append(LabResult(post, kind, experiment, None, "pending: Nemotron not allowed now"))
                 continue
+            if not ctx.may_start(NEMOTRON_TIMEOUT):
+                results.append(LabResult(post, kind, experiment, None, "pending: lab time limit reached"))
+                continue
             ctx.quota.nemotron_started += 1
             try:
                 extra = ctx.forecast(question_obj, research, ctx.nemotron_model)
@@ -399,11 +414,69 @@ def forecast_with_model(bot_factory: Callable[[Any], Any]) -> Callable[[Any, str
     return forecast
 
 
-# ---------------------------------------------------------------- entry point
+# ---------------------------------------------------------------- time limit
 
-# The lab shares the live queue (it uses the Gemini key): it stops starting new
-# forecasts after this long, so it never holds up a live run for long.
-TIME_BUDGET = timedelta(minutes=6)
+# The whole lab job ends by minute 8: about 1 minute of setup, then at most
+# LAB_LIMIT of Python, whose last SAVE_MARGIN is kept for saving the results.
+# A call (its own timeout) starts only if it can finish before that margin.
+LAB_LIMIT = timedelta(minutes=6, seconds=30)
+SAVE_MARGIN = timedelta(seconds=45)
+NEMOTRON_TIMEOUT = 120  # seconds, one try
+GEMINI_CALL_SECONDS = 300  # the live Flash forecaster's timeout
+LOOKUP_SECONDS = 30  # one data-repo file or one Metaculus question
+
+
+def time_check(started: float, clock: Callable[[], float] = time.monotonic) -> Callable[[float], bool]:
+    """may_start(seconds): True if a call of up to `seconds` started now ends
+    before the save margin of a run that started at `started` (clock time)."""
+    end = started + (LAB_LIMIT - SAVE_MARGIN).total_seconds()
+
+    def may_start(seconds: float) -> bool:
+        return clock() + seconds <= end
+
+    return may_start
+
+
+def lab_records(paths: list[str], load: Callable[[str], dict], resolution_of: Callable[[Any], str | None],
+                skip_post: Callable[[int], bool], may_start: Callable[[float], bool]) -> list[tuple[dict, str]]:
+    """(record, resolution) for each resolved question the lab still has work
+    on: its latest submitted tournament log, found newest first. Loads only
+    what it needs (one file at a time) and stops when time is up."""
+    by_post: dict[int, list[str]] = {}
+    for path in paths:
+        name = path.rsplit("/", 1)[-1]
+        if not path.startswith("questions/tournament/") or not name.endswith(".json") or name.endswith("_shadows.json"):
+            continue
+        try:
+            by_post.setdefault(int(name.split("_", 1)[0]), []).append(path)
+        except ValueError:
+            continue
+    out: list[tuple[dict, str]] = []
+    for post in sorted(by_post):
+        if skip_post(post):
+            continue
+        if not may_start(LOOKUP_SECONDS):
+            break
+        try:
+            resolution = resolution_of(post)
+        except Exception:
+            continue
+        if not resolution:
+            continue
+        for path in sorted(by_post[post], reverse=True):  # <day>/<post>_<HHMMSS>: newest first
+            if not may_start(LOOKUP_SECONDS):
+                return out
+            try:
+                record = load(path)
+            except Exception:
+                continue
+            if record.get("submitted"):
+                out.append((record, resolution))
+                break
+    return out
+
+
+# ---------------------------------------------------------------- entry point
 
 
 def release_dates_from_openrouter(models: tuple[str, ...], get=None) -> dict[str, datetime]:  # type: ignore[no-untyped-def]
@@ -425,6 +498,7 @@ def release_dates_from_openrouter(models: tuple[str, ...], get=None) -> dict[str
 
 
 def _bot_factory(pool, nemotron_model: str):  # type: ignore[no-untyped-def]
+    """pool: the live Gemini pool, or None for a lab run without Gemini."""
     from forecasting_tools import GeneralLlm
 
     import main
@@ -432,7 +506,9 @@ def _bot_factory(pool, nemotron_model: str):  # type: ignore[no-untyped-def]
 
     def make(model: str):  # type: ignore[no-untyped-def]
         if model == nemotron_model:
-            llm = GeneralLlm(model=model, temperature=None, timeout=240, allowed_tries=1)
+            llm = GeneralLlm(model=model, temperature=None, timeout=NEMOTRON_TIMEOUT, allowed_tries=1)
+        elif pool is None:
+            raise RuntimeError("no Gemini in this lab run")
         else:
             # One model, no backups, never the reserve: exactly one call.
             llm = pool._forecaster(model, allow_reserve=False, booked=False)
@@ -494,56 +570,45 @@ def synthetic_run() -> str:
 
 
 def main_run() -> str:
-    """The real lab run (workflow 'Replay lab'): resolved live questions."""
+    """The real lab run (workflow 'Replay lab'): resolved live questions. Its
+    own queue, no Gemini, ends by minute 8 (time_check before every call)."""
     import os
 
+    started = time.monotonic()
+    may_start = time_check(started)
+
     import bot_config
-    import minibench
     import scoreboard
     from bot_helpers import silence_noisy_dependencies
-    from gemini_budget import GitHubFileStore, make_store
-    from question_log import DATA_REPO, questions_per_day
+    from gemini_budget import GitHubFileStore
+    from question_log import DATA_REPO
 
     silence_noisy_dependencies()
     from forecasting_tools import MetaculusClient
 
     token = os.environ["DATA_REPO_TOKEN"]
     now = datetime.now(timezone.utc)
-    pool = bot_config._gemini_pool(make_store(bot_config.GEMINI_LEDGER_PATH))
-    pool.questions_per_day = questions_per_day(token)
-    try:
-        saved_mb = minibench._default_store().load() or {}
-    except Exception:
-        saved_mb = {}
-    last_open = minibench._time(saved_mb.get("last_open_seen"))
-    pool.minibench_active = last_open is not None and now - last_open <= minibench.ACTIVE_FOR
     nemotron_store = GitHubFileStore(DATA_REPO, NEMOTRON_LEDGER_PATH, token)
     try:
         nemotron_days = nemotron_store.load() or {}
     except Exception:
         nemotron_days = {}
     today = now.date().isoformat()
-    quota = LabQuota(now, last_open, pool.expected_questions_left_today(now), int(nemotron_days.get(today, 0)))
+    quota = LabQuota(now, None, 0.0, int(nemotron_days.get(today, 0)),
+                     gemini_off="the lab runs outside the live queue, so never with Gemini")
     results_store = GitHubFileStore(DATA_REPO, RESULTS_PATH, token)
     try:
         rows = results_store.load() or []
     except Exception:
         rows = []
     done = {(r["post"], r["experiment"]) for r in rows if r.get("diff") is not None or "not applicable" in r.get("note", "")}
-    models = (*bot_config.GEMINI_FORECAST_MODELS, bot_config.BACKUP_FORECAST_MODEL)
+    nemotron = bot_config.BACKUP_FORECAST_MODEL
     try:
-        release = release_dates_from_openrouter(models)
+        release = release_dates_from_openrouter((nemotron,))
     except Exception:
         release = {}  # leak guard: nothing is used without a known date
-    deadline = datetime.now(timezone.utc) + TIME_BUDGET
-    forecast = forecast_with_model(_bot_factory(pool, bot_config.BACKUP_FORECAST_MODEL))
-
-    def timed(question_obj, research, model):  # type: ignore[no-untyped-def]
-        if datetime.now(timezone.utc) > deadline:
-            raise TimeoutError("lab time budget used")
-        return forecast(question_obj, research, model)
-
-    ctx = LabContext(quota, pool.ledger, release, timed, tuple(bot_config.GEMINI_FORECAST_MODELS), bot_config.BACKUP_FORECAST_MODEL, done)
+    forecast = forecast_with_model(_bot_factory(None, nemotron))
+    ctx = LabContext(quota, None, release, forecast, tuple(bot_config.GEMINI_FORECAST_MODELS), nemotron, done, may_start)
     client = MetaculusClient()
 
     def resolution_of(post):  # type: ignore[no-untyped-def]
@@ -552,19 +617,30 @@ def main_run() -> str:
             question = question[0]
         return getattr(question, "resolution_string", None)
 
-    records = scoreboard.latest_submitted_records(token)
-    results = run_all(ctx, records, resolution_of)
+    def load(path: str) -> dict:
+        import base64
+        import json
+
+        return json.loads(base64.b64decode(scoreboard._github(f"contents/{path}", token)["content"]))
+
+    # Without Gemini only E4 can still be done: skip questions where it is.
+    try:
+        paths = [t["path"] for t in scoreboard._github("git/trees/HEAD?recursive=1", token)["tree"]]
+    except Exception:
+        paths = []
+    pairs = lab_records(paths, load, resolution_of, lambda post: (post, EXPERIMENTS[3]) in done, may_start)
+    results: list[LabResult] = []
+    for record, resolution in pairs:
+        results += run_question(ctx, record, resolution)
     kept = [r for r in rows if (r["post"], r["experiment"]) in done]
     new_rows = to_rows([r for r in results if (r.question, r.experiment) not in done], now.isoformat())
     results_store.save(kept + new_rows, message=f"Replay lab {today}")
-    pool.save()
     nemotron_days[today] = int(nemotron_days.get(today, 0)) + quota.nemotron_started
     nemotron_store.save({k: v for k, v in nemotron_days.items() if k >= (now - timedelta(days=7)).date().isoformat()}, message="Lab Nemotron calls")
     all_rows = kept + new_rows
     text = report([LabResult(r["post"], r["type"], r["experiment"], r["diff"], r.get("note", "")) for r in all_rows])
-    window = quota.gemini_window()
-    return text + (f"\n\nGemini this run: {'not allowed (' + window + ')' if window else str(quota.gemini_started) + ' lab call(s)'}; "
-                   f"Nemotron: {quota.nemotron_started}; nothing submitted.")
+    return text + (f"\n\nGemini this run: not allowed ({quota.gemini_window()}); Nemotron: {quota.nemotron_started}; "
+                   f"questions looked at: {len(pairs)}; lab time {time.monotonic() - started:.0f} s; nothing submitted.")
 
 
 if __name__ == "__main__":

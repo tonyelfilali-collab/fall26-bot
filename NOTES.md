@@ -26,7 +26,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
 | Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct) | #27, #44, #63, #110 |
 | Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
-| Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; Gemini only spare, never reserve | #92 |
+| Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; since PR L (21 Oct): own queue (`replay-lab`, never delays a live run), no Gemini, ends by minute 8 | #92, PR L |
 | Spend guards | `spend.py` | ON (credits only) | Per-question cap 2x tier cost, daily cap 2x target, key backstop, never re-buy, fail closed | #81 |
 | Health check start | `health_dispatch.py` | ON | First tournament run after 06:00 UTC starts health.yml | #84 |
 | MiniBench discovery | `minibench.py` | ON | Slug + remembered rounds + 20-id scan every run; newest running round | #41, #90 |
@@ -502,7 +502,14 @@ of range) and reports paired differences vs live with a bootstrap 90% CI per typ
 (`lab/results.json`; section in the weekly Scoreboard). Quota: Nemotron <= 300 lab calls/UTC day
 (`lab/nemotron_calls.json`); Gemini only in the last 3 h of the Pacific day, only non-reserve quota
 beyond 2 x expected questions left, never while MiniBench is open or was in the last 6 h; single-model
-chains without the reserve; a 6-minute time budget per run. Leak guard: a model released after the
+chains without the reserve; a 6-minute time budget per run. **Since 21 Oct (PR L):** the real lab
+runs in its own queue (`replay-lab`), never the live `forecast-bot` one, so it never delays or
+cancels a live run; so it has no Gemini key and never touches the Gemini ledger (E1/E3 stay pending
+unless live had 5+ forecasts; in 10 days Gemini lab quota was free once). It ends by minute 8: 6.5
+min of Python, the last 45 s kept for saving; every call (data-repo file, Metaculus lookup, Nemotron
+with a 120 s timeout) starts only if it can finish in time; it loads only the latest submitted log
+of resolved questions still missing E4 (before: every log, which took most of the run). Job timeout
+9 min (backstop). Leak guard: a model released after the
 question opened (OpenRouter `created` date) or of unknown date is never used.
 
 ## Free news fallback (27 Sep 2026)

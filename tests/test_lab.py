@@ -189,3 +189,74 @@ def test_live_records_keep_the_dossier_sections():
     bot._save_section(question, "wikipedia", "")  # nothing to save
     sections = bot._record_for(question)["dossier_sections"]
     assert set(sections) == {"followup"} and sections["followup"]["text"] == "Findings." and sections["followup"]["at"]
+
+
+# ---------------------------------------------------------------- time limit and own queue
+
+
+def test_time_check_leaves_room_for_the_call_and_the_save():
+    now = [0.0]
+    may_start = lab.time_check(0.0, clock=lambda: now[0])
+    usable = (lab.LAB_LIMIT - lab.SAVE_MARGIN).total_seconds()
+    assert may_start(lab.NEMOTRON_TIMEOUT)
+    now[0] = usable - lab.NEMOTRON_TIMEOUT
+    assert may_start(lab.NEMOTRON_TIMEOUT)
+    now[0] += 1
+    assert not may_start(lab.NEMOTRON_TIMEOUT) and may_start(lab.LOOKUP_SECONDS)
+    # The job ends by minute 8: ~1 minute of setup plus the lab's own limit.
+    assert lab.LAB_LIMIT + timedelta(minutes=1) <= timedelta(minutes=8)
+
+
+def test_no_nemotron_call_starts_when_it_could_not_finish_in_time():
+    calls = []
+    release = {bot_config.BACKUP_FORECAST_MODEL: datetime(2026, 9, 1, tzinfo=timezone.utc)}
+    quota = lab.LabQuota(IN_WINDOW, None, 0.0, gemini_off="no Gemini")
+    ctx = lab.LabContext(quota, None, release, lambda *a: calls.append(a) or 0.5, FLASH,
+                         bot_config.BACKUP_FORECAST_MODEL, may_start=lambda seconds: False)
+    [e4] = [r for r in lab.run_question(ctx, _record(), "yes") if r.experiment == lab.EXPERIMENTS[3]]
+    assert calls == [] and quota.nemotron_started == 0 and "time limit" in e4.note
+
+
+def test_without_gemini_only_e4_runs_and_the_ledger_is_never_touched():
+    calls = []
+    release = {bot_config.BACKUP_FORECAST_MODEL: datetime(2026, 9, 1, tzinfo=timezone.utc), **{m: datetime(2026, 9, 1, tzinfo=timezone.utc) for m in FLASH}}
+    quota = lab.LabQuota(IN_WINDOW, None, 0.0, gemini_off="no Gemini")
+    ctx = lab.LabContext(quota, None, release, lambda q, r, m: calls.append(m) or 0.5, FLASH, bot_config.BACKUP_FORECAST_MODEL)
+    results = lab.run_question(ctx, _record(), "yes")  # ledger None: any Gemini use would fail
+    assert calls == [bot_config.BACKUP_FORECAST_MODEL] and quota.gemini_started == 0
+    assert {r.experiment for r in results if r.diff is not None} == {lab.EXPERIMENTS[3]}
+
+
+def test_lab_records_loads_only_what_it_needs_and_stops_in_time():
+    paths = ["questions/tournament/2026-10-01/5_100000.json", "questions/tournament/2026-10-02/5_090000.json",
+             "questions/tournament/2026-10-02/5_090000_shadows.json", "questions/tournament/2026-10-01/6_100000.json",
+             "questions/tournament/2026-10-01/7_100000.json", "questions/test_questions/2026-10-01/8_100000.json"]
+    files = {"questions/tournament/2026-10-02/5_090000.json": {"submitted": False, "id": "new-unsubmitted"},
+             "questions/tournament/2026-10-01/5_100000.json": {"submitted": True, "id": "5"},
+             "questions/tournament/2026-10-01/7_100000.json": {"submitted": True, "id": "7"}}
+    loaded, looked_up = [], []
+
+    def load(path):
+        loaded.append(path)
+        return files[path]
+
+    def resolution_of(post):
+        looked_up.append(post)
+        return {5: "yes", 6: None, 7: "no"}[post]
+
+    pairs = lab.lab_records(paths, load, resolution_of, skip_post=lambda post: False, may_start=lambda s: True)
+    assert [(r["id"], res) for r, res in pairs] == [("5", "yes"), ("7", "no")]
+    assert looked_up == [5, 6, 7] and not any("shadows" in p or "test_questions" in p for p in loaded)
+    loaded.clear(), looked_up.clear()
+    assert lab.lab_records(paths, load, resolution_of, skip_post=lambda post: post == 5, may_start=lambda s: True)[0][0]["id"] == "7"
+    assert 5 not in looked_up
+    assert lab.lab_records(paths, load, resolution_of, skip_post=lambda post: False, may_start=lambda s: False) == []
+
+
+def test_the_lab_workflow_never_uses_the_live_queue_or_gemini():
+    import yaml
+
+    workflow = yaml.safe_load(open(".github/workflows/replay_lab.yaml"))
+    assert workflow["concurrency"]["group"] != "forecast-bot"
+    assert workflow["jobs"]["lab"]["timeout-minutes"] <= 9
+    assert "GEMINI_API_KEY" not in open(".github/workflows/replay_lab.yaml").read()
