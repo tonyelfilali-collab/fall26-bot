@@ -39,6 +39,12 @@ from typing import Any
 from forecasting_tools import GeneralLlm
 from forecasting_tools.ai_models.ai_utils.response_types import TextTokenCostResponse
 
+
+class ClaudeResponse(TextTokenCostResponse):
+    """A Claude answer, with the API's stop reason (for the ledger)."""
+
+    stop_reason: str | None = None
+
 import bot_config
 import ensemble
 from bot_helpers import PUBLIC_LOGGER_NAME
@@ -183,10 +189,9 @@ class ClaudeBudget(SpendGuard):
         return self.cycle is not None and self.cycle.isoformat() in self.credit_errors
 
     def finish(self, model: str, succeeded: bool, cost: float | None = None, error: BaseException | None = None,
-               timed_out: bool = False, output_tokens: int | None = None, seconds: float | None = None) -> None:
+               timed_out: bool = False, **details: Any) -> None:
         before = self.day_spent()
-        super().finish(model, succeeded, cost=cost, error=error, timed_out=timed_out,
-                       output_tokens=output_tokens, seconds=seconds)
+        super().finish(model, succeeded, cost=cost, error=error, timed_out=timed_out, **details)
         if self.cycle is not None:
             key = self.cycle.isoformat()
             self.cycles[key] = self.cycles.get(key, 0.0) + (self.day_spent() - before)
@@ -268,10 +273,11 @@ class _ClaudeCall(GeneralLlm):
         text = "".join(block.text for block in response.content if block.type == "text").strip()
         usage = response.usage
         if response.stop_reason == "refusal":
-            raise NoAnswer(f"{self.model}: refused", cost=claude_cost(self.model, usage))
+            raise NoAnswer(f"{self.model}: refused", cost=claude_cost(self.model, usage), stop_reason="refusal")
         if response.stop_reason == "max_tokens" or not text:
-            raise NoAnswer(f"{self.model}: no answer (stop reason {response.stop_reason})", cost=claude_cost(self.model, usage))
-        return TextTokenCostResponse(
+            raise NoAnswer(f"{self.model}: no answer (stop reason {response.stop_reason})", cost=claude_cost(self.model, usage),
+                           stop_reason=response.stop_reason)
+        return ClaudeResponse(stop_reason=response.stop_reason,
             data=text, prompt_tokens_used=usage.input_tokens, completion_tokens_used=usage.output_tokens,
             total_tokens_used=usage.input_tokens + usage.output_tokens, model=self.model,
             cost=claude_cost(self.model, usage),
@@ -426,6 +432,18 @@ def frontier_report(planner: FrontierPlanner) -> str:
         lines.append(f"| {provider} | {model} | {r['calls']} | {r['ok']} | {tokens} | {secs} | {slow or '-'} | ${r['dollars']:.4f} | {', '.join(r['failed']) or '-'} |")
     lines += ["", "| Provider | Question | $ |", "|---|---|---|"]
     lines += [f"| {p} | {q} | ${d:.4f} |" for (p, q), d in sorted(per_question.items())]
+    claude_calls = [(question, call) for question, entry in (planner.claude.questions.items() if planner.claude else [])
+                    for call in entry.get("calls", [])[planner.calls_before.get(("Anthropic", question), 0):]]
+    if claude_calls:
+        # Each Claude call (numbers and API labels only).
+        lines += ["", "| Question | Claude call | Seconds | Input tokens | Output tokens | $ | Stop reason | HTTP |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for question, c in claude_calls:
+            secs = c.get("seconds")
+            lines.append(f"| {question} | {c['model'].removeprefix('anthropic/')} | "
+                         f"{'-' if secs is None else f'{secs:.0f}'}{' **over 6 min**' if (secs or 0) > 360 else ''} | "
+                         f"{c.get('input_tokens') or '-'} | {c.get('output_tokens') or '-'} | ${c.get('charged', 0.0):.4f} | "
+                         f"{c.get('stop_reason') or '-'} | {c.get('http_status') or '-'} |")
     return "\n".join(lines)
 
 

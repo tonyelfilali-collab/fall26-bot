@@ -310,3 +310,24 @@ def test_rehearsal_passes():
 
     ok, text = frontier_rehearsal.report()
     assert ok, text
+
+
+def test_each_claude_call_records_input_tokens_and_stop_reason():
+    claude = _budget()
+    token = current_question_key.set("31")
+    try:
+        claude.start(OPUS_55)
+        claude.finish(OPUS_55, True, cost=0.2, output_tokens=900, seconds=400.0, input_tokens=7000, stop_reason="end_turn")
+        claude.start(OPUS_55)
+        claude.finish(OPUS_55, False, error=NoAnswer("cut off", cost=0.3, stop_reason="max_tokens"),
+                      stop_reason="max_tokens")
+    finally:
+        current_question_key.reset(token)
+    calls = claude.questions["31"]["calls"]
+    assert calls[0]["input_tokens"] == 7000 and calls[0]["stop_reason"] == "end_turn"
+    assert calls[1]["stop_reason"] == "max_tokens" and calls[1]["charged"] == pytest.approx(0.3)
+    planner = _planner(claude)
+    planner.calls_before = {}
+    report = frontier.frontier_report(planner)
+    assert "| 31 | claude-opus-5-5 | 400 **over 6 min** | 7000 | 900 | $0.2000 | end_turn |" in report
+    assert "| max_tokens |" in report

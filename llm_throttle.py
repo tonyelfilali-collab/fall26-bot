@@ -55,11 +55,12 @@ except ImportError:  # pragma: no cover
 class NoAnswer(RuntimeError):
     """The model answered with nothing usable (a refusal, or cut off at
     max_tokens): the next model in the chain is tried. `cost`: what the
-    answer cost (the spend guard charges it)."""
+    answer cost (the spend guard charges it); `stop_reason`: the API's label."""
 
-    def __init__(self, message: str, cost: float | None = None) -> None:
+    def __init__(self, message: str, cost: float | None = None, stop_reason: str | None = None) -> None:
         super().__init__(message)
         self.cost = cost
+        self.stop_reason = stop_reason
 
 
 _TRY_BACKUP_ERRORS += (NoAnswer,)
@@ -212,6 +213,8 @@ class ThrottledLlm(GeneralLlm):
                     timed_out=isinstance(failure, _TIMEOUT_ERRORS),
                     output_tokens=getattr(response, "completion_tokens_used", None) if succeeded else None,
                     seconds=time.monotonic() - started_at,
+                    input_tokens=getattr(response, "prompt_tokens_used", None) if succeeded else None,
+                    stop_reason=getattr(response if succeeded else failure, "stop_reason", None),
                 )
         if not succeeded:
             return await self._hand_over(prompt, error_name)

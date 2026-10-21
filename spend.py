@@ -268,7 +268,8 @@ class SpendGuard:
         self.paid_calls += 1
 
     def finish(self, model: str, succeeded: bool, cost: float | None = None, error: BaseException | None = None,
-               timed_out: bool = False, output_tokens: int | None = None, seconds: float | None = None) -> None:
+               timed_out: bool = False, output_tokens: int | None = None, seconds: float | None = None,
+               input_tokens: int | None = None, stop_reason: str | None = None) -> None:
         """Charge one call: the real cost; the estimate when the cost is
         unknown or the call failed after it may have been billed; nothing when
         it was rejected before generating."""
@@ -305,6 +306,10 @@ class SpendGuard:
             }
             if seconds is not None:
                 call["seconds"] = round(seconds, 1)
+            if input_tokens is not None:
+                call["input_tokens"] = input_tokens
+            if stop_reason is not None:
+                call["stop_reason"] = str(stop_reason)[:20]  # an API label (end_turn, max_tokens, ...)
             if not succeeded:
                 # 7 Oct: why it failed, as a number and short labels (no messages).
                 call.update(error_details(error))
