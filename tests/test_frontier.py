@@ -299,7 +299,7 @@ def test_off_is_todays_setup():
 
 
 def test_frontier_is_built_off():
-    assert bot_config.FRONTIER_ENABLED is False
+    assert bot_config.FRONTIER_ENABLED is True  # PR 3: switched on
     assert bot_config.CLAUDE_BUDGET_PER_CYCLE == 170.0
     assert bot_config.FRONTIER_GPT_ENABLED is False
     assert bot_config.get_lineup("frontier").test_only

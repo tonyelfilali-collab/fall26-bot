@@ -154,9 +154,9 @@ GEMINI_LOW_BUDGET_FRACTION = 0.25
 GEMINI_LEDGER_PATH = "quota/gemini_free.json"
 
 # Frontier lineup (architect, 21 Oct; frontier.py): Claude via ANTHROPIC_API_KEY
-# (Console credits, no card), GPT-5.6 Sol, today's Flash path. Built OFF: the
-# switch is PR 3, after "the architect says merge" on PR 2.
-FRONTIER_ENABLED = False
+# (Console credits, no card) + today's Flash path (GPT-5.6 Sol behind its own
+# switch, OFF). ON since PR 3 (21 Oct, after #140 and a green live run).
+FRONTIER_ENABLED = True
 CLAUDE_BUDGET_PER_CYCLE = 170.0  # dollars of Console credits per billing cycle (the one budget setting)
 # A day the monthly credits reset (any month, "YYYY-MM-DD"; None = no Claude).
 # Tony, 21 Oct: the current credits expire 18 Nov, so this cycle ends 17 Nov
@@ -583,7 +583,8 @@ def _frontier_lineup(name: str = "frontier", test_only: bool = True) -> Lineup:
         parser_validation_samples=1,
         summarize_research=False,
         free_only=False,
-        allowed_paid=(*paid, frontier.GPT_SOL, *frontier.CLAUDE_PRICES),
+        # GPT-5.6 Sol is allowed only while its own switch is on.
+        allowed_paid=(*paid, *((frontier.GPT_SOL,) if FRONTIER_GPT_ENABLED else ()), *frontier.CLAUDE_PRICES),
         test_only=test_only,
         planner=pool,
     )

@@ -21,6 +21,7 @@ def _chain_models(llm):
 
 def test_switched_on_only_the_paid_flash_model_is_allowed(monkeypatch):
     assert bot_config.PAID_FLASH_FALLBACK is True  # ON: Tony, 30 Sep
+    monkeypatch.setattr(bot_config, "FRONTIER_ENABLED", False)  # the plain Flash pool (frontier: below)
     lineup = bot_config.get_lineup("gemini-free")  # the guard passes: only PAID_FLASH_MODEL is paid
     assert not lineup.free_only and lineup.allowed_paid == (bot_config.PAID_FLASH_MODEL,)
     paid = {m for m in lineup.llm_model_names() if not bot_config.is_free_model(m)}
@@ -33,7 +34,17 @@ def test_switched_on_only_the_paid_flash_model_is_allowed(monkeypatch):
         bot_config.get_lineup("gemini-free")
 
 
+def test_live_frontier_allows_only_paid_flash_and_claude():
+    import frontier
+
+    assert bot_config.FRONTIER_ENABLED and not bot_config.FRONTIER_GPT_ENABLED
+    lineup = bot_config.get_lineup("gemini-free")
+    assert not lineup.test_only and set(lineup.allowed_paid) == {bot_config.PAID_FLASH_MODEL, *frontier.CLAUDE_PRICES}
+    assert frontier.GPT_SOL not in lineup.allowed_paid  # GPT off: not even allowed
+
+
 def test_switched_off_no_paid_model_anywhere(monkeypatch):
+    monkeypatch.setattr(bot_config, "FRONTIER_ENABLED", False)
     monkeypatch.setattr(bot_config, "PAID_FLASH_FALLBACK", False)
     lineup = bot_config._gemini_free_lineup()
     assert lineup.free_only and lineup.allowed_paid == () and lineup.planner.paid_flash is None
