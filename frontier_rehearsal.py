@@ -23,6 +23,24 @@ R. A burst of 40 MiniBench questions on a Claude day at $8: MiniBench stops
    using Claude at $9 (reservations included); a seasonal question in the same
    run still gets both Opus slots; the day stays under $15.
 
+The agent (PR 4; the real agent code, the Anthropic client swapped for
+recorded replies with tool results; FRONTIER_AGENT_ENABLED stays off):
+K. Full agent path: seasonal = agent + Opus 5.5 + Flash x2, MiniBench = agent +
+   Flash x2; pause_turn continued; searches / fetches / URLs in the private log;
+   Claude <= $3.00 / $1.25 per question.
+L. Agent past its 7-minute cap (1:100 clock): cancelled, charged its worst
+   case, the plain Opus fallback answers inside the planned wait; the 4
+   seasonal agents' reservations ($9.12) keep MiniBench to today's setup.
+L2. Agent and plain Opus both too slow: every question still forecast (Flash).
+M. Tool failures (search unavailable, page not reachable): counted, answer kept.
+N. One search and one fetch left at a pause: the continuation gets max_uses 1.
+N2. Every search and fetch used at a pause: not continued, plain Opus answers.
+O. Credit error on the agent: never retried, no fallback, no more Claude.
+P. A question already near its cap: the agent is refused; seasonal plain Opus
+   (or Haiku) within $1.50; MiniBench with no Claude room: today's setup.
+Q. The Claude day at $14.00: no seasonal agent ($2.28 would pass $15): plain
+   Opus; MiniBench no Claude (the day is over its $9 limit).
+
 Prints a report; exits 1 if a check fails.
 
     poetry run python frontier_rehearsal.py
@@ -42,7 +60,7 @@ import litellm
 import bot_config
 import frontier
 import main
-from frontier import GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget, FrontierPlanner
+from frontier import AGENT, GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget, FrontierPlanner
 from gemini_budget import MemoryStore
 from llm_throttle import RequestPacer
 from replay import ReplayChainLlm, _RecordedAnswer
@@ -135,7 +153,8 @@ def _info(record: dict, planner: FrontierPlanner) -> dict:
         "post": int(post), "type": record["question"]["question_type"], "seasonal": record.get("seasonal"),
         "forecasts": len(ok), "models": models, "round2": record.get("round2"),
         "claude": sum(m.startswith("anthropic/") for m in models), "gpt": models.count(GPT_SOL),
-        "opus": models.count(OPUS_55), "flash": sum("flash" in m for m in models),
+        "opus": models.count(OPUS_55), "flash": sum("flash" in m for m in models), "agent": models.count(AGENT),
+        "agent_runs": [a for f in record.get("forecasts", []) for a in f.get("agent", [])],
         "paid_flash": models.count(bot_config.PAID_FLASH_MODEL), "submitted": record.get("final_forecast") is not None,
         "claude_spent": planner.claude.question_spent(post) if planner.claude else 0.0,
         "openrouter_spent": planner.spend.question_spent(post) if planner.spend else 0.0,
@@ -160,6 +179,138 @@ def _rows(infos: list[dict]) -> list[str]:
 SEASONAL_TYPES = ("binary", "numeric", "multiple_choice", "discrete")
 
 
+# ---------------------------------------------------------------- the agent (PR 4)
+# The REAL agent and Claude call code (frontier.AgentLlm, frontier.ClaudeLlm)
+# with the Anthropic SDK client swapped for recorded replies (tool results
+# included): 0 calls. FRONTIER_AGENT_ENABLED stays off; the planner's switch is
+# set for these phases only.
+
+AGENT_URL = "https://example.org/rehearsal-source"
+
+
+def _ns(**kw: Any) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(**kw)
+
+
+def _agent_reply(content: list, stop: str = "end_turn", searches: int = 0, fetches: int = 0, inp: int = 9000, out: int = 2500) -> Any:
+    usage = _ns(input_tokens=inp, output_tokens=out, cache_creation_input_tokens=0, cache_read_input_tokens=0,
+                server_tool_use=_ns(web_search_requests=searches, web_fetch_requests=fetches))
+    return _ns(content=content, stop_reason=stop, usage=usage)
+
+
+def _search_block() -> list:
+    return [_ns(type="server_tool_use", id="s1", name="web_search", input={"query": "rehearsal"}),
+            _ns(type="web_search_tool_result", tool_use_id="s1", content=[_ns(type="web_search_result", url=AGENT_URL, title="t")])]
+
+
+def _fetch_block() -> list:
+    return [_ns(type="server_tool_use", id="f1", name="web_fetch", input={"url": AGENT_URL}),
+            _ns(type="web_fetch_tool_result", tool_use_id="f1",
+                content=_ns(type="web_fetch_result", url=AGENT_URL, content={"type": "document"}))]
+
+
+def _error_block(tool: str, code: str) -> Any:
+    return _ns(type=f"{tool}_tool_result", tool_use_id="e1", content=_ns(type=f"{tool}_tool_result_error", error_code=code))
+
+
+class RecordedAnthropic:
+    """Stands in for anthropic.AsyncAnthropic. Plain requests: the recorded
+    reply in the question's answer format. Agent requests (with tools): by
+    `script` (full, tool-errors, near-caps, caps-used, credit), `agent_delay` / `plain_delay` seconds first."""
+
+    def __init__(self, script: str, agent_delay: float = 0.0, plain_delay: float = 0.0) -> None:
+        self.script, self.agent_delay, self.plain_delay = script, agent_delay, plain_delay
+        self.agent_requests: list[dict] = []
+        self.plain_requests = 0
+
+    def __call__(self, **kwargs: Any) -> Any:
+        fake = self
+
+        class Messages:
+            async def create(self, **request: Any) -> Any:
+                return await fake.create(request)
+
+        class Client:
+            messages = Messages()
+
+            async def __aenter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            async def __aexit__(self, *exc):  # type: ignore[no-untyped-def]
+                return False
+
+        return Client()
+
+    async def create(self, request: dict) -> Any:
+        from replay import current_question, recorded_reply
+
+        question = current_question.get()
+        answer = _ns(type="text", text=recorded_reply(question))
+        if "tools" not in request:
+            self.plain_requests += 1
+            if self.plain_delay:
+                await asyncio.sleep(self.plain_delay)
+            usage = _ns(input_tokens=7000, output_tokens=1500, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            return _ns(content=[answer], stop_reason="end_turn", usage=usage)
+        self.agent_requests.append(request)
+        if self.agent_delay:
+            await asyncio.sleep(self.agent_delay)
+        searches, fetches = request["tools"][0]["max_uses"], request["tools"][1]["max_uses"]
+        first = request["messages"][-1]["role"] == "user"
+        if self.script == "credit":
+            raise CreditError("Your credit balance is too low to access the Anthropic API.")
+        if self.script == "full":
+            if first:  # pause_turn after a search and a fetch: continued as-is
+                return _agent_reply([_ns(type="text", text="Checking. "), *_search_block(), *_fetch_block()], stop="pause_turn", searches=2, fetches=1)
+            return _agent_reply([*_search_block(), answer], searches=1)
+        if self.script == "tool-errors":
+            return _agent_reply([_error_block("web_search", "unavailable"), _error_block("web_fetch", "url_not_accessible"),
+                                 _error_block("web_fetch", "unsupported_content_type"), answer], fetches=2)
+        if self.script == "near-caps":
+            if first:  # one search and one fetch left: the continuation gets max_uses 1 / 1
+                return _agent_reply([*_search_block()], stop="pause_turn", searches=searches - 1, fetches=fetches - 1)
+            return _agent_reply([*_search_block(), _error_block("web_search", "max_uses_exceeded"), answer], searches=1)
+        if self.script == "caps-used":  # paused with every search and fetch used: not continued
+            return _agent_reply([*_search_block()], stop="pause_turn", searches=searches, fetches=fetches)
+        raise ValueError(self.script)
+
+
+def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake: RecordedAnthropic) -> tuple[list[dict], FrontierPlanner, list[str]]:
+    import anthropic
+
+    original = anthropic.AsyncAnthropic
+    anthropic.AsyncAnthropic = fake  # type: ignore[misc]
+    try:
+        spend = SpendGuard(MemoryStore({"days": {}}))
+        planner = frontier._frontier_pool(MemoryStore(), spend, claude, llm_class=ReplayChainLlm)
+        planner.claude_llm_class, planner.agent_llm_class = frontier.ClaudeLlm, frontier.AgentLlm
+        planner.agent_enabled = True
+        planner.pacers = {m: RequestPacer(60000) for m in planner.pacers}
+        planner.claude_pacer = planner.gpt_pacer = RequestPacer(60000)
+        planner.start_run(5.0, api_key=True)
+        parser = planner.parser()
+        bot = main.FallBot2026(
+            llms={"default": planner.unplanned_forecaster(), "parser": parser, "summarizer": parser, "researcher": "replay"},
+            publish_reports_to_metaculus=False, enable_summarize_research=False,
+            predictions_per_research_report=3, required_successful_predictions=0,
+        )
+        bot.planner = planner
+        bot.question_log = None
+        bot.keep_records = True
+        bot.run_mode = "test_questions"
+        queued, bot.seasonal_by_post = main.run_queue(seasonal, minibench)
+        asyncio.run(bot.forecast_questions(queued, return_exceptions=True))
+        return bot.__dict__.get("kept_records", []), planner, []
+    finally:
+        anthropic.AsyncAnthropic = original  # type: ignore[misc]
+
+
+AGENT_TIMES = ("AGENT_TIMEOUT_SECONDS", "AGENT_FALLBACK_SECONDS", "AGENT_MIN_SECONDS", "PARSE_MARGIN_SECONDS",
+               "FALLBACK_MIN_SECONDS", "CLAUDE_TIMEOUT_SECONDS")
+
+
 def run() -> dict:
     wait = main.PLANNED_WAIT_SECONDS
     main.QUICK_FORECAST_RETRY_WAIT_SECONDS, quick_wait = 0, main.QUICK_FORECAST_RETRY_WAIT_SECONDS
@@ -167,6 +318,7 @@ def run() -> dict:
     _RecordedAnswer.binary_percent = {OPUS_55: 70, OPUS_5: 60, HAIKU: 60, GPT_SOL: 45,
                                       **{m: 20 for m in bot_config.GEMINI_FORECAST_MODELS}}
     out: dict = {}
+    times: dict = {}
     try:
         def phase(name: str, base: int, claude: ClaudeBudget, **kw: Any) -> None:
             seasonal = [_question(base + i, kind) for i, kind in enumerate(SEASONAL_TYPES)]
@@ -193,16 +345,119 @@ def run() -> dict:
         phase("I", 99000, _budget(), slow={OPUS_55: 6.0})
         main.PLANNED_WAIT_SECONDS = wait
         # R: 40 MiniBench questions closing first, one seasonal question closing later.
-        burst = [_question(89000 + i, "binary", minutes=60) for i in range(40)]
-        records, planner, calls = run_phase([_question(88999, "binary", minutes=600)], burst, _budget(day=8.0))
+        burst = [_question(87000 + i, "binary", minutes=60) for i in range(40)]
+        records, planner, calls = run_phase([_question(86999, "binary", minutes=600)], burst, _budget(day=8.0))
         out["R"] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": calls}
         phase("J", 90000, _budget(), fail={m: lambda: litellm.ServiceUnavailableError(
             message="rehearsal: overloaded", llm_provider="gemini", model="gemini") for m in bot_config.GEMINI_FORECAST_MODELS})
+
+        def agent_phase(name: str, base: int, claude: ClaudeBudget, fake: RecordedAnthropic, prespent: tuple = ()) -> None:
+            seasonal = [_question(base + i, kind) for i, kind in enumerate(SEASONAL_TYPES)]
+            minibench = [_question(base + 9, "binary")]
+            for post, dollars in prespent:
+                claude.questions[str(post)] = {"spent": dollars}
+            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake)
+            out[name] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": [], "fake": fake,
+                         "report": frontier.frontier_report(planner)}
+
+        agent_phase("K", 81000, _budget(), RecordedAnthropic("full"))
+        # The 7-minute cap on a 1:100 clock (4.2 s; planned wait 5.4 s, 1.2 s kept for the fallback).
+        for attr in AGENT_TIMES:
+            times[attr] = getattr(frontier, attr)
+            setattr(frontier, attr, getattr(frontier, attr) / 100)
+        main.PLANNED_WAIT_SECONDS = wait / 100
+        agent_phase("L", 82000, _budget(), RecordedAnthropic("full", agent_delay=30.0))
+        agent_phase("L2", 83000, _budget(), RecordedAnthropic("full", agent_delay=30.0, plain_delay=30.0))
+        for attr, value in times.items():
+            setattr(frontier, attr, value)
+        main.PLANNED_WAIT_SECONDS = wait
+        agent_phase("M", 84000, _budget(), RecordedAnthropic("tool-errors"))
+        agent_phase("N", 85000, _budget(), RecordedAnthropic("near-caps"))
+        agent_phase("N2", 86000, _budget(), RecordedAnthropic("caps-used"))
+        store = MemoryStore({"days": {}})
+        agent_phase("O", 87000, _budget(store=store), RecordedAnthropic("credit"))
+        out["O_next"] = frontier.claude_mode(ClaudeBudget(store, BUDGET, RESET))
+        agent_phase("P", 88000, _budget(), RecordedAnthropic("full"),
+                    prespent=tuple((88000 + i, 1.00) for i in range(4)) + ((88009, 0.50),))
+        agent_phase("Q", 89000, _budget(day=14.00), RecordedAnthropic("full"))
         return out
     finally:
+        for attr, value in times.items():
+            setattr(frontier, attr, value)
         main.PLANNED_WAIT_SECONDS = wait
         main.QUICK_FORECAST_RETRY_WAIT_SECONDS = quick_wait
         _RecordedAnswer.binary_percent = {}
+
+
+def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
+    def runs(phase: str) -> list[dict]:
+        return [a for i in infos(phase) for a in i["agent_runs"]]
+
+    def agent_calls(phase: str) -> list[dict]:
+        claude = out[phase]["planner"].claude
+        return [c for e in claude.questions.values() for c in e.get("calls", []) if c["model"] == AGENT]
+
+    def reqs(phase: str) -> list[dict]:
+        return out[phase]["fake"].agent_requests
+
+    k_s, k_m = infos("K", True), infos("K", False)
+    k_runs, k_planner = runs("K"), out["K"]["planner"]
+    continued = [r for r in reqs("K") if r["messages"][-1]["role"] == "assistant"]
+    o_fake, q_day = out["O"]["fake"], out["Q"]["planner"].claude.day_spent()
+    s_reserve = frontier.agent_reserve(True)
+    return [
+        ("K: seasonal, every type = agent + Opus 5.5 + Flash x2 (4 forecasts)",
+         len(k_s) == 4 and all(i["forecasts"] == 4 and i["agent"] == 1 and i["opus"] == 1 and i["flash"] == 2 for i in k_s)),
+        ("K: MiniBench = agent + Flash x2 (3 forecasts)", all(i["forecasts"] == 3 and i["agent"] == 1 and i["flash"] == 2 for i in k_m)),
+        ("K: pause_turn continued with the paused content, no extra user message (2 requests per agent turn)",
+         len(k_runs) == 5 and all(r["requests"] == 2 for r in k_runs) and len(continued) == 5
+         and all(len(r["messages"]) == 2 for r in continued)),
+        ("K: tools web_search_20260209 / web_fetch_20260209, max_uses 8/3 seasonal and 3/2 MiniBench, max_content_tokens set",
+         {(r["tools"][0]["type"], r["tools"][1]["type"]) for r in reqs("K")} == {("web_search_20260209", "web_fetch_20260209")}
+         and {(r["tools"][0]["max_uses"], r["tools"][1]["max_uses"]) for r in reqs("K") if r["messages"][-1]["role"] == "user"} == {(8, 3), (3, 2)}
+         and all(r["tools"][1]["max_content_tokens"] == frontier.AGENT_FETCH_MAX_CONTENT_TOKENS for r in reqs("K"))),
+        ("K: private log: URLs read, 3 searches, 1 fetch, seconds and cost (incl. $0.01 per search) per agent turn",
+         all(r["urls_read"] == [AGENT_URL] and r["searches"] == 3 and r["fetches"] == 1 and r["seconds"] >= 0
+             and abs(r["cost"] - (2 * (9000 * 4 + 2500 * 20) / 1e6 + 0.03)) < 1e-9 for r in k_runs)),
+        (f"K: Claude caps raised while the agent runs (${frontier.AGENT_SEASONAL_QUESTION_CAP:.2f} / ${frontier.AGENT_MINIBENCH_QUESTION_CAP:.2f}) and kept",
+         all(k_planner.claude.caps[str(i["post"])] == (frontier.AGENT_SEASONAL_QUESTION_CAP if i["seasonal"] else frontier.AGENT_MINIBENCH_QUESTION_CAP)
+             and i["claude_spent"] <= k_planner.claude.caps[str(i["post"])] + 1e-9 for i in infos("K"))),
+        ("K: step summary has the agent numbers (5 calls, 15 searches, 5 fetches) and no URL",
+         "| 5 | 5 | 15 | 5 |" in out["K"]["report"] and "example.org" not in out["K"]["report"]),
+        ("L: agent past its cap -> cancelled, charged its worst case, the plain Opus fallback answers in the wait",
+         all(r["outcome"] == "timed out" for r in runs("L")) and len(runs("L")) == 4
+         and all(abs(c["charged"] - s_reserve) < 1e-9 and not c["ok"] for c in agent_calls("L"))
+         and all(i["submitted"] and i["opus"] == 2 and i["agent"] == 0 for i in infos("L", True))),
+        (f"L: 4 seasonal agents running hold ${4 * s_reserve:.2f} > the $9 MiniBench limit -> MiniBench today's setup (Flash), forecast",
+         all(i["submitted"] and i["claude"] == 0 and i["flash"] >= 3 for i in infos("L", False))),
+        ("L2: agent and plain Opus both too slow -> every question still forecast (Flash)",
+         all(i["submitted"] and i["claude"] == 0 and i["flash"] == 2 for i in infos("L2", True))
+         and all(i["submitted"] for i in infos("L2", False))),
+        ("M: tool failures counted in the private log, the agent's answer kept",
+         all(i["agent"] == 1 and i["submitted"] for i in infos("M"))
+         and all(r["tool_errors"] == {"web_search:unavailable": 1, "web_fetch:url_not_accessible": 1, "web_fetch:unsupported_content_type": 1}
+                 for r in runs("M"))),
+        ("N: one search and one fetch left at a pause -> continued with max_uses 1 / 1; caps never passed",
+         all(i["agent"] == 1 for i in infos("N"))
+         and all((r["tools"][0]["max_uses"], r["tools"][1]["max_uses"]) == (1, 1) for r in reqs("N") if r["messages"][-1]["role"] == "assistant")
+         and all(r["searches"] <= (8 if r["reserve"] > 1 else 4) and r["fetches"] <= (5 if r["reserve"] > 1 else 3) for r in runs("N"))),
+        ("N2: every search and fetch used at a pause -> not continued, plain Opus answers",
+         all(r["outcome"] == "paused, not continued (tool caps)" and r["requests"] == 1 for r in runs("N2"))
+         and all(i["agent"] == 0 and i["opus"] == (2 if i["seasonal"] else 1) and i["submitted"] for i in infos("N2"))),
+        (f"O: credit error on the agent: never retried, no fallback ({len(o_fake.agent_requests)} agent + {o_fake.plain_requests} plain request(s))",
+         len(o_fake.agent_requests) + o_fake.plain_requests <= 2 and all(i["submitted"] for i in infos("O"))
+         and not any(c["model"] in (OPUS_5, HAIKU) for e in out["O"]["planner"].claude.questions.values() for c in e.get("calls", []))),
+        (f"O: the next run: {out['O_next'][0]} ({out['O_next'][1]})", out["O_next"][0] == "off"),
+        ("P: question near its cap -> no agent; seasonal plain Opus / Haiku within $1.50; MiniBench today's setup; all forecast",
+         all(i["agent"] == 0 and i["submitted"] and i["claude_spent"] <= (frontier.CLAUDE_SEASONAL_QUESTION_CAP if i["seasonal"]
+             else frontier.CLAUDE_MINIBENCH_QUESTION_CAP) + 1e-9 for i in infos("P")) and all(i["claude"] >= 1 for i in infos("P", True))),
+        (f"Q: Claude day at $14.00 -> no seasonal agent ($2.28 would pass $15), plain Opus; MiniBench no Claude (over $9); ${q_day:.2f} <= $15.00",
+         all(i["agent"] == 0 and i["opus"] >= 1 and i["submitted"] for i in infos("Q", True))
+         and all(i["claude"] == 0 and i["submitted"] for i in infos("Q", False))
+         and q_day <= frontier.CLAUDE_DAILY_CAP + 1e-9),
+        ("Agent phases: 0 real calls (every Anthropic request went to the recorded client)",
+         all(out[p]["fake"].agent_requests or out[p]["fake"].plain_requests for p in ("K", "L", "M", "N", "N2", "O", "P", "Q"))),
+    ]
 
 
 def report() -> tuple[bool, str]:
@@ -262,6 +517,7 @@ def report() -> tuple[bool, str]:
         ("R: the seasonal question after the burst still gets both Opus slots",
          [i["opus"] for i in infos("R", True)] == [2]),
         ("Modes: A, B, E, F, H, I, J frontier; G off", all(mode(p) != "off" for p in frontier_phases) and mode("G") == "off"),
+        *agent_checks(out, infos),
     ]
     ok = all(c for _, c in checks)
     lines = ["## Frontier lineup rehearsal (recorded replies, 0 model calls, $0)", "",
@@ -271,7 +527,10 @@ def report() -> tuple[bool, str]:
     titles = {"A": "A. Full", "B": "B. Under 25% left", "C": "C. Under 10% left", "D": "D. Credit balance too low",
               "E": "E. GPT on and failing", "F": "F. Claude day at $14.50", "G": "G. Claude ledger unreadable",
               "H": "H. GPT on, OpenRouter key under $2", "I": "I. Opus slower than the planned wait",
-              "J": "J. Every free Flash 503", "R": "R. MiniBench burst of 40 from a $8 Claude day"}
+              "J": "J. Every free Flash 503", "K": "K. Agent: full path", "L": "L. Agent past its 7-minute cap",
+              "L2": "L2. Agent and plain Opus too slow", "M": "M. Agent tool failures", "N": "N. Agent near its tool caps",
+              "N2": "N2. Agent tool caps used at a pause", "O": "O. Agent credit error", "P": "P. Question near its cap",
+              "Q": "Q. Claude day at $14.00", "R": "R. MiniBench burst of 40 from a $8 Claude day"}
     for phase, title in titles.items():
         lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]

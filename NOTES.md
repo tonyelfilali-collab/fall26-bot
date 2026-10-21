@@ -10,7 +10,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
 | Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the frontier caps ($15/UTC day, MiniBench under $9, $1.50 / $0.60 per question); OpenRouter paid: Gemini 3.6 Flash (as now); GPT-5.6 Sol OFF | OpenRouter daily stop rule $2.00; spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
 | `FRONTIER_ENABLED` | `bot_config.py` (#140; switch PR 3, 21 Oct) | **ON** (live: seasonal Opus 5.5 x2 + Flash x2, MiniBench Opus 5.5 + Flash x2; GPT not allowed while its switch is off) | `frontier.py`: seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus 5.5 + Flash x2 (GPT behind `FRONTIER_GPT_ENABLED`, OFF); `CLAUDE_BUDGET_PER_CYCLE` 170 + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $15/UTC day (MiniBench Claude only while the day is under $9), $1.50 seasonal / $0.60 MiniBench per question; step-downs at 25% / 10% left | #140 |
-| `FRONTIER_AGENT_ENABLED` | `bot_config.py` (#146, not merged) | OFF (built) | One Opus slot becomes an agent (Opus 5.5 + Anthropic web_search / web_fetch, metaculus.com blocked); merges after PR 3 is live; switch-on waits for the architect's "go" | #146 |
+| `FRONTIER_AGENT_ENABLED` | `bot_config.py` (#146, not merged) | OFF (built) | One Opus slot becomes an agent (Opus 5.5 + Anthropic web_search / web_fetch, metaculus.com blocked; question caps $3.00 seasonal / $1.25 MiniBench while it runs); merges after PR 3 is live; switch-on waits for the architect's "go" | #146 |
 | `ACTIVE_LINEUP` | `bot_config.py` | `gemini-free` | Free Google AI Studio key: 4 Flash forecasters, Flash-Lite for research/parsing | #8, #9 |
 | Credits lineup | `bot_config.py` (`credits`) | OFF all season: no credits (Metaculus, 5 Oct) | Opus 5.5 / GPT-5.6 Sol / Gemini 3.6 Flash tiers; Flash slot tries the free key first; switch-on checklist PLAN.md 6b | #23, #74, #79 |
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
@@ -556,6 +556,30 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   Flash instead).
 - **Private log.** Each forecast entry has `forecast_model` (with `parsed`), so each model can be
   scored alone and the median; spend ledgers keep per call: model, $, output tokens, seconds.
+- **Agent** (PR 4, built OFF: `FRONTIER_AGENT_ENABLED`; Test Bot lineup `frontier-agent` = `frontier`
+  with the agent on for that test, bot-testing-area only). `frontier.AgentLlm`: `claude-opus-5-5`, effort
+  `high`, the same prompt as the plain Opus slot (question, criteria, fine print, dates, research
+  dossier, answer format; the parser is unchanged) plus a short system note, with server tools
+  `web_search_20260209` and `web_fetch_20260209`, both with `blocked_domains` ["metaculus.com"] (question pages
+  show the community prediction, not used) (`max_content_tokens` 3,000 per page; PDFs are not cut
+  by it). Caps: seasonal 8 searches / 3 fetches, 20k output tokens; MiniBench 3 / 2, 12k (`max_uses`;
+  each `pause_turn` continuation sends the paused content back as-is with what is left, at most 3
+  continuations, never with a tool used up or past the reservation). Slots (full mode only): seasonal
+  agent + Opus 5.5 + Flash x2, MiniBench agent + Flash x2; low / minimal modes: plain Opus (cheaper).
+  Worst case (reserved; architect, 21 Oct, after a test call read 413k input tokens): seasonal $2.28
+  (450k input ASSUMED + 20k output + 8 searches x $0.01), MiniBench $0.87 (150k + 12k + 3), so agent +
+  plain Opus + the agent's Opus fallback fit $3.00, agent + fallback fit $1.25. Reservations of running
+  agents count in the $9 MiniBench day limit (4 seasonal agents at once hold $9.12: MiniBench then uses
+  today's setup until they finish). Cost charged: tokens at Opus 5.5 prices + $0.01 per search
+  (`usage.server_tool_use`); a timeout or cut connection: the worst case. Input tokens inside one
+  request can't be capped by the client: an agent ever over its reservation is charged in full and
+  switches the agent off for the run, and opens an alert issue (once a UTC day; Claude Code's daily
+  report lists agent calls over $1). Time: 7 min (or the planned wait left minus 120 s), then
+  cancelled -> the plain Opus chain with only the wait's time left (minus 20 s; under 45 s it is
+  not started); the other slots carry the question either way. Private question log: per forecast
+  `agent` = URLs read (fetched) and found (search hits, max 40), searches, fetches, tool error codes,
+  seconds, cost, reserve. Claude ledger calls: searches, fetches. Step summary: agent calls, searches,
+  fetches, seconds, $ (numbers only). Public logs: nothing new (model + error class name only).
 
 ## Free news fallback (27 Sep 2026)
 
