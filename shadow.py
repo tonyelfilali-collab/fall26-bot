@@ -19,11 +19,13 @@ Zero-cost variants (no model call, computed from the forecasts already made):
   "window"): "window-blend" = 0.5 x the live CDF + 0.5 x the window CDF,
   pointwise on the question's grid (21 Oct). No baseline: no blend.
 - "referee" (binary, built OFF: REFEREE_ENABLED): only when 2+ forecasts
-  finished and they are more than 15 points apart. After submission, Claude
-  Opus 5.5 (effort high, the Claude budget, one try, no backups, 240 s, not
-  after minute 40) sees each forecaster's number and a two-line reason and
-  gives its own; candidate = mean of it and the submitted forecast, kept
-  between the lowest and highest forecast. Claude off: no referee.
+  finished and they are more than 15 points apart. At the end of the run
+  (after the question's log is saved; none at or after minute 45, each call
+  at most min(240 s, the time left until minute 47)), Claude Opus 5.5 (effort
+  high, the Claude budget, one try, no backups) sees each forecaster's number
+  and a two-line reason and gives its own; candidate = mean of it and the
+  submitted forecast, kept between the lowest and highest forecast, saved in
+  '<log>_shadows.json'. Claude off: no referee.
 """
 from __future__ import annotations
 
@@ -52,7 +54,6 @@ REFEREE_ENABLED = False
 REFEREE_MIN_FORECASTS = 2
 REFEREE_MIN_SPREAD = 0.15  # max - min must be over this (15 percentage points)
 REFEREE_TIMEOUT_SECONDS = 240  # then cancelled (charged as any Claude timeout)
-REFEREE_LATEST_SECONDS = 40 * 60  # no referee once the run is past minute 40
 
 
 def geometric_mean_of_odds(forecasts: list[float]) -> float:
@@ -202,12 +203,13 @@ async def referee_shadow(
     submitted: float,
     invoke: Callable[[str], Awaitable[str]],
     parse: Callable[[str], float | None],
+    timeout: float = REFEREE_TIMEOUT_SECONDS,
 ) -> float | None:
     """The referee candidate, or None (off, not needed, no answer). Over
-    REFEREE_TIMEOUT_SECONDS: asyncio.TimeoutError (the call is cancelled)."""
+    `timeout` seconds: asyncio.TimeoutError (the call is cancelled)."""
     if not REFEREE_ENABLED or not referee_needed([p for p, _ in forecasts]):
         return None
-    reply = await asyncio.wait_for(invoke(referee_prompt(question_text, forecasts)), REFEREE_TIMEOUT_SECONDS)
+    reply = await asyncio.wait_for(invoke(referee_prompt(question_text, forecasts)), timeout)
     answer = parse(reply)
     if answer is None:
         return None

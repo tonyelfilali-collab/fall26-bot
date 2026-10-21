@@ -606,15 +606,20 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
 - **Free variants (on):** `stretch-1.2` (the PLAN's stretch setting, off live, so Step 11 gets
   data) and `mean` (mean instead of median); both go through the same final steps. No model calls.
 - **Referee (built OFF, `shadow.REFEREE_ENABLED`; D1, 21 Oct):** binary only, only when 2+ forecasts
-  finished and their spread (max - min) is over 15 percentage points. Runs after submission (never
-  changes the submitted forecast), not once the run is past minute 40. `FrontierPlanner.referee_llm()`:
+  finished and their spread (max - min) is over 15 percentage points. Never changes the submitted
+  forecast: when the question's log is saved, its finished forecasts and submitted value are queued;
+  the referee runs at the END of the run beside the shadow forecaster (`main._finish_run`), each
+  call in its own task with that question's `current_question_key` / `question_seasonal` set again
+  (MiniBench or unknown: the $9 rule). None started at or after minute 45; each call at most
+  min(240 s, time left until minute 47). `FrontierPlanner.referee_llm()`:
   `claude-opus-5-5`, effort high, through the Claude budget (day $15, MiniBench under $9, question and
   cycle caps; in the Claude ledger and `frontier_report` like any Claude call); one try, NO backups (a
   cap refusal = no referee). Claude mode off, no Claude budget, blocked or a credit error -> no referee
-  call. 240 s limit, then cancelled and charged its worst case (as any Claude timeout), nothing saved.
+  call. Over its limit: cancelled and charged its worst case (as any Claude timeout), no value.
   It sees each forecaster's number plus a two-line reason and answers "Probability: ZZ%". Shadow
-  `referee` (private question log only) = mean of its answer and the submitted forecast, kept between
-  the lowest and highest finished forecast. Public log: `Question N: referee <status>, $cost` only.
+  `referee` = mean of its answer and the submitted forecast, kept between the lowest and highest
+  finished forecast; saved in `<log>_shadows.json` (`shadow.referee` + `referee` = model, status,
+  seconds, cost), never in the question's log; the Scoreboard merges it in. Public log: `Question N: referee <status>, $cost` only.
 - **Scoring:** see Scoreboard below. PLAN.md: the referee goes live only after ≥80 resolved
   binary questions and only if it beats the median.
 
