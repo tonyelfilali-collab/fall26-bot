@@ -2381,6 +2381,14 @@ if __name__ == "__main__":
         "(even when bot_config.FRONTIER_AGENT_ENABLED is off)",
     )
     parser.add_argument(
+        "--seasonal-agents",
+        type=int,
+        choices=[1, 2],
+        default=None,
+        help="Test mode, with --frontier-agent only: seasonal agents per question for this test "
+        "(bot_config.FRONTIER_SEASONAL_AGENTS stays as it is)",
+    )
+    parser.add_argument(
         "--frontier-path",
         choices=["seasonal", "minibench"],
         default="seasonal",
@@ -2411,6 +2419,11 @@ if __name__ == "__main__":
             raise SystemExit("--frontier-agent only runs with --mode test_questions --lineup frontier.")
         lineup.planner.agent_enabled = True
         print("Frontier agent: ON for this test (Opus 5.5 + web search / fetch)")
+    if args.seasonal_agents is not None:
+        if not args.frontier_agent:
+            raise SystemExit("--seasonal-agents only runs with --frontier-agent.")
+        lineup.planner.seasonal_agents = args.seasonal_agents
+        print(f"Seasonal agents: {args.seasonal_agents} for this test")
     if args.rehearsal and lineup.name != "replay-credits":
         raise SystemExit("--rehearsal only works with the replay-credits lineup.")
     if args.rehearsal:

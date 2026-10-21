@@ -165,7 +165,7 @@ SUBSETS = {
 def model_group(name: str) -> str:
     """'agent' / 'claude' (Opus 5.5, Opus 5, Haiku 5.5 backups) / 'flash' (each
     Gemini Flash model, free key or paid, Flash-Lite too) / 'other'."""
-    if name == AGENT_MODEL:
+    if name in (AGENT_MODEL, AGENT_MODEL + "2"):  # agent2: the second seasonal agent
         return "agent"
     if name.startswith("anthropic/") or "claude" in name:
         return "claude"
