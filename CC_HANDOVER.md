@@ -46,8 +46,11 @@ short language.
   free-model Test Bot after 00:00 UTC, merge only after "the architect says merge"). Always: the
   "Validate workflows" check, next live run checked, revert if red, one forecast-path merge between
   two live runs, a progress-log row per merge, never `--admin`.
-- Zero spend except paid Flash within its caps; if key usage is ever above the spend ledger or above
-  $1.00 in a UTC day: stop everything and report.
+- Spend (architect, 21 Oct; CLAUDE.md): never buy credits. Allowed paid use: Claude via
+  `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan, PR 2 caps), GPT-5.6 Sol on OpenRouter
+  (seasonal only, PR 2 caps) and paid Flash within its caps. Spend check: key usage = key usage at the
+  start of the day + today's spend; if above, or OpenRouter above $2.00 in a UTC day: stop everything
+  and report.
 - A notes PR at least every 21 days (standing rule).
 - Public logs and this repo: no forecast values, research or reasoning; nothing about Tony.
 
@@ -104,7 +107,8 @@ Expected: Limit 8, Used = the spend ledger (fall26-data `status/spend.json`). Th
 ```bash
 gh api repos/tonyelfilali-collab/fall26-data/contents/status/spend.json -q .content | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); t=max(d["key_day_start"]); print(t, round(d["key_day_start"][t]+d["days"].get(t,0),6))'
 ```
-If Used is above that: stop everything and tell the architect.
+If Used is above that, or OpenRouter spend is above $2.00 in a UTC day: stop everything and tell
+the architect.
 
 ## 5. Lessons
 
@@ -127,20 +131,20 @@ If Used is above that: stop everything and tell the architect.
   articles). Plan says free tier = 1,000 calls/month; AskNews's plans page says the $0 plan has "25
   credits included" and doesn't say if it resets. Asked Tony to check the AskNews account usage page
   (no answer yet). Zero spend: no paid AskNews. Architect decides.
-- **Replay lab holds up live runs** (shares the `forecast-bot` queue, ~04:03 UTC): run time 6.5 min
-  (10 Oct) -> 14-15 min (18-19 Oct) -> timed out at 15 min on 20 Oct (results lost). Cause: ~56 Nemotron
-  calls with a 240 s timeout; the 6-min `lab.TIME_BUDGET` only stops NEW forecasts. 17 Oct: a waiting
-  live run was cancelled. Suggested (not built): end the whole lab by ~minute 8 (budget check before
-  each call, shorter Nemotron timeout). Wait for the architect's go.
-- **Lost log, 7 Oct:** one run's four data-repo saves failed (HTTPError); 45948's question log is lost
-  (forecast submitted; ledger complete). Report again if it repeats.
+- **Replay lab: fixed 21 Oct (PR L, #137):** own queue (`replay-lab`), no Gemini, ends by minute 8.
+  Report each night's lab run time (~04:03 UTC) until the architect is satisfied.
+- **Lost log, 7 Oct:** 45948's question log is lost. Since 21 Oct (PR A, #138) failed log saves are
+  retried at the end of the run (3 tries, ~2 min). Report again if one is still lost.
 - **15 Oct, 46095:** 2 paid calls broke mid-reply (`http_status` 200, ClientPayloadError; booked at
   the $0.03 reserve each; key charged less). One-off network fault; 46095 submitted with 1 forecast.
 
-- **Architect's "PR 2 of Option B":** never received; Option B / PR 1 not known here. Options sent on
-  6 Oct for seasonal 45875 (no paid Flash when all free quota is gone): (a) paid-only slots when free
-  quota is gone, (b) quick forecast keeps its paid call, (c) part of the free reserve for seasonal
-  only. Wait for the instruction; keep one forecast-path merge between two live runs.
+- **Architect's frontier plan (21 Oct)** replaces Option B and the 45875 options (cancelled). Order:
+  PR L (done), PR A (done), PR 1 notes (spend rules), PR 2 (Tier C, built OFF behind
+  `FRONTIER_ENABLED=False`: Claude Fable/Opus/Sonnet via `ANTHROPIC_API_KEY` + GPT-5.6 Sol + Flash;
+  budget `CLAUDE_BUDGET_PER_CYCLE`, caps, step-downs; replay rehearsal, then one real Test Bot; then
+  STOP and send the architect the branch name), PR 3 (switch ON after "merge" and a green live run;
+  a short report after each of the first 10 questions). Next after PR 3: a Claude web-search
+  research step to replace AskNews (the architect will send the prompt).
 - **The 6 Oct paid-call refusals** (22, 14:13–15:23 UTC, charged $0; 402 or 403): the next failure
   will show the code (#132); report it.
 - MiniBench round 33129 runs to 23 Oct; watch the $0.50 limit and misses, then check the bot finds
