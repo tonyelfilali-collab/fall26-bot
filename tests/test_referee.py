@@ -378,8 +378,12 @@ def test_scoreboard_merges_the_referee_into_its_log():
 
 def _rehearsal_run(monkeypatch, enabled):
     """The frontier rehearsal's live-like run (real planner, recorded replies), 4 types, seasonal."""
+    import bot_config
     import frontier_rehearsal as fr
     from replay import _RecordedAnswer
+
+    # The plain lineup's recorded run (the agent has its own rehearsal phases).
+    monkeypatch.setattr(bot_config, "FRONTIER_AGENT_ENABLED", False)
 
     monkeypatch.setattr(main, "REFEREE_ENABLED", enabled)
     monkeypatch.setattr(shadow, "REFEREE_ENABLED", enabled)
