@@ -20,8 +20,8 @@ in price):
   seasonal slot; any failure -> the Flash chain; $0.30 per seasonal question
   (GPT + paid Flash); none when the OpenRouter key has under $2 left.
 - Budget (ClaudeBudget, fall26-data status/claude_spend.json): one setting,
-  CLAUDE_BUDGET_PER_CYCLE, plus the cycle reset date; ledger caps $12 per UTC
-  day, $1.50 per seasonal question, $0.60 per MiniBench question. Each call
+  CLAUDE_BUDGET_PER_CYCLE, plus the cycle reset date; ledger caps $15 per UTC
+  day (MiniBench only under $9), $1.50 per seasonal question, $0.60 per MiniBench question. Each call
   reserves its worst case (max_tokens of output), so a cap is never passed.
 - Step-down (claude_mode, once per run): under 25% of the cycle budget left ->
   seasonal Opus x1; under 10% -> seasonal Opus x1, no Claude on MiniBench; a
