@@ -8,8 +8,9 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Switch / setting | Where | Now | What it does | PR |
 |---|---|---|---|---|
 | `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
-| Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the PR 2 caps; OpenRouter paid: GPT-5.6 Sol (seasonal only) + Gemini 3.6 Flash (as now) | OpenRouter daily stop rule $2.00; spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
-| `FRONTIER_ENABLED` | `bot_config.py` (PR 2) | OFF (built; switch = PR 3) | `frontier.py`: seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus 5.5 + Flash x2 (GPT behind `FRONTIER_GPT_ENABLED`, OFF); `CLAUDE_BUDGET_PER_CYCLE` 170 + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $15/UTC day (MiniBench Claude only while the day is under $9), $1.50 seasonal / $0.60 MiniBench per question; step-downs at 25% / 10% left | PR 2 |
+| Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the frontier caps ($15/UTC day, MiniBench under $9, $1.50 / $0.60 per question); OpenRouter paid: Gemini 3.6 Flash (as now); GPT-5.6 Sol OFF | OpenRouter daily stop rule $2.00; spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
+| `FRONTIER_ENABLED` | `bot_config.py` (#140, merged 21 Oct) | OFF (merged; switch = PR 3) | `frontier.py`: seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus 5.5 + Flash x2 (GPT behind `FRONTIER_GPT_ENABLED`, OFF); `CLAUDE_BUDGET_PER_CYCLE` 170 + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $15/UTC day (MiniBench Claude only while the day is under $9), $1.50 seasonal / $0.60 MiniBench per question; step-downs at 25% / 10% left | #140 |
+| `FRONTIER_AGENT_ENABLED` | `bot_config.py` (#146, not merged) | OFF (built) | One Opus slot becomes an agent (Opus 5.5 + Anthropic web_search / web_fetch, metaculus.com blocked); merges after PR 3 is live; switch-on waits for the architect's "go" | #146 |
 | `ACTIVE_LINEUP` | `bot_config.py` | `gemini-free` | Free Google AI Studio key: 4 Flash forecasters, Flash-Lite for research/parsing | #8, #9 |
 | Credits lineup | `bot_config.py` (`credits`) | OFF all season: no credits (Metaculus, 5 Oct) | Opus 5.5 / GPT-5.6 Sol / Gemini 3.6 Flash tiers; Flash slot tries the free key first; switch-on checklist PLAN.md 6b | #23, #74, #79 |
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
@@ -20,7 +21,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Emergency window | `main.EMERGENCY_WINDOW` | 45 min | When the backup chain may use the Flash-Lite reserve | #59, #67 |
 | `STRETCH_K` | `forecast_safety.py` | 1.0 (off) | Log-odds stretch of the binary median (shadows 1.2 / 1.5 are logged) | #16, #44 |
 | `MARKET_MODE` | `bot_config.py` | `off` | Market matching (code kept; manual Market matches workflow) | #26, #30 |
-| `REFEREE_ENABLED` | `shadow.py` | `False` | Referee shadow (waits for credits) | #27 |
+| `REFEREE_ENABLED` | `shadow.py` | `False` | Referee shadow; Opus 5.5 version (Claude budget, disagreeing binaries only, never submitted) built in #148 (not merged; after #146); switch-on = one-line PR after PR 3 is live | #27, #148 |
 | `FOLLOWUP_ENABLED` | `followup.py` | ON | Round 1 disagrees: 2 follow-up queries, "Follow-up findings" section, round 2 uses it | #86 |
 | `WIKIPEDIA_ENABLED` | `wikipedia.py` | ON | Up to 3 entity summaries as "Background (Wikipedia)" (<= 800 tokens) | #87 |
 | Official data line | `hard_data.py` (no switch) | ON | FRED / CoinGecko line in the dossier; exact match feeds the unit check; stand-in warning | #62, #68 |
