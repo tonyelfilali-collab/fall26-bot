@@ -1,10 +1,12 @@
 # CC_HANDOVER.md — for a fresh Claude Code session
 
-Updated 7 Oct 2026, ~12:40 UTC, at the end of the second build session (29 Sep – 7 Oct).
+Updated 21 Oct 2026, at the end of the third session (watch-and-report, 7–21 Oct). Section 1 lists
+what changed since 7 Oct; section 6 the items waiting for the architect.
 **Local folder: `~/code/fall26-bot`** (outside iCloud). Open Claude Code there. Local Python must be
 **3.11** (`poetry env use python3.11`, `poetry install`); on 3.14 ~51 tests fail.
 **Helper scripts (not in the repo): `~/code/fall26-tools/`** (daily report, MiniBench section,
-slow-Flash watcher). Never keep scripts in the session scratchpad: macOS clears `/private/tmp` after
+slow-Flash watcher, `slow_flash_scan.py` for any date range; past daily reports in `reports/`;
+watcher alarms in `watch/`). Never keep scripts in the session scratchpad: macOS clears `/private/tmp` after
 ~3 days (it deleted some on 6 Oct).
 **Private notes (not in the public repo):** the architect's HANDOVER.md and ARCHITECT_LOG.md live in
 fall26-data `notes/`; Tony's upload copies are in `~/code/fall26-private-notes/`. Never put private
@@ -14,9 +16,14 @@ Read with: `CLAUDE.md` (rules), NOTES.md "What's live" (every switch, value and 
 at the bottom of `PLAN.md`, `REPORT.md`. Tony is a novice who relays an architect; explain in plain,
 short language.
 
-## 1. Current state (7 Oct)
+## 1. Current state (21 Oct)
 
-- **Last merged PR: #133. No open PRs.** `main` requires the "Validate workflows" check (ruleset).
+- **New since 7 Oct (session 3):** 0 missed questions every day 7–20 Oct (audit: seasonal and
+  MiniBench all forecast; 19 Oct MiniBench burst of 36, all forecast). Paid Flash $0.00–$0.35/day;
+  key **$2.70 of $8 used on 20 Oct** = ledger. **AskNews answers 402 on every call since 12 Oct
+  09:03 UTC** (free news used instead; health warns daily, never red). **Replay lab grew to 14–15 min
+  and timed out on 20 Oct** (it shares the live queue: see section 6). PR #135: Credit check method.
+- **Last merged PR: #136 (this handover). No open PRs.** `main` requires the "Validate workflows" check (ruleset).
 - **Live:** `run_bot_on_tournament.yaml`, started every 10 min by cron-job.org; `BOT_ENABLED=true`.
   Lineup `gemini-free` (free AI Studio key: 3.6/3.7/3.8/3.5 Flash forecasters, Flash-Lite helpers).
 - **Paid-Flash fallback ON** (since 1 Oct): a Flash slot whose free chain fails makes ONE paid call to
@@ -46,19 +53,24 @@ short language.
 
 ## 3. Daily routine and watchers (restart all in a new session)
 
-Run with the Bash tool, `run_in_background: true`. Re-arm a watcher after it fires.
+Run with the Bash tool, `run_in_background: true`. Re-arm a watcher after it fires. macOS deletes
+the background output files after a few days, so each watcher also writes its alarm to
+`~/code/fall26-tools/watch/` (red.log, slow_flash.log): read those if a watcher ends with no output.
 
 **a) Red live run or health check:**
 ```bash
-R=tonyelfilali-collab/fall26-bot; since=$(date -u +%FT%TZ); while true; do for wf in run_bot_on_tournament.yaml health.yml; do bad=$(gh run list -R $R -w $wf -L 30 --created ">$since" --json databaseId,conclusion,event,url,createdAt -q '.[] | select(.conclusion=="failure" and .event!="pull_request") | "\(.createdAt) \(.url)"' 2>/dev/null | head -1); if [ -n "$bad" ]; then echo "RED $wf $bad"; exit 0; fi; done; sleep 300; done
+R=tonyelfilali-collab/fall26-bot; since=$(date -u +%FT%TZ); while true; do for wf in run_bot_on_tournament.yaml health.yml; do bad=$(gh run list -R $R -w $wf -L 30 --created ">$since" --json databaseId,conclusion,event,url,createdAt -q '.[] | select(.conclusion=="failure" and .event!="pull_request") | "\(.createdAt) \(.url)"' 2>/dev/null | head -1); if [ -n "$bad" ]; then echo "RED $wf $bad" | tee -a ~/code/fall26-tools/watch/red.log; exit 0; fi; done; sleep 300; done
 ```
 On red: find the failed step (`gh api repos/$R/actions/runs/<id>/jobs`, then the job's annotations).
 Seen so far: PyPI timeout (fixed by the install cache), GitHub runner outage ("job was not acquired
 by Runner"; check githubstatus.com), stale GitHub answer in health (fixed, #133).
 
-**b) Slow Flash:** `python3 ~/code/fall26-tools/slow_flash_watch.py` (exits on a NEW log with a Flash
+**b) Slow Flash:** `python3 -u ~/code/fall26-tools/slow_flash_watch.py 2>&1 | tee -a ~/code/fall26-tools/watch/slow_flash.log` (exits on a NEW log with a Flash
 forecast over 360 s; skips existing logs). 6 Oct hit (45940) was a hung connection cut at minute 9,
-not a slow model: report such cases, the 9-minute cut stays.
+not a slow model: report such cases, the 9-minute cut stays. Missed alarm? `python3
+~/code/fall26-tools/slow_flash_scan.py <YYYY-MM-DD>` lists every slow Flash since that date.
+Also check for **cancelled** runs: a live run cancelled with no job is the shared queue (normal); a
+Replay lab "cancelled" after 15 min is its timeout (section 6).
 
 **c) Daily report** (architect asks for it every day; run after 00:10 UTC for the previous UTC day):
 ```bash
@@ -66,8 +78,9 @@ python3 ~/code/fall26-tools/paid_daily_report.py <YYYY-MM-DD>; python3 ~/code/fa
 ```
 The first gives paid calls, $, failed calls by HTTP status, $/question, key remaining (fresh Credit
 check), days left; the second starts a Tournament info audit and gives MiniBench + seasonal opened /
-submitted / missed, forecasts per question, sources, when paid refusals started. **Next due: the 7 Oct
-report (after 00:10 UTC 8 Oct).** Always confirm key usage = ledger.
+submitted / missed, forecasts per question, sources, when paid refusals started. **Done up to 19 Oct
+(in `~/code/fall26-tools/reports/`); next due: 20 Oct.** Always confirm key usage = ledger (section 4).
+Days that are already reported can be run late, one at a time (each starts a workflow run).
 
 **d) Missed questions:** the **Tournament info audit** (`gh workflow run tournament_info.yaml -R $R -f
 audit=true`; raw `/api/posts/` listing + library audit) is the source of truth: "closed without our
@@ -110,12 +123,27 @@ If Used is above that: stop everything and tell the architect.
 
 ## 6. Open items
 
+- **AskNews 402 since 12 Oct** (every call; free news fills in; MiniBench 45950 on 12 Oct had 0
+  articles). Plan says free tier = 1,000 calls/month; AskNews's plans page says the $0 plan has "25
+  credits included" and doesn't say if it resets. Asked Tony to check the AskNews account usage page
+  (no answer yet). Zero spend: no paid AskNews. Architect decides.
+- **Replay lab holds up live runs** (shares the `forecast-bot` queue, ~04:03 UTC): run time 6.5 min
+  (10 Oct) -> 14-15 min (18-19 Oct) -> timed out at 15 min on 20 Oct (results lost). Cause: ~56 Nemotron
+  calls with a 240 s timeout; the 6-min `lab.TIME_BUDGET` only stops NEW forecasts. 17 Oct: a waiting
+  live run was cancelled. Suggested (not built): end the whole lab by ~minute 8 (budget check before
+  each call, shorter Nemotron timeout). Wait for the architect's go.
+- **Lost log, 7 Oct:** one run's four data-repo saves failed (HTTPError); 45948's question log is lost
+  (forecast submitted; ledger complete). Report again if it repeats.
+- **15 Oct, 46095:** 2 paid calls broke mid-reply (`http_status` 200, ClientPayloadError; booked at
+  the $0.03 reserve each; key charged less). One-off network fault; 46095 submitted with 1 forecast.
+
 - **Architect's "PR 2 of Option B":** never received; Option B / PR 1 not known here. Options sent on
   6 Oct for seasonal 45875 (no paid Flash when all free quota is gone): (a) paid-only slots when free
   quota is gone, (b) quick forecast keeps its paid call, (c) part of the free reserve for seasonal
   only. Wait for the instruction; keep one forecast-path merge between two live runs.
 - **The 6 Oct paid-call refusals** (22, 14:13–15:23 UTC, charged $0; 402 or 403): the next failure
   will show the code (#132); report it.
-- MiniBench round 33129 runs to 23 Oct; watch the $0.50 limit and misses.
+- MiniBench round 33129 runs to 23 Oct; watch the $0.50 limit and misses, then check the bot finds
+  the next round (Tournament info audit).
 - ~mid-Oct: first Replay lab results; Nemotron 2-week review. 19 Oct: Ubuntu change (we're pinned to
   24.04, nothing to do). 31 Jan 2027: tokens expire.
