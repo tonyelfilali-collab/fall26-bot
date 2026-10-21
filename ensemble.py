@@ -78,7 +78,7 @@ class Tier:
 # (spend.py) to reserve an estimate per paid call. Rerun the pre-flight to refresh.
 MODEL_PRICES: dict[str, tuple[float, float]] = {
     "anthropic/claude-opus-5.5": (4.00, 20.00),
-    "openai/gpt-5.6-sol": (2.00, 10.00),
+    "openai/gpt-5.6-sol": (4.00, 20.00),  # 21 Oct: claude-preflight run 39613866760 (was 2/10 on 28 Sep)
     "google/gemini-3.6-flash": (0.75, 3.75),
     "anthropic/claude-fable-5.1": (10.00, 50.00),
     "anthropic/claude-opus-5": (5.00, 25.00),

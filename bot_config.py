@@ -153,6 +153,19 @@ GEMINI_LOW_BUDGET_FRACTION = 0.25
 # The day's counts live in the private fall26-data repo.
 GEMINI_LEDGER_PATH = "quota/gemini_free.json"
 
+# Frontier lineup (architect, 21 Oct; frontier.py): Claude via ANTHROPIC_API_KEY
+# (Console credits, no card), GPT-5.6 Sol, today's Flash path. Built OFF: the
+# switch is PR 3, after "the architect says merge" on PR 2.
+FRONTIER_ENABLED = False
+CLAUDE_BUDGET_PER_CYCLE = 170.0  # dollars of Console credits per billing cycle (the one budget setting)
+# A day the monthly credits reset (any month, "YYYY-MM-DD"; None = no Claude).
+# Tony, 21 Oct: the current credits expire 18 Nov, so this cycle ends 17 Nov
+# 23:59 UTC and a new one starts on the 18th of each month.
+CLAUDE_CYCLE_RESET_DATE: str | None = "2026-11-18"
+# GPT-5.6 Sol in the frontier lineup (architect, 21 Oct: OFF; doubled in price,
+# GPT bots score badly on the Fall leaderboard).
+FRONTIER_GPT_ENABLED = False
+
 
 
 def is_free_model(model: str) -> bool:
@@ -326,12 +339,13 @@ class GeminiPool:
             self.ledger.book(model)
         return [self._chain([model], allow_reserve=False) for model in spare]
 
-    def plan(self, seasonal: bool, only_model: str | None = None, binary: bool = True) -> list[ThrottledLlm]:
+    def plan(self, seasonal: bool, only_model: str | None = None, binary: bool = True, limit: int | None = None) -> list[ThrottledLlm]:
         """
         One forecaster chain per forecast for a question: up to 3 different
         models with usable budget (MiniBench: 1 when the budget is low). If no
         model has usable budget, 1 forecast from the reserve. Empty if the
-        day's quota is gone.
+        day's quota is gone. limit (frontier seasonal, the Flash part): this
+        many slots while quota allows, no spare-quota extras.
         """
         if self.spend is not None:
             # Paid-Flash fallback: this question's hard cap.
@@ -346,9 +360,13 @@ class GeminiPool:
             if seasonal or not self.is_budget_low()
             else 1
         )
-        self.last_plan = {"enabled": self.extra_forecasts, "count": most, "reason": "default"}
         base = most
-        if most == GEMINI_MAX_FORECASTS_PER_QUESTION and not only_model:
+        if limit is not None:
+            # Frontier: exactly this many Flash slots; past the first 3, repeats
+            # from usable quota only (never the reserve), as with extra forecasts.
+            most, base = limit, min(most, limit)
+        self.last_plan = {"enabled": self.extra_forecasts, "count": most, "reason": "default"}
+        if most == GEMINI_MAX_FORECASTS_PER_QUESTION and not only_model and limit is None:
             most = self._spare_quota_count(binary, most)
         chosen = [m for m in ranked if self.ledger.usable_left(m) > 0][:most]
         if not chosen:
@@ -544,7 +562,36 @@ def enable_paid_flash(pool: GeminiPool, spend: SpendGuard, llm_class: type = Thr
     )
 
 
+def _frontier_lineup(name: str = "frontier", test_only: bool = True) -> Lineup:
+    """gemini-free with the frontier planner in front (frontier.py). 'frontier'
+    (Test Bot, bot-testing-area only) runs it while FRONTIER_ENABLED is off."""
+    import frontier
+
+    claude = frontier.ClaudeBudget(
+        make_store(frontier.CLAUDE_SPEND_PATH), CLAUDE_BUDGET_PER_CYCLE, frontier.reset_date(CLAUDE_CYCLE_RESET_DATE)
+    )
+    pool = frontier._frontier_pool(
+        make_store(GEMINI_LEDGER_PATH), SpendGuard(make_store(SPEND_PATH)) if PAID_FLASH_FALLBACK else None, claude
+    )
+    parser = pool.parser()
+    paid = (PAID_FLASH_MODEL,) if PAID_FLASH_FALLBACK else ()
+    return Lineup(
+        name=name,
+        llms={"default": pool.unplanned_forecaster(), "parser": parser, "summarizer": parser, "researcher": RESEARCHER},
+        research_reports_per_question=1,
+        predictions_per_research_report=GEMINI_MAX_FORECASTS_PER_QUESTION,
+        parser_validation_samples=1,
+        summarize_research=False,
+        free_only=False,
+        allowed_paid=(*paid, frontier.GPT_SOL, *frontier.CLAUDE_PRICES),
+        test_only=test_only,
+        planner=pool,
+    )
+
+
 def _gemini_free_lineup() -> Lineup:
+    if FRONTIER_ENABLED:
+        return _frontier_lineup(name="gemini-free", test_only=False)
     pool = _gemini_pool(make_store(GEMINI_LEDGER_PATH))
     if PAID_FLASH_FALLBACK:
         enable_paid_flash(pool, SpendGuard(make_store(SPEND_PATH)))
@@ -798,6 +845,7 @@ _LINEUPS = {
     "free": _free_lineup,
     "replay-gemini": _replay_gemini_lineup,
     "gemini-free": _gemini_free_lineup,
+    "frontier": _frontier_lineup,
     "credits": _credits_lineup,
     "replay": _replay_lineup,
     "replay-credits": _replay_credits_lineup,

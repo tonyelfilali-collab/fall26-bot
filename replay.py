@@ -114,7 +114,13 @@ class _RecordedAnswer(GeneralLlm):
 def _recorded_cost(real_model: str) -> float:
     """A paid slot's recorded cost (half the spend estimate: real costs come in
     under it); 0 for free models, or when the rehearsal says cost unknown."""
-    if _RecordedAnswer.unknown_cost or not real_model.startswith("openrouter/"):
+    if _RecordedAnswer.unknown_cost:
+        return 0.0
+    if real_model.startswith("anthropic/"):
+        from frontier import claude_reserve
+
+        return 0.5 * claude_reserve(real_model)  # half the worst case
+    if not real_model.startswith("openrouter/"):
         return 0.0
     from spend import estimate_cost
 
