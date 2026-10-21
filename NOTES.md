@@ -560,7 +560,8 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   with the agent on for that test, bot-testing-area only). `frontier.AgentLlm`: `claude-opus-5-5`, effort
   `high`, the same prompt as the plain Opus slot (question, criteria, fine print, dates, research
   dossier, answer format; the parser is unchanged) plus a short system note, with server tools
-  `web_search_20260209` and `web_fetch_20260209` (`max_content_tokens` 5,000 per page; PDFs are not cut
+  `web_search_20260209` and `web_fetch_20260209`, both with `blocked_domains` ["metaculus.com"] (question pages
+  show the community prediction, not used) (`max_content_tokens` 5,000 per page; PDFs are not cut
   by it). Caps: seasonal 8 searches / 5 fetches, 20k output tokens; MiniBench 4 / 3, 12k (`max_uses`;
   each `pause_turn` continuation sends the paused content back as-is with what is left, at most 3
   continuations, never with a tool used up or past the reservation). Slots (full mode only): seasonal

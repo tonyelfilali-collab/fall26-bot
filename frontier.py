@@ -117,6 +117,8 @@ CREDIT_ERROR_TEXT = "credit balance is too low"
 AGENT = "anthropic/claude-opus-5-5-agent"  # ledger name; the call is Opus 5.5
 AGENT_SEARCH_TOOL = "web_search_20260209"  # current versions for Opus 5.5 (dynamic filtering)
 AGENT_FETCH_TOOL = "web_fetch_20260209"
+# Question pages show the community prediction, which we don't use (architect, 21 Oct).
+AGENT_BLOCKED_DOMAINS = ("metaculus.com",)
 AGENT_SEARCH_PRICE = 0.01  # dollars per search ($10 per 1,000)
 # Page text per fetch, in tokens (about 20 kB; PDFs are not cut by it).
 AGENT_FETCH_MAX_CONTENT_TOKENS = 5000
@@ -510,9 +512,10 @@ class AgentRun:
 
 def agent_tools(searches: int, fetches: int) -> list[dict]:
     return [
-        {"type": AGENT_SEARCH_TOOL, "name": "web_search", "max_uses": searches},
+        {"type": AGENT_SEARCH_TOOL, "name": "web_search", "max_uses": searches,
+         "blocked_domains": list(AGENT_BLOCKED_DOMAINS)},
         {"type": AGENT_FETCH_TOOL, "name": "web_fetch", "max_uses": fetches,
-         "max_content_tokens": AGENT_FETCH_MAX_CONTENT_TOKENS},
+         "max_content_tokens": AGENT_FETCH_MAX_CONTENT_TOKENS, "blocked_domains": list(AGENT_BLOCKED_DOMAINS)},
     ]
 
 

@@ -156,8 +156,9 @@ def test_request_shape_tools_and_answer(monkeypatch):
     assert request["model"] == "claude-opus-5-5" and request["output_config"] == {"effort": "high"}
     assert "thinking" not in request and "temperature" not in request
     assert request["tools"] == [
-        {"type": "web_search_20260209", "name": "web_search", "max_uses": 8},
-        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5, "max_content_tokens": 5000},
+        {"type": "web_search_20260209", "name": "web_search", "max_uses": 8, "blocked_domains": ["metaculus.com"]},
+        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5, "max_content_tokens": 5000,
+         "blocked_domains": ["metaculus.com"]},
     ]
     assert request["messages"] == [{"role": "user", "content": "Forecast this. Probability: ZZ%"}]  # the same prompt
     assert "8 searches" in request["system"] and "5 pages" in request["system"]
@@ -511,3 +512,7 @@ def test_the_run_summary_has_one_row_per_agent_call():
     planner.calls_before = {}
     report = frontier.frontier_report(planner)
     assert "| 200.0 | 160000 **over 150k** | 3000 | $0.5000 | 6 | 2 | 1 | answered | web_fetch:url_not_accessible x1 |" in report
+def test_both_tools_block_metaculus():
+    tools = frontier.agent_tools(8, 5)
+    assert [t["name"] for t in tools] == ["web_search", "web_fetch"]
+    assert all(t["blocked_domains"] == ["metaculus.com"] for t in tools)
