@@ -21,7 +21,10 @@ live run in the last 24 hours was not in Claude mode "full", the agent was
 switched off by an overrun, over 20% of Claude calls failed, or no live
 question got a Claude forecast while questions were forecast. The report
 ends with the day's Claude numbers ($ per question, agent searches / fetches,
-dear agent calls, ledger total = sum of calls).
+dear agent calls, ledger total = sum of calls), then the Claude ledger $ per
+UTC day for the last 7 days and the cycle total (to compare with the
+Anthropic Console). On Mondays (UTC) it adds our standing in the Fall
+tournament and the current MiniBench round (standings.py; never red).
 
     poetry run python health_check.py [--simulate-miss] [--cron "0 6 * * *"]
 """
@@ -47,6 +50,7 @@ from bot_config import (  # noqa: E402
     GEMINI_QUOTA_BUCKETS,
 )
 import claude_health  # noqa: E402
+import standings  # noqa: E402
 from gemini_budget import GitHubFileStore, quota_day  # noqa: E402
 from question_log import DATA_REPO, LOG_FAILURE_ANNOTATION  # noqa: E402
 
@@ -66,6 +70,8 @@ class Report:
     warnings: list[str] = field(default_factory=list)
     ok: list[str] = field(default_factory=list)
     info: list[str] = field(default_factory=list)  # the day's Claude numbers (not checks)
+    claude_days: list[str] = field(default_factory=list)  # Claude ledger $ per UTC day + cycle total
+    standings: list[str] = field(default_factory=list)  # Mondays: our rank and score (never red)
 
 
 def is_uk_7am_trigger(cron: str, now: datetime) -> bool:
@@ -263,14 +269,17 @@ def frontier_runs(since: datetime) -> list[dict]:
 
 def check_claude(now: datetime, report: Report) -> None:
     """The Claude checks and the day's Claude numbers (claude_health.py)."""
-    from bot_config import CLAUDE_CYCLE_RESET_DATE
-    from frontier import reset_date
+    from bot_config import CLAUDE_BUDGET_PER_CYCLE, CLAUDE_CYCLE_RESET_DATE
+    from frontier import cycle_start, reset_date
 
     token = os.environ["DATA_REPO_TOKEN"]
     ledger = claude_health.load_claude_ledger(token)
     if not claude_health.check_claude_ledger(ledger, now.date(), reset_date(CLAUDE_CYCLE_RESET_DATE), report):
         return
     assert ledger is not None
+    report.claude_days += claude_health.claude_days_lines(
+        ledger, now.date(), cycle_start(now.date(), reset_date(CLAUDE_CYCLE_RESET_DATE)), CLAUDE_BUDGET_PER_CYCLE
+    )
     days = claude_health.window_days(now)
     runs = frontier_runs(now - timedelta(hours=24))
     records = claude_health.recent_question_logs(token, now - timedelta(hours=24))
@@ -393,6 +402,20 @@ def asknews_status() -> int | None:
         return None
 
 
+def add_standings(now: datetime, minibench_id: int | str, report: Report, store=None, get=None) -> None:
+    """Mondays: our Fall and MiniBench standing (standings.py). Fails soft:
+    one line "standings: unavailable", never red."""
+    try:
+        report.standings += standings.standings_lines(
+            now.date(),
+            [("Fall", standings.FALL_PROJECT_ID), ("MiniBench", minibench_id)],
+            store if store is not None else standings.store(os.environ["DATA_REPO_TOKEN"]),
+            get or standings.metaculus_get,
+        )
+    except Exception:
+        report.standings.append(standings.UNAVAILABLE)
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -430,6 +453,8 @@ def run(simulate_miss: bool) -> Report:
         except Exception as e:
             # A check that can't run is itself a problem worth an email.
             report.red.append(f"Could not run the {name} check ({type(e).__name__})")
+    if standings.is_monday(now.date()):
+        add_standings(now, minibench_id, report)
     if simulate_miss:
         report.red.append("SIMULATED: seasonal question 0 closes in 30 min without our forecast")
     return report
@@ -442,6 +467,10 @@ def publish(report: Report) -> None:
     lines += [f"- ✅ {o}" for o in report.ok]
     if report.info:
         lines += ["", "### Claude, last 24 hours (ledger: UTC today and yesterday)", "", *report.info]
+    if report.claude_days:
+        lines += ["", "### Claude ledger per UTC day (compare with the Anthropic Console)", "", *report.claude_days]
+    if report.standings:
+        lines += ["", "### Our standing (Mondays)", "", *report.standings]
     text = "\n".join(lines)
     print(text)
     summary = os.getenv("GITHUB_STEP_SUMMARY")
