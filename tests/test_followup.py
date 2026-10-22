@@ -117,7 +117,7 @@ def _run_binary(dummy, monkeypatch, answers, minutes_to_close=120):  # noqa: F81
     bot = _bot(make_pool(), None)
     close = datetime.now(timezone.utc) + timedelta(minutes=minutes_to_close)
     [report] = asyncio.run(bot.forecast_questions([_question(close_time=close)], return_exceptions=True))
-    [(_, record)] = bot.question_log.records
+    [(_, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     return report, record, prompts
 
 

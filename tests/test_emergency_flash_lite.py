@@ -32,7 +32,7 @@ def test_emergency_flash_lite_close_to_the_deadline(dummy, monkeypatch):  # noqa
     [report] = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.3)
-    [(_, record)] = bot.question_log.records
+    [(_, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     assert record["emergency"] == "window: flash-lite"  # no Nemotron configured here
     emergency = [f for f in record["forecasts"] if f["kind"] == "emergency"]
     assert len(emergency) == 2 and all(f["status"] == "ok" for f in emergency)
@@ -43,7 +43,7 @@ def test_no_emergency_outside_the_window(dummy, monkeypatch):  # noqa: F811
     bot, question = _setup(dummy, monkeypatch, 120)
     [report] = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
     assert isinstance(report, BaseException)  # retried by the next run, as before
-    [(_, record)] = bot.question_log.records
+    [(_, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     assert "emergency" not in record
     assert not [f for f in record["forecasts"] if f["kind"] == "emergency"]
 
@@ -54,5 +54,5 @@ def test_no_emergency_when_flash_answers(dummy, monkeypatch):  # noqa: F811
         dummy.behaviour[m] = "ok"
     [report] = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
     assert not isinstance(report, BaseException), report
-    [(_, record)] = bot.question_log.records
+    [(_, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     assert "emergency" not in record

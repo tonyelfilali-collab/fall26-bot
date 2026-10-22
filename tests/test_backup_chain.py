@@ -54,7 +54,7 @@ def _run(dummy, monkeypatch, nemotron, minutes_to_close, used=None, flash="overl
     bot = _bot(pool, None)
     close = datetime.now(timezone.utc) + timedelta(minutes=minutes_to_close)
     [report] = asyncio.run(bot.forecast_questions([_question(close_time=close)], return_exceptions=True))
-    [(_, record)] = bot.question_log.records
+    [(_, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     return report, record, pool
 
 
@@ -217,7 +217,7 @@ def test_real_limits_flash_lite_at_reserve_nemotron_only(dummy, monkeypatch, nem
     bot = _bot(pool, None)
     close = datetime.now(timezone.utc) + timedelta(minutes=120)
     [report] = asyncio.run(bot.forecast_questions([_question(close_time=close)], return_exceptions=True))
-    [(_, record)] = bot.question_log.records
+    [(_, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     assert not isinstance(report, BaseException), report
     assert record["emergency"] == "flash-exhausted: nemotron"
     assert pool.ledger.used == used  # no Gemini request at all
