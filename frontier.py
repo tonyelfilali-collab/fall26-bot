@@ -171,6 +171,8 @@ AGENT_SYSTEM = (
     "You are forecasting the question in the user message. The research assistant's report in it is "
     "your starting point. You have web_search (at most {searches} searches) and web_fetch (at most "
     "{fetches} pages) to check the key facts, find newer information and read the resolution source. "
+    "If Polymarket, Kalshi or Manifold has a market on the same event, check its current price and weigh it. "
+    "Look for a base rate: how often similar events happened in similar time windows. "
     "Then write your answer exactly as the user message asks, ending with the final answer in the format "
     "it gives."
 )
