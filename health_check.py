@@ -52,6 +52,7 @@ from bot_config import (  # noqa: E402
 import claude_health  # noqa: E402
 import standings  # noqa: E402
 from gemini_budget import GitHubFileStore, quota_day  # noqa: E402
+from comment_post import COMMENT_FAILED_ANNOTATION  # noqa: E402
 from question_log import DATA_REPO, LOG_FAILURE_ANNOTATION  # noqa: E402
 
 TOURNAMENT_WORKFLOW = "run_bot_on_tournament.yaml"
@@ -59,7 +60,7 @@ CLOSING_SOON = timedelta(minutes=60)
 MAX_TIME_WITHOUT_SUCCESS = timedelta(hours=3)
 MIN_QUOTA_LEFT = 0.2
 MINIBENCH_QUIET_LIMIT = timedelta(days=3)
-WATCHED_ANNOTATIONS = (LOG_FAILURE_ANNOTATION, "quota-ledger-failed")
+WATCHED_ANNOTATIONS = (LOG_FAILURE_ANNOTATION, "quota-ledger-failed", COMMENT_FAILED_ANNOTATION)
 # summer (BST) -> 06:00 UTC, winter (GMT) -> 07:00 UTC
 _UK_7AM_CRON = {timedelta(hours=1): "0 6 * * *", timedelta(0): "0 7 * * *"}
 
@@ -162,7 +163,11 @@ def check_asknews_status(status: int | None, report: Report) -> None:
 
 
 def check_log_failures(annotation_titles: list[str], report: Report) -> None:
-    failures = [t for t in annotation_titles if t in WATCHED_ANNOTATIONS]
+    comments = [t for t in annotation_titles if t == COMMENT_FAILED_ANNOTATION]
+    if comments:
+        # Comments are required for prizes (architect, 22 Oct).
+        report.warnings.append(f"{len(comments)} private comment post failure(s) in the last 24 hours (comment-failed)")
+    failures = [t for t in annotation_titles if t in WATCHED_ANNOTATIONS and t != COMMENT_FAILED_ANNOTATION]
     if failures:
         report.warnings.append(
             f"{len(failures)} JSON log / quota ledger save failure(s) in the last 24 hours"
