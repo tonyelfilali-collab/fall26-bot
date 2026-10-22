@@ -33,6 +33,13 @@ in price):
   7 minutes, then the plain Opus chain with the time left. Question caps
   $3.00 / $1.60 while it runs; an overrun: agent off for the run + an alert.
   Low and minimal modes: plain Opus only (the agent is the dear slot).
+- Pacing (architect, 22 Oct; once per run, full mode only): the line is
+  CLAUDE_BUDGET_PER_CYCLE x the share of the cycle gone. Cycle spend over
+  line + $10 -> "paced-1": MiniBench drops the agent (plain Opus + Flash x2);
+  over line + $20 -> "paced-2": also seasonal drops agent2 (agent + plain Opus
+  + Flash x2). Back to "full" once spend <= line + $10. The step-downs, the day
+  cap and the question caps stay as backstops; seasonal agent1 is never cut
+  by pacing.
 """
 from __future__ import annotations
 
@@ -43,7 +50,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as day_time, timezone
 from typing import Any
 
 from forecasting_tools import GeneralLlm
@@ -102,6 +109,10 @@ OPENROUTER_SEASONAL_QUESTION_CAP = 0.30
 GPT_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, no GPT
 STEP_DOWN_LOW = 0.25
 STEP_DOWN_MINIMAL = 0.10
+# Pacing (architect, 22 Oct): dollars of cycle spend over the line.
+PACE_STEP_1 = 10.00  # over it: "paced-1" (no MiniBench agent)
+PACE_STEP_2 = 20.00  # over it: "paced-2" (also no seasonal agent2)
+PACE_FULL, PACED_1, PACED_2 = "full", "paced-1", "paced-2"
 FLASH_FORECASTS = 2  # per question, at most, while a Claude slot runs
 CYCLES_KEPT = 3
 
@@ -234,15 +245,39 @@ def cycle_start(today: date, reset: date | None) -> date | None:
     before today with the reset date's day of month (clamped to short months)."""
     if reset is None:
         return None
-
-    def on(year: int, month: int) -> date:
-        return date(year, month, min(reset.day, calendar.monthrange(year, month)[1]))
-
-    start = on(today.year, today.month)
+    start = _cycle_day(reset, today.year, today.month)
     if start > today:
         year, month = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
-        start = on(year, month)
+        start = _cycle_day(reset, year, month)
     return start
+
+
+def _cycle_day(reset: date, year: int, month: int) -> date:
+    return date(year, month, min(reset.day, calendar.monthrange(year, month)[1]))
+
+
+def cycle_end(start: date, reset: date) -> date:
+    """The day the next billing cycle starts (the cycle that began on `start`)."""
+    year, month = (start.year + 1, 1) if start.month == 12 else (start.year, start.month + 1)
+    return _cycle_day(reset, year, month)
+
+
+def pace_line(budget: float, start: date, end: date, now: datetime) -> float:
+    """The budget x the share of the cycle gone at `now` (UTC midnights)."""
+    begin = datetime.combine(start, day_time(), timezone.utc)
+    length = (datetime.combine(end, day_time(), timezone.utc) - begin).total_seconds()
+    gone = min(max((now - begin).total_seconds(), 0.0), length)
+    return budget * gone / length if length > 0 else budget
+
+
+def pace_mode(spent: float, line: float) -> str:
+    """'full', 'paced-1' or 'paced-2' from the cycle spend and the line."""
+    gap = spent - line
+    if gap > PACE_STEP_2:
+        return PACED_2
+    if gap > PACE_STEP_1:
+        return PACED_1
+    return PACE_FULL
 
 
 def reset_date(text: str | None) -> date | None:
@@ -263,6 +298,7 @@ class ClaudeBudget(SpendGuard):
         super().__init__(store)
         self.budget = budget
         self.today = today or datetime.now(timezone.utc).date()
+        self.reset = reset
         self.cycle = cycle_start(self.today, reset)
         self.cycles: dict[str, float] = {k: float(v) for k, v in (self.raw.get("cycles") or {}).items()}
         self.credit_errors: dict[str, str] = dict(self.raw.get("credit_errors") or {})  # cycle -> day
@@ -287,6 +323,14 @@ class ClaudeBudget(SpendGuard):
 
     def cycle_spent(self) -> float:
         return self.cycles.get(self.cycle.isoformat(), 0.0) if self.cycle else 0.0
+
+    def pacing(self, now: datetime | None = None) -> tuple[str, float, float, float] | None:
+        """(mode, cycle spent, line, gap = spent - line); None without a cycle."""
+        if self.cycle is None or self.reset is None:
+            return None
+        spent = self.cycle_spent()
+        line = pace_line(self.budget, self.cycle, cycle_end(self.cycle, self.reset), now or datetime.now(timezone.utc))
+        return pace_mode(spent, line), spent, line, spent - line
 
     def fraction_left(self) -> float:
         return (self.budget - self.cycle_spent()) / self.budget if self.budget > 0 else 0.0
@@ -672,6 +716,7 @@ class FrontierPlanner(bot_config.GeminiPool):
     gpt_pacer: RequestPacer = field(default_factory=lambda: RequestPacer(600))
     # Calls already in the ledgers when the run started (frontier_report counts the rest).
     calls_before: dict = field(default_factory=dict)
+    pace: str = PACE_FULL  # this run's pacing mode (full Claude mode with the agent only)
 
     def start_run(self, key_left: float | None, api_key: bool | None = None) -> str:
         """Once per run, before forecasting: this run's mode and GPT."""
@@ -689,8 +734,13 @@ class FrontierPlanner(bot_config.GeminiPool):
         why = "switched off" if not self.gpt_enabled else ("frontier off" if self.mode == "off" else "key under $2 left or unknown")
         gpt = "on" if self.gpt_allowed else f"off ({why})"
         line = f"Frontier lineup: {self.mode} ({self.mode_reason}); GPT-5.6 Sol {gpt}"
+        self.pace = PACE_FULL
         if self.agent_enabled:
             line += f"; agent {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
+            pacing = self.claude.pacing() if self.mode == "full" and self.claude is not None else None
+            if pacing is not None:
+                self.pace = pacing[0]
+                line += f"; pacing {self.pace}"  # the mode name only (public log)
             if self.seasonal_agents >= 2 and self.claude is not None:
                 self.claude.daily_cap = CLAUDE_DAILY_CAP_TWO_AGENTS  # the MiniBench limit stays $9
                 line += "; 2 seasonal agents"
@@ -764,12 +814,14 @@ class FrontierPlanner(bot_config.GeminiPool):
         assert self.claude is not None
         self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
         slots = list(MODE_SLOTS[self.mode][0 if seasonal else 1])
-        agent = self._agent_on()
+        # Pacing: paced-1 and paced-2 drop the MiniBench agent (plain Opus + Flash x2).
+        agent = self._agent_on() and (seasonal or self.pace == PACE_FULL)
         if agent:
             # The agent replaces one Opus slot; the question cap rises while it runs.
             # Its reservation follows the question kind (main.py sets the same value).
             question_seasonal.set(seasonal)
-            two = seasonal and self.seasonal_agents >= 2
+            # paced-2 drops agent2: agent + plain Opus.
+            two = seasonal and self.seasonal_agents >= 2 and self.pace != PACED_2
             self.claude.set_cap(question, AGENT2_SEASONAL_QUESTION_CAP if two else
                                 AGENT_SEASONAL_QUESTION_CAP if seasonal else AGENT_MINIBENCH_QUESTION_CAP)
             agent = self._claude_ok(AGENT)
@@ -807,6 +859,7 @@ class FrontierPlanner(bot_config.GeminiPool):
         self.last_plan.update(frontier=self.mode, claude=claude_models, gpt=gpt, flash=len(flash), count=len(chains))
         if self.agent_enabled:
             self.last_plan["agent"] = AGENT in claude_models
+            self.last_plan["pace"] = self.pace
         return chains
 
     def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:

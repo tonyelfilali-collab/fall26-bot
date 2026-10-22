@@ -261,3 +261,16 @@ def test_recent_runs_reads_every_page(monkeypatch):
 @pytest.mark.parametrize("key,live", [("46201", True), ("46201-test-39664210635", False)])
 def test_test_keys_are_not_live(key, live):
     assert claude_health.is_live_key(key) is live
+
+
+def test_average_claude_dollars_by_type():
+    records = [record(46201, True), record(46202, True), record(46300, False)]
+    records[0]["question"]["question_type"] = "binary"
+    records[1]["question"]["question_type"] = "discrete"
+    types = claude_health.types_by_key(records)
+    assert types == {"46201": "seasonal binary", "46202": "seasonal numeric+discrete", "46300": "MiniBench"}
+    text = "\n".join(claude_health.claude_type_lines(daily_ledger(), DAYS, types))
+    assert "| seasonal binary | 1 | $1.5000 | $1.5000 |" in text
+    assert "| seasonal numeric+discrete | 1 | $0.6000 | $0.6000 |" in text
+    assert "| MiniBench | 1 | $0.5000 | $0.5000 |" in text and "seasonal MC" not in text
+    assert "no live Claude spend" in "\n".join(claude_health.claude_type_lines(ledger({}), DAYS, {}))
