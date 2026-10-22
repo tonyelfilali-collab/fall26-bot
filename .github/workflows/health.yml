@@ -27,6 +27,8 @@ permissions:
   contents: read
   actions: read
   checks: read
+  # The account-balance alert issue (once a UTC day, under $4).
+  issues: write
 
 jobs:
   health:
@@ -98,3 +100,5 @@ jobs:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
           ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
+          # Reads the OpenRouter ACCOUNT balance only (GET /api/v1/credits; no model call).
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

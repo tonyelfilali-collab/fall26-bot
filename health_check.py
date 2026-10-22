@@ -162,6 +162,40 @@ def check_asknews_status(status: int | None, report: Report) -> None:
         report.ok.append("AskNews answers")
 
 
+ACCOUNT_BALANCE_ALERT = 4.00  # USD; under it Tony adds $10 (architect, 22 Oct)
+
+
+def openrouter_account() -> tuple[int, dict | None]:
+    """OpenRouter's ACCOUNT credits (all keys): HTTP status and data (numbers only)."""
+    try:  # a warning, never red, if it can't be read
+        response = requests.get(
+            "https://openrouter.ai/api/v1/credits",
+            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"}, timeout=30,
+        )
+        return response.status_code, (response.json().get("data") if response.status_code == 200 else None)
+    except Exception:
+        return 0, None
+
+
+def check_account_balance(status: int, data: dict | None, report: Report, today: str, notify=None) -> None:  # type: ignore[no-untyped-def]
+    if data is None:
+        report.warnings.append(f"OpenRouter account balance not readable (HTTP {status})")
+        return
+    balance = float(data["total_credits"]) - float(data["total_usage"])
+    line = f"OpenRouter account balance ${balance:.2f} (bought ${float(data['total_credits']):.2f}, used ${float(data['total_usage']):.2f})"
+    if balance >= ACCOUNT_BALANCE_ALERT:
+        report.ok.append(line)
+        return
+    # The daily health check runs once a day; the issue title carries the date (once a UTC day).
+    from ensemble import open_alert_issue
+
+    notify = notify or open_alert_issue
+    opened = notify(f"OpenRouter account balance under ${ACCOUNT_BALANCE_ALERT:.0f} ({today})",
+                    f"{line}. Under ${ACCOUNT_BALANCE_ALERT:.2f}: Tony adds $10 (architect, 22 Oct). Never turn on auto top-up.")
+    report.warnings.append(f"{line}: under ${ACCOUNT_BALANCE_ALERT:.2f}, Tony adds $10"
+                           + ("" if opened else " (alert issue not opened)"))
+
+
 def check_log_failures(annotation_titles: list[str], report: Report) -> None:
     comments = [t for t in annotation_titles if t == COMMENT_FAILED_ANNOTATION]
     if comments:
@@ -451,6 +485,7 @@ def run(simulate_miss: bool) -> Report:
         ("workflow states", lambda: check_workflow_states(workflows(), report)),
         ("main activity", lambda: check_main_activity(main_last_commit(), now, report)),
         ("Claude", lambda: check_claude(now, report)),
+        ("OpenRouter account", lambda: check_account_balance(*openrouter_account(), report, now.date().isoformat())),
     ]
     for name, check in checks:
         try:
