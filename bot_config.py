@@ -169,10 +169,10 @@ FRONTIER_GPT_ENABLED = False
 # switched on after its Test Bots 39664210635 + 39665680234): Opus 5.5 +
 # Anthropic's web_search / web_fetch replaces one Opus slot.
 FRONTIER_AGENT_ENABLED = True
-# Seasonal agents per question (architect, 21 Oct; built OFF = 1): 2 = agent +
-# agent2 (smaller caps) + Flash x2, seasonal cap $4.70, Claude day cap $20.
-# Test Bot lineup frontier-agents2 sets 2 for one test.
-FRONTIER_SEASONAL_AGENTS = 1
+# Seasonal agents per question (architect, 21 Oct; #155, switched on after the
+# agent's first clean real question): 2 = agent + agent2 (smaller caps) + Flash
+# x2, seasonal cap $4.70, Claude day cap $20. 1 = agent + plain Opus.
+FRONTIER_SEASONAL_AGENTS = 2
 
 
 

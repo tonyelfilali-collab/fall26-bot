@@ -691,6 +691,8 @@ class FrontierPlanner(bot_config.GeminiPool):
             if self.seasonal_agents >= 2 and self.claude is not None:
                 self.claude.daily_cap = CLAUDE_DAILY_CAP_TWO_AGENTS  # the MiniBench limit stays $9
                 line += "; 2 seasonal agents"
+            elif self.claude is not None:
+                self.claude.daily_cap = CLAUDE_DAILY_CAP
         return line
 
     def _claude_chain(self, model: str, deadline_aware: bool = False) -> ThrottledLlm:

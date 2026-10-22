@@ -14,9 +14,9 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   never turn on auto-reload or top-up (Anthropic or OpenRouter). No Metaculus credits this season.
 - Anthropic (architect, 21 Oct): Claude models via `ANTHROPIC_API_KEY` (Console org, workspace
   "fall26-bot", no card, no auto-reload) are allowed, within the frontier caps (#140): `CLAUDE_BUDGET_PER_CYCLE`
-  ($170, cycle 18 Oct - 17 Nov), $15 per UTC day, MiniBench Claude only while the day's Claude spend
+  ($170, cycle 18 Oct - 17 Nov), $20 per UTC day (two seasonal agents; $15 with one), MiniBench Claude only while the day's Claude spend
   (running calls included) is under $9, $1.50 per seasonal question, $0.60 per MiniBench question
-  ($3.00 / $1.60 while the agent runs; the agent is ON), step-downs at 25% / 10% left. The credits
+  ($3.00 / $1.60 while the agent runs, $4.70 seasonal with two agents; the agent is ON), step-downs at 25% / 10% left. The credits
   expire each billing cycle; when used up, calls fail with "credit balance is too low" and are never
   charged. Never retry a credit error.
 - OpenRouter: paid models allowed only: google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its

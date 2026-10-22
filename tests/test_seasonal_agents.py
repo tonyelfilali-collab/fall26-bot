@@ -1,4 +1,4 @@
-"""Two seasonal agents (frontier.py, item C, built OFF: FRONTIER_SEASONAL_AGENTS = 1): fake SDK replies, 0 real calls."""
+"""Two seasonal agents (frontier.py, item C, ON: FRONTIER_SEASONAL_AGENTS = 2): fake SDK replies, 0 real calls."""
 from __future__ import annotations
 
 import asyncio
@@ -28,9 +28,12 @@ def _plan(planner, seasonal, question):
         current_question_key.reset(token)
 
 
-def test_built_off_one_seasonal_agent():
-    assert bot_config.FRONTIER_SEASONAL_AGENTS == 1
-    planner, line = _two(agents=bot_config.FRONTIER_SEASONAL_AGENTS)
+def test_switched_on_live():
+    assert bot_config.FRONTIER_SEASONAL_AGENTS == 2
+
+
+def test_one_seasonal_agent():
+    planner, line = _two(agents=1)
     assert [c.model for c in _plan(planner, True, "31")][:2] == [AGENT, OPUS_55]
     assert planner.claude.daily_cap == frontier.CLAUDE_DAILY_CAP == 15.00 and "2 seasonal agents" not in line
 
