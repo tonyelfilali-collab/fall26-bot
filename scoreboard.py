@@ -154,6 +154,10 @@ PERIOD_TITLES = {"before": "Before frontier switch-on", "since": "Since frontier
 # frontier.AGENT: the agent slot's ledger name (the call is Opus 5.5 with web tools).
 AGENT_MODEL = "anthropic/claude-opus-5-5-agent"
 MODEL_GROUPS = ("agent", "claude", "flash", "other")
+# The GPT shadow (gpt_shadow.VARIANT in '<log>_shadows.json'): scored per type
+# as a shadow variant, and per model under this name (group "other").
+GPT_SHADOW_VARIANT = "gpt-shadow"
+GPT_SHADOW_NAME = "openai/gpt-6.1-sol (GPT shadow)"
 # Binary subset medians, through the live final steps (forecast_safety.adjust_binary).
 SUBSETS = {
     "claude-only": lambda name: model_group(name) in ("agent", "claude"),
@@ -242,6 +246,15 @@ def score_models(records: list[dict], resolution_of, switch_on: str | None = Non
                 score = None
             if score is not None:
                 row["models"].append((name, period_of(when, switch_on), score))
+        # The GPT shadow (never submitted) alone, as its own model row; never in the subsets.
+        gpt_value = (record.get("shadow") or {}).get(GPT_SHADOW_VARIANT)
+        if gpt_value is not None:
+            try:
+                score = forecast_score(kind, gpt_value, resolution)
+            except (TypeError, ValueError):
+                score = None
+            if score is not None:
+                row["models"].append((GPT_SHADOW_NAME, period_of(record.get("started_at"), switch_on), score))
         if kind == "binary":
             for subset, wanted in SUBSETS.items():
                 values = [float(p) for name, p, _ in forecasts if wanted(name) and isinstance(p, (int, float))]
@@ -323,6 +336,8 @@ def merge_shadow_files(files: dict[str, dict]) -> list[dict]:
             record["shadow_model"] = extra["shadow_model"]
         if "referee" in extra:
             record["referee"] = extra["referee"]
+        if "gpt_shadow" in extra:
+            record["gpt_shadow"] = extra["gpt_shadow"]
         record.setdefault("shadow", {}).update(extra.get("shadow") or {})
     return list(records.values())
 

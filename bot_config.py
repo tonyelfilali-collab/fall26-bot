@@ -174,6 +174,20 @@ FRONTIER_AGENT_ENABLED = True
 # x2, seasonal cap $4.70, Claude day cap $20. 1 = agent + plain Opus.
 FRONTIER_SEASONAL_AGENTS = 2
 
+# GPT shadow (architect, 22 Oct; gpt_shadow.py; built OFF): at the end of the
+# run, one OpenRouter GPT-6.1 Sol call per live question (OpenRouter native web
+# search, 3 searches) on the question's research dossier. Saved in the private
+# '<log>_shadows.json' only, NEVER submitted. The only place this paid model is
+# allowed (it is not in any lineup; is_free_model stays False for it). Its
+# OpenRouter spend goes in the same ledger (status/spend.json) with its own caps.
+# Test Bot: --gpt-shadow switches it on for that run only.
+GPT_SHADOW_ENABLED = False
+GPT_SHADOW_MODEL = "openrouter/openai/gpt-6.1-sol"
+GPT_SHADOW_QUESTION_CAP = 0.25  # dollars per question
+GPT_SHADOW_DAILY_CAP = 1.50  # dollars per UTC day (GPT shadow spend only)
+GPT_SHADOW_MINIBENCH_DAILY_CAP = 1.00  # MiniBench: only while the day's GPT shadow spend stays under this
+GPT_SHADOW_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, no GPT shadow
+
 
 
 def is_free_model(model: str) -> bool:

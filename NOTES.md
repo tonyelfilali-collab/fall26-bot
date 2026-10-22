@@ -28,6 +28,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Official data line | `hard_data.py` (no switch) | ON | FRED / CoinGecko line in the dossier; exact match feeds the unit check; stand-in warning | #62, #68 |
 | `YAHOO_ENABLED` | `hard_data.py` | ON, but Yahoo answers 429 | Stocks/indices/commodities/FX via Yahoo; blocked, skipped gracefully (stocks not covered) | #87 |
 | Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
+| `GPT_SHADOW_ENABLED` | `bot_config.py` (gpt_shadow.py) | **OFF** (built 22 Oct; Test Bot `gpt_shadow` input switches it on for one test) | End of run: OpenRouter `openai/gpt-6.1-sol` + native web search (3 searches asked) on the question's dossier, every live question and type; private `<log>_shadows.json` only, never submitted; $0.25/question, $1.50/UTC day, MiniBench only under $1.00, seasonal first, none under $2 key left | this PR |
 | Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct), window-blend (50/50 live + window, 21 Oct) | #27, #44, #63, #110 |
 | Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
 | Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; since PR L (21 Oct): own queue (`replay-lab`, never delays a live run), no Gemini, ends by minute 8 | #92, PR L |
@@ -597,6 +598,46 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   `agent` = URLs read (fetched) and found (search hits, max 40), searches, fetches, tool error codes,
   seconds, cost, reserve. Claude ledger calls: searches, fetches. Step summary: agent calls, searches,
   fetches, seconds, $ (numbers only). Public logs: nothing new (model + error class name only).
+
+## GPT shadow (22 Oct 2026, built OFF)
+
+`gpt_shadow.py`; switch `bot_config.GPT_SHADOW_ENABLED` (OFF); Test Bot input `gpt_shadow` (`--gpt-shadow`,
+test_questions mode, lineups free / gemini-free / frontier; that test joins the live `forecast-bot` queue
+because it writes the spend ledger).
+- **What.** A shadow: saved in the private `<log>_shadows.json` only, NEVER submitted. At the end of the
+  run (beside the free shadow and the referee, `main._finish_run`; none at or after minute 45, each call
+  at most min(240 s, time left until minute 47)), one call per live question, seasonal and MiniBench,
+  all 4 types (binary, numeric, discrete, multiple choice): the main forecasters' prompt for the type on
+  the question's own dossier (same answer reading, read directly, no parser call), plus OpenRouter's
+  native web search. Model `openrouter/openai/gpt-6.1-sol` ($2 / $10 per million tokens), reasoning
+  effort medium, max 10,000 output tokens. One try, no retries, no backups.
+- **Search limit.** Sent: `plugins: [{"id": "web", "engine": "native", "max_results": 5}]`, top-level
+  `max_tool_calls: 3`, `web_search_options.search_context_size: "low"`, and a system note "at most 3
+  searches; do not use metaculus.com". OpenRouter documents NO hard cap on native OpenAI searches
+  (22 Oct: the server tool's `max_uses` goes to Anthropic only; `max_results` is ignored by native
+  search; `exclude_domains` is ignored for OpenAI, so metaculus.com can't be blocked). The reported
+  count (`usage.server_tool_use.web_search_requests`) is saved per call.
+- **Money** (OpenRouter, the SAME ledger `status/spend.json`, so key usage = `key_day_start` + `days`
+  still holds; GPT shadow $ also in `gpt_shadow_days` and per question `gpt_shadow`, never in `spent`;
+  the paid-Flash day caps count `days` minus `gpt_shadow_days`). Reservation per call $0.25 = 60k input
+  (dossier + search text, ASSUMED) x $2/M + 10k output x $10/M + 3 searches x $0.01. Caps: $0.25 per
+  question, $1.50 per UTC day; reserved in run order seasonal first; MiniBench (or unknown) only while
+  the day's GPT shadow spend + running reservations + this call stays at or under $1.00. None when the
+  key's limit left (read at the run's start, minus this run's spend and reservations) would go under $2,
+  or is unknown; none when the ledger can't be read or the paid-Flash guard is blocked. Charged:
+  OpenRouter's reported cost; the reservation when unknown, for a timeout or a failure after it may
+  have been billed; $0 for HTTP 400-404/429. A 402 switches it off for the run; a call over its
+  reservation is charged in full, switches it off for the run and opens an alert issue (once a day).
+- **Private log** (`<log>_shadows.json` -> `gpt_shadow`): model, status (`saved`, `no answer`, `timed out`,
+  `failed (Error)`, `skipped: switched off` / `day cap` / `question cap` / `MiniBench under seasonal
+  priority` / `key under $2` / `key unknown` / `spend ledger unreadable` / `spend guard blocked` / `time`),
+  seconds, cost, reserve, searches, input / output tokens, reading; the forecast as shadow variant
+  `gpt-shadow`. Off: the `skipped: switched off` entry rides along only in files saved anyway.
+- **Public log:** `Question N: GPT shadow <status>, $cost`, and one summary line (counts, $, searches).
+  Frontier report: GPT shadow calls on their own rows ("OpenRouter (GPT shadow)"). Scoreboard: variant
+  `gpt-shadow` per type; per model as `openai/gpt-6.1-sol (GPT shadow)` (never in the subsets).
+- **Daily OpenRouter stop rule:** with paid Flash at its $1.00 cap, GPT shadow's $1.50 can take a UTC day
+  to $2.50, over the $2.00 stop rule in CLAUDE.md: the architect sets the rule before switching it on.
 
 ## Free news fallback (27 Sep 2026)
 

@@ -197,6 +197,10 @@ class SpendGuard:
         self.key_day_start: dict[str, float] = {k: float(v) for k, v in data.get("key_day_start", {}).items()}
         self.lean_days: dict[str, str] = dict(data.get("lean_days", {}))  # day -> reason
         self.alerts: dict[str, str] = dict(data.get("alerts", {}))  # kind -> day alerted
+        # GPT shadow (gpt_shadow.py): its own share of `days`. The key check still
+        # sees every dollar in `days`; the paid-Flash day caps leave this share out.
+        self.gpt_shadow_days: dict[str, float] = {k: float(v) for k, v in data.get("gpt_shadow_days", {}).items()}
+        self.gpt_shadow_in_flight: dict[str, float] = {}  # question -> its running GPT shadow's reservation
         self.caps: dict[str, float] = {}
         self.in_flight: dict[str, float] = {}
         self.timed_out: set[tuple[str, str]] = set()
@@ -222,6 +226,16 @@ class SpendGuard:
 
     def day_spent(self, day: str | None = None) -> float:
         return self.days.get(day or utc_day(), 0.0)
+
+    def gpt_shadow_day_spent(self, day: str | None = None) -> float:
+        return self.gpt_shadow_days.get(day or utc_day(), 0.0)
+
+    def gpt_shadow_question_spent(self, question: str) -> float:
+        return float(self.questions.get(question, {}).get("gpt_shadow", 0.0))
+
+    def flash_day_spent(self, day: str | None = None) -> float:
+        """The day's spend without the GPT shadow's (it has its own caps): what the paid-Flash day caps count."""
+        return max(0.0, self.day_spent(day) - self.gpt_shadow_day_spent(day))
 
     def estimate(self, model: str) -> float:
         return self.estimates.get(model.removeprefix("replay/"), estimate_cost(model))
@@ -250,7 +264,7 @@ class SpendGuard:
             cap = self.daily_cap
             if question_seasonal.get() is not True and self.minibench_daily_cap is not None:
                 cap = self.minibench_daily_cap  # MiniBench (or unknown): the lower daily cap
-            committed = self.day_spent() + sum(self.in_flight.values())
+            committed = self.flash_day_spent() + sum(self.in_flight.values())
             if committed + self.estimate(model) > cap + 1e-9:
                 return "daily cap"
         cap = self.caps.get(question)
@@ -325,6 +339,9 @@ class SpendGuard:
             "key_day_start": {d: v for d, v in self.key_day_start.items() if d >= keep_from},
             "lean_days": {d: r for d, r in self.lean_days.items() if d >= keep_from},
             "alerts": self.alerts,
+            # GPT shadow: only once it has spent something (older ledgers stay as they are).
+            **({"gpt_shadow_days": {d: round(v, 6) for d, v in sorted(self.gpt_shadow_days.items()) if d >= keep_from}}
+               if self.gpt_shadow_days else {}),
         }
 
     def save(self) -> None:
