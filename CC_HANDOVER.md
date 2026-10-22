@@ -30,7 +30,7 @@ short language.
   OpenRouter `google/gemini-3.6-flash`. Paid only up to 3 real forecasts per question; extra slots
   free only; $0.10/question; $1.00/UTC day; **MiniBench paid only while the day's paid spend is under
   $0.50** (each call reserves $0.03, so refusals start at ~$0.47). Fail closed. Alert under $2 left.
-  Key limit **$15** (raised from $8 on 21 Oct, Credit check 39681912561); used $0.95 on 7 Oct morning = spend ledger.
+  Key limit **$25** (raised from $8 to $15 on 21 Oct, Credit check 39681912561; to $25 on 22 Oct, Credit check 39776533155); used $0.95 on 7 Oct morning = spend ledger.
 - **No credits this season** (Metaculus, 5 Oct): credits lineup OFF all season, no cleanup.
 - Backup chain (Nemotron x2, then Flash-Lite), extra forecasts on spare quota, follow-up search,
   Wikipedia, official data + **window baseline** shadow, run timing caps, consistency shadow, Replay lab
@@ -96,12 +96,12 @@ Helper after a merge (first live run after a time):
 R=tonyelfilali-collab/fall26-bot; after="<ISO time>"; until id=$(gh run list -R $R --workflow run_bot_on_tournament.yaml --created ">$after" -L 20 --json databaseId,createdAt --jq 'sort_by(.createdAt) | .[0].databaseId // empty') && [ -n "$id" ]; do sleep 30; done; gh run watch $id -R $R >/dev/null; gh run view $id -R $R --json conclusion,url -q '.conclusion+" "+.url'
 ```
 
-## 4. OpenRouter usage check (key limit $15 since 21 Oct, was $8; used = spend ledger)
+## 4. OpenRouter usage check (key limit $25 since 22 Oct; $15 from 21 Oct, $8 before; used = spend ledger)
 
 ```bash
 R=tonyelfilali-collab/fall26-bot; gh workflow run credit_check.yaml -R $R; sleep 8; id=$(gh run list -R $R -w credit_check.yaml -L1 --json databaseId -q '.[0].databaseId'); gh run watch $id -R $R >/dev/null; gh run view $id -R $R --log | cut -f3- | grep -E "^[^ ]+ \| (Limit|Used|Remaining|Free tier)" | cut -d' ' -f2- | sort -u
 ```
-Expected: Limit 15, Used = the spend ledger (fall26-data `status/spend.json`). The ledger keeps only
+Expected: Limit 25, Used = the spend ledger (fall26-data `status/spend.json`). The ledger keeps only
 7 days (`spend.KEEP_DAYS`), so don't sum `days`: compare Used with `key_day_start[today]` +
 `days[today]` (today = newest `key_day_start` date):
 ```bash
