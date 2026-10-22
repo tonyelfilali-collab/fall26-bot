@@ -122,7 +122,7 @@ EXTRA_FORECASTS_ENABLED = True
 # or no free quota), the slot tries OpenRouter's paid Gemini 3.6 Flash once,
 # under the spend guards: per-question cap, daily cap, cost unknown ->
 # charged the estimate, fail closed. The OpenRouter key limit is the ceiling.
-PAID_FLASH_FALLBACK = True  # ON: Tony, 30 Sep (key limit $8; $15 since 21 Oct)
+PAID_FLASH_FALLBACK = True  # ON: Tony, 30 Sep (key limit $8; $15 since 21 Oct; $25 since 22 Oct)
 PAID_FLASH_MODEL = ensemble.FLASH_36
 PAID_FLASH_QUESTION_CAP = 0.10  # dollars (architect, 2 Oct: 0.09, then 0.10 so a dearer call keeps the 3rd forecast)
 PAID_FLASH_DAILY_CAP = 1.00  # dollars, per UTC day (seasonal questions)

@@ -54,6 +54,30 @@ jobs:
             cat table.md
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # The ACCOUNT balance (all keys): total credits bought minus total usage.
+      # Numbers only. It may need a management key; then only the HTTP status shows.
+      - name: Ask OpenRouter for the account balance
+        if: always()
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -uo pipefail
+          status=$(curl -sS -o credits.json -w '%{http_code}' \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            https://openrouter.ai/api/v1/credits)
+          {
+            echo "## OpenRouter account balance"
+            echo ""
+            if [ "$status" = "200" ]; then
+              jq -r '.data | "| Total credits (USD) | \(.total_credits) |", "| Total usage (USD) | \(.total_usage) |",
+                "| Balance (USD) | \((.total_credits - .total_usage) * 100 | round / 100) |"' credits.json \
+                | { echo "| | |"; echo "|---|---|"; cat; }
+            else
+              echo "- /api/v1/credits answered HTTP $status (not readable with this key)"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -f credits.json
+
       # Build 2a: the free official data APIs (FRED with FRED_API_KEY, CoinGecko
       # public). Prints only the series, latest date and value (public data).
       - name: Check the free data APIs
