@@ -128,7 +128,8 @@ def _run(monkeypatch, fake, claude=None, seasonal=True, question="11", deadline=
     async def go():
         current_question_key.set(question)
         question_seasonal.set(seasonal)
-        claude.set_cap(question, frontier.AGENT_SEASONAL_QUESTION_CAP if seasonal else frontier.AGENT_MINIBENCH_QUESTION_CAP)
+        # Seasonal: the live cap (two agents, FRONTIER_SEASONAL_AGENTS = 2).
+        claude.set_cap(question, frontier.AGENT2_SEASONAL_QUESTION_CAP if seasonal else frontier.AGENT_MINIBENCH_QUESTION_CAP)
         frontier.forecast_deadline.set(None if deadline is None else time.monotonic() + deadline)
         log = []
         frontier.agent_log.set(log)
@@ -299,11 +300,14 @@ def test_plain_opus_slots_keep_the_full_timeout(monkeypatch):
 
 def test_worst_case_reservations_fit_the_raised_caps():
     plain = frontier.claude_reserve(OPUS_55)
-    # Seasonal: agent + the plain Opus slot + the agent's Opus fallback.
-    assert frontier.agent_reserve(True) + 2 * plain <= frontier.AGENT_SEASONAL_QUESTION_CAP + 1e-9
+    # Seasonal (live: two agents): both agents + their two Opus fallbacks. With one
+    # agent the $3.00 cap no longer covers the agent's Opus fallback (22 Oct, 600k).
+    assert frontier.agent_reserve(True) + frontier.agent_reserve(True, frontier.AGENT2) + 2 * plain <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
     # MiniBench: agent + the plain Opus slot + the agent's Opus fallback.
     assert frontier.agent_reserve(False) + 2 * plain <= frontier.AGENT_MINIBENCH_QUESTION_CAP + 1e-9
-    assert frontier.agent_reserve(True) == pytest.approx(2.28) and frontier.agent_reserve(False) == pytest.approx(0.87)
+    # 22 Oct: seasonal agent input 450k -> 600k ($2.88; a real call read 538k).
+    assert frontier.agent_reserve(True) == pytest.approx(2.88) and frontier.agent_reserve(False) == pytest.approx(0.87)
+    assert frontier.agent_caps(True).input_tokens == 600000
     assert frontier.AGENT_SEASONAL_QUESTION_CAP == 3.00 and frontier.AGENT_MINIBENCH_QUESTION_CAP == 1.60
     assert frontier.AGENT_FETCH_MAX_CONTENT_TOKENS == 3000
 
@@ -315,9 +319,9 @@ def test_reservation_follows_the_question_kind():
         question_seasonal.set(seasonal)
         return claude.estimate(AGENT)
 
-    assert asyncio.run(go(True)) == pytest.approx(2.28)
+    assert asyncio.run(go(True)) == pytest.approx(2.88)
     assert asyncio.run(go(False)) == pytest.approx(0.87)
-    assert asyncio.run(go(None)) == pytest.approx(2.28)  # unknown: the larger one (fail closed)
+    assert asyncio.run(go(None)) == pytest.approx(2.88)  # unknown: the larger one (fail closed)
 
 
 def test_plan_raises_the_caps_and_replaces_one_opus_slot():
@@ -353,10 +357,10 @@ def test_daily_cap_refuses_the_agent_and_keeps_plain_opus():
 
 def test_a_cap_refused_agent_hands_over_to_plain_opus(monkeypatch):
     claude = _budget()
-    claude.questions["11"] = {"spent": 1.00}  # $2.00 left of $3.00: the agent ($2.28) would pass it
+    claude.questions["11"] = {"spent": 3.00}  # $2.30 left of $5.30: the agent ($2.88) would pass it
     reply, claude, _ = _run(monkeypatch, Fake([]), claude=claude)
     assert reply.data == "Probability: 30%" and [c["model"] for c in _calls(claude)] == [OPUS_55]
-    assert claude.question_spent("11") <= frontier.AGENT_SEASONAL_QUESTION_CAP
+    assert claude.question_spent("11") <= frontier.AGENT2_SEASONAL_QUESTION_CAP
 
 
 @pytest.mark.parametrize("spent, mode", [(0.80 * 170, "low"), (0.95 * 170, "minimal")])
@@ -412,7 +416,7 @@ def test_a_failed_continuation_is_charged_what_was_billed(monkeypatch):
 
 
 def test_over_the_reservation_switches_the_agent_off(monkeypatch):
-    fake = Fake([_reply([_text("Probability: 12%")], inp=600000, out=2000)])  # one request past the ASSUMED ceiling
+    fake = Fake([_reply([_text("Probability: 12%")], inp=750000, out=2000)])  # one request past the ASSUMED ceiling
     reply, claude, _ = _run(monkeypatch, fake)
     assert reply.data == "Probability: 12%" and claude.agent_off  # charged in full, agent off for the run
     assert claude.agent_overruns == 1

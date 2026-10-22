@@ -44,7 +44,7 @@ def test_agent2_reserve_and_the_caps():
     assert frontier.agent_caps(True, AGENT2) == frontier.AgentCaps(searches=4, fetches=2, output_tokens=20000, input_tokens=300000)
     # agent + agent2 + one plain Opus fallback each.
     assert frontier.agent_reserve(True) + frontier.agent_reserve(True, AGENT2) + 2 * plain <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
-    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 4.70 and frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.00
+    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 5.30 and frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.00
 
 
 def test_two_agents_seasonal_and_minibench_unchanged():
@@ -54,7 +54,7 @@ def test_two_agents_seasonal_and_minibench_unchanged():
     chains = _plan(planner, True, "32")
     assert [c.model for c in chains][:2] == [AGENT, AGENT2] and len(chains) == 4
     assert all("flash" in c.model for c in chains[2:])
-    assert planner.claude.caps["32"] == 4.70
+    assert planner.claude.caps["32"] == 5.30
     # Each agent has its own plain Opus fallback, with only the planned wait's time left.
     assert chains[0]._backup is not chains[1]._backup
     assert all(c._backup.model == OPUS_55 and c._backup.deadline_aware and c._backup_on_any_error for c in chains[:2])
