@@ -139,6 +139,7 @@ from followup import disagreement as followup_disagreement
 from followup import reason_of as followup_reason
 from research import MAX_ASKNEWS_CALLS, asknews_search, run_planned_research, with_official_line
 from gemini_budget import current_question_key
+from comment_post import CommentRecordingClient
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
@@ -1414,7 +1415,24 @@ class FallBot2026(ForecastBot):
         if problem:
             logger.warning(f"Question {question.id_of_post}: not submitted, {problem}")
             return False
-        await report.publish_report_to_metaculus(metaculus_client=self.metaculus_client)
+        # The forecast, then the private comment: its HTTP status and id go to
+        # the private question log; a failed comment never raises (comment_post.py).
+        client = CommentRecordingClient()
+        await report.publish_report_to_metaculus(metaculus_client=client)
+        comment = self._record_for(question)["comment"] = dict(client.outcome)
+        if self.run_mode == "test_questions" and comment.get("status") is not None:
+            # Test Bot: read it back (yes/no and statuses only).
+            try:
+                found = await asyncio.to_thread(client.read_back, question.id_of_post, comment.get("id"))
+            except Exception as e:
+                found = {"exists": None, "error": type(e).__name__}
+            comment["read_back"] = found
+            logger.info(
+                f"Question {question.id_of_post}: comment read back: "
+                f"{ {True: 'yes', False: 'NO', None: 'unknown'}[found.get('exists')] } "
+                f"(create HTTP {comment.get('status')}, by id HTTP {found.get('by_id_status', '-')}, "
+                f"by post+author HTTP {found.get('by_post_status', '-')}, {found.get('by_post_count', 0)} found)"
+            )
         return True
 
     async def _save_record(self, question, record: dict, started: datetime) -> None:  # type: ignore[no-untyped-def]
