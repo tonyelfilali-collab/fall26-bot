@@ -89,11 +89,15 @@ def comment_check_lines(post_id: str | int, get=requests.get) -> list[str]:  # t
     latest = (question.get("my_forecasts") or {}).get("latest") or {}
     values = latest.get("forecast_values")
     lines = [f"- Post {post_id} ({question.get('type')}): our forecast on Metaculus: {'yes' if values else 'no'}"]
-    response = get(f"{API}/comments/", params={"post": post_id, "author": me, "limit": 100}, headers=_auth(), timeout=30)
-    if response.status_code != 200:
-        return lines + [f"- Comments: not readable (HTTP {response.status_code})"]
-    data = response.json()
-    comments = data.get("results", data) if isinstance(data, dict) else data
+    # The comments API's filters aren't documented: try a few, counts only.
+    comments: list = []
+    for params in ({"post": post_id, "author": me}, {"post": post_id, "is_private": "true"},
+                   {"on_post": post_id, "author": me}, {"author": me}):
+        response = get(f"{API}/comments/", params={**params, "limit": 100}, headers=_auth(), timeout=30)
+        data = response.json() if response.status_code == 200 else {}
+        found = data.get("results", []) if isinstance(data, dict) else data
+        lines.append(f"- Comments query {'+'.join(params)}: HTTP {response.status_code}, {len(found)} returned")
+        comments += [c for c in found if isinstance(c, dict) and c not in comments]
     def author(c: dict):  # type: ignore[no-untyped-def]
         a = c.get("author")
         return a.get("id") if isinstance(a, dict) else a
