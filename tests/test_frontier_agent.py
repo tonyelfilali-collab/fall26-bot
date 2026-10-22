@@ -163,6 +163,7 @@ def test_request_shape_tools_and_answer(monkeypatch):
     ]
     assert request["messages"] == [{"role": "user", "content": "Forecast this. Probability: ZZ%"}]  # the same prompt
     assert "8 searches" in request["system"] and "3 pages" in request["system"]
+    assert "Polymarket, Kalshi or Manifold" in request["system"] and "base rate" in request["system"]
     assert fake.clients[0]["max_retries"] == 0
     assert not fake.plain_requests()  # no fallback
 
