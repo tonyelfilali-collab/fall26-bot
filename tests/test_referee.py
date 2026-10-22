@@ -162,8 +162,8 @@ def test_candidate_is_the_clipped_mean_of_referee_and_submitted():
     assert shadow.referee_candidate(0.0, 0.4, [0.3, 0.5, 0.6]) == pytest.approx(0.3)
 
 
-def test_referee_is_built_off():
-    assert shadow.REFEREE_ENABLED is False and main.REFEREE_ENABLED is False
+def test_referee_is_switched_on():
+    assert shadow.REFEREE_ENABLED is True and main.REFEREE_ENABLED is True
     assert shadow.REFEREE_TIMEOUT_SECONDS == 240 and not hasattr(shadow, "REFEREE_LATEST_SECONDS")
     assert run_timing.SHADOW_START_BEFORE_SECONDS == 45 * 60 and run_timing.SHADOW_PHASE_END_SECONDS == 47 * 60
 
