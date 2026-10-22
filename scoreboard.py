@@ -158,6 +158,9 @@ MODEL_GROUPS = ("agent", "claude", "flash", "other")
 # as a shadow variant, and per model under this name (group "other").
 GPT_SHADOW_VARIANT = "gpt-shadow"
 GPT_SHADOW_NAME = "openai/gpt-6.1-sol (GPT shadow)"
+# The same, only on questions where its reply cited no metaculus.com page.
+GPT_SHADOW_NO_METACULUS = "gpt-shadow (no metaculus)"
+GPT_SHADOW_NAME_NO_METACULUS = "openai/gpt-6.1-sol (GPT shadow, no metaculus)"
 # Binary subset medians, through the live final steps (forecast_safety.adjust_binary).
 SUBSETS = {
     "claude-only": lambda name: model_group(name) in ("agent", "claude"),
@@ -247,14 +250,16 @@ def score_models(records: list[dict], resolution_of, switch_on: str | None = Non
             if score is not None:
                 row["models"].append((name, period_of(when, switch_on), score))
         # The GPT shadow (never submitted) alone, as its own model row; never in the subsets.
-        gpt_value = (record.get("shadow") or {}).get(GPT_SHADOW_VARIANT)
-        if gpt_value is not None:
+        for variant, name in ((GPT_SHADOW_VARIANT, GPT_SHADOW_NAME), (GPT_SHADOW_NO_METACULUS, GPT_SHADOW_NAME_NO_METACULUS)):
+            gpt_value = (record.get("shadow") or {}).get(variant)
+            if gpt_value is None:
+                continue
             try:
                 score = forecast_score(kind, gpt_value, resolution)
             except (TypeError, ValueError):
                 score = None
             if score is not None:
-                row["models"].append((GPT_SHADOW_NAME, period_of(record.get("started_at"), switch_on), score))
+                row["models"].append((name, period_of(record.get("started_at"), switch_on), score))
         if kind == "binary":
             for subset, wanted in SUBSETS.items():
                 values = [float(p) for name, p, _ in forecasts if wanted(name) and isinstance(p, (int, float))]
@@ -339,6 +344,11 @@ def merge_shadow_files(files: dict[str, dict]) -> list[dict]:
         if "gpt_shadow" in extra:
             record["gpt_shadow"] = extra["gpt_shadow"]
         record.setdefault("shadow", {}).update(extra.get("shadow") or {})
+        # The GPT shadow scored twice: all questions, and only those where its
+        # reply cited no metaculus.com page (metaculus_cited known False).
+        gpt_value = record["shadow"].get(GPT_SHADOW_VARIANT)
+        if gpt_value is not None and (extra.get("gpt_shadow") or {}).get("metaculus_cited") is False:
+            record["shadow"][GPT_SHADOW_NO_METACULUS] = gpt_value
     return list(records.values())
 
 

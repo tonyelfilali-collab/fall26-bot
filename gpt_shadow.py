@@ -69,9 +69,10 @@ TIMEOUT_SECONDS = 240  # then cancelled and charged the reservation (also capped
 # Reasoning is mandatory for this model; medium keeps it inside the 10k output tokens.
 REASONING = {"effort": "medium"}
 SEARCH_NOTE = (
-    f"You may search the web, at most {MAX_SEARCHES} searches in all. Do not use metaculus.com "
-    "(its pages show other forecasts). Use the research given below first."
+    f"You may search the web, at most {MAX_SEARCHES} searches in all. Do not use metaculus.com. "
+    "Use the research given below first."
 )
+METACULUS_DOMAIN = "metaculus.com"
 
 # Statuses ("gpt_shadow" -> "status" in the private shadows file).
 SAVED = "saved"
@@ -118,6 +119,44 @@ def usage_numbers(usage: Any) -> dict:
         "cost": _get(usage, "cost"),
     }
     return {k: (v if isinstance(v, (int, float)) and not isinstance(v, bool) else None) for k, v in out.items()}
+
+
+def _domain(url: Any) -> str | None:
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(str(url).strip()).hostname
+    except ValueError:
+        return None
+    host = (host or "").lower().rstrip(".")
+    return host.removeprefix("www.") or None
+
+
+def cited_domains(raw: Any) -> list[str] | None:
+    """The DOMAINS of the URLs the reply cites (OpenRouter web search:
+    choices[0].message.annotations[] = {"type": "url_citation", "url_citation":
+    {"url", "title", "content", ...}}, which LiteLLM passes through on its
+    Message). Sorted, unique; never the URLs or text. None: no response."""
+    choices = _get(raw, "choices")
+    if not choices:
+        return None
+    try:
+        annotations = _get(_get(choices[0], "message"), "annotations") or []
+        found = {_domain(_get(_get(a, "url_citation"), "url")) for a in annotations if _get(a, "type") in (None, "url_citation")}
+    except Exception:  # an unexpected shape: no domains rather than a failed shadow
+        return []
+    return sorted(d for d in found if d)
+
+
+def citation_numbers(raw: Any) -> dict:
+    """domains (sorted unique), domains_count, metaculus_cited, for the private shadows file."""
+    domains = cited_domains(raw)
+    if domains is None:
+        return {}
+    return {
+        "domains": domains, "domains_count": len(domains),
+        "metaculus_cited": any(d == METACULUS_DOMAIN or d.endswith("." + METACULUS_DOMAIN) for d in domains),
+    }
 
 
 def estimate_searches(cost: float | None, input_tokens: int | None, output_tokens: int | None) -> int | None:
@@ -352,4 +391,6 @@ class GptShadowLlm(GeneralLlm):
             )
             if numbers["searches"] is None and response is not None:
                 numbers["searches_estimated"] = estimate_searches(cost, numbers["input_tokens"], numbers["output_tokens"])
+            if response is not None:
+                numbers.update(citation_numbers(self._raw))
             self.numbers = numbers

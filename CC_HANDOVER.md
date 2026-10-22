@@ -49,7 +49,7 @@ short language.
 - Spend (architect, 21 Oct; CLAUDE.md): never buy credits. Allowed paid use: Claude via
   `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan, PR 2 caps), GPT-5.6 Sol on OpenRouter
   (seasonal only, PR 2 caps) and paid Flash within its caps. Spend check: key usage = key usage at the
-  start of the day + today's spend; if above, or OpenRouter above $2.00 in a UTC day: stop everything
+  start of the day + today's spend; if above, or OpenRouter above $3.50 in a UTC day: stop everything
   and report.
 - A notes PR at least every 21 days (standing rule).
 - Public logs and this repo: no forecast values, research or reasoning; nothing about Tony.
@@ -107,7 +107,7 @@ Expected: Limit 25, Used = the spend ledger (fall26-data `status/spend.json`). T
 ```bash
 gh api repos/tonyelfilali-collab/fall26-data/contents/status/spend.json -q .content | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); t=max(d["key_day_start"]); print(t, round(d["key_day_start"][t]+d["days"].get(t,0),6))'
 ```
-If Used is above that, or OpenRouter spend is above $2.00 in a UTC day: stop everything and tell
+If Used is above that, or OpenRouter spend is above $3.50 in a UTC day: stop everything and tell
 the architect.
 
 ## 5. Lessons

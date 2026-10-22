@@ -1343,7 +1343,10 @@ class FallBot2026(ForecastBot):
         self.__dict__.setdefault("_gpt_shadow_results", {})[id(question)] = result
         if self.gpt_shadow is not None:
             self.gpt_shadow.count(result["status"])
-            logger.info(f"Question {question.id_of_post}: GPT shadow {result['status']}, ${result.get('cost', 0.0):.4f}")
+            line = f"Question {question.id_of_post}: GPT shadow {result['status']}, ${result.get('cost', 0.0):.4f}"
+            if "domains_count" in result:  # the count and yes/no only, never the domains
+                line += f", domains {result['domains_count']}, metaculus cited: {'yes' if result['metaculus_cited'] else 'no'}"
+            logger.info(line)
 
     def _hold_record(self, question: MetaculusQuestion, record: dict) -> None:
         """The saved record is back in _question_records while a shadow notes
@@ -1397,6 +1400,10 @@ class FallBot2026(ForecastBot):
             "output_tokens": numbers.get("output_tokens"),
             "reading": record.pop("gpt_shadow_reading", []),
         }
+        if "domains" in numbers:
+            # The cited URLs' domains only (never URLs or text), private file only.
+            result.update(domains=numbers["domains"], domains_count=numbers["domains_count"],
+                          metaculus_cited=numbers["metaculus_cited"])
         if numbers.get("searches_estimated") is not None:
             # OpenRouter didn't report the searches: (cost - token cost) / $0.01 (private file only).
             result["searches_estimated"] = numbers["searches_estimated"]

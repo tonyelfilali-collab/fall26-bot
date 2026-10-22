@@ -8,7 +8,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Switch / setting | Where | Now | What it does | PR |
 |---|---|---|---|---|
 | `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
-| Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the frontier caps ($15/UTC day, MiniBench under $9, $1.50 / $0.60 per question); OpenRouter paid: Gemini 3.6 Flash (as now); GPT-5.6 Sol OFF | OpenRouter daily stop rule $2.00; spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
+| Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the frontier caps ($15/UTC day, MiniBench under $9, $1.50 / $0.60 per question); OpenRouter paid: Gemini 3.6 Flash (as now); GPT-5.6 Sol OFF | OpenRouter daily stop rule $3.50 (22 Oct; was $2.00); spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
 | `FRONTIER_ENABLED` | `bot_config.py` (#140; switch PR 3, 21 Oct) | **ON** (live: seasonal Opus 5.5 x2 + Flash x2, MiniBench Opus 5.5 + Flash x2; GPT not allowed while its switch is off) | `frontier.py`: seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus 5.5 + Flash x2 (GPT behind `FRONTIER_GPT_ENABLED`, OFF); `CLAUDE_BUDGET_PER_CYCLE` 170 + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $15/UTC day (MiniBench Claude only while the day is under $9), $1.50 seasonal / $0.60 MiniBench per question; step-downs at 25% / 10% left | #140 |
 | `FRONTIER_AGENT_ENABLED` | `bot_config.py` (#146; switch-on PR) | ON | One Opus slot becomes an agent (Opus 5.5 + Anthropic web_search / web_fetch, metaculus.com blocked; question caps $3.00 seasonal / $1.60 MiniBench while it runs; MiniBench = agent + plain Opus + Flash x2); merges after PR 3 is live; switch-on waits for the architect's "go" | #146 |
 | `FRONTIER_SEASONAL_AGENTS` | `bot_config.py` (item C, #155) | **2** (ON) | 2: seasonal = agent + agent2 (4 searches / 2 fetches, 300k input, $1.64 reserve) + Flash x2, each agent with its own plain Opus fallback; seasonal cap $4.70, Claude day cap $20 (MiniBench limit $9). Test Bot lineup `frontier-agents2`. Switch-on: the architect (about Sat 24 Oct) | item C |
@@ -613,7 +613,7 @@ because it writes the spend ledger).
   effort medium, max 10,000 output tokens. One try, no retries, no backups.
 - **Search limit.** Sent: `plugins: [{"id": "web", "engine": "native", "max_results": 5}]`, top-level
   `max_tool_calls: 3`, `web_search_options.search_context_size: "low"`, and a system note "at most 3
-  searches; do not use metaculus.com". OpenRouter documents NO hard cap on native OpenAI searches
+  searches. Do not use metaculus.com.". OpenRouter documents NO hard cap on native OpenAI searches
   (22 Oct: the server tool's `max_uses` goes to Anthropic only; `max_results` is ignored by native
   search; `exclude_domains` is ignored for OpenAI, so metaculus.com can't be blocked). The reported
   count (`usage.server_tool_use.web_search_requests`) is saved per call. The first real Test Bot
@@ -638,13 +638,17 @@ because it writes the spend ledger).
 - **Private log** (`<log>_shadows.json` -> `gpt_shadow`): model, status (`saved`, `no answer`, `timed out`,
   `failed (Error)`, `skipped: switched off` / `day cap` / `question cap` / `MiniBench under seasonal
   priority` / `key under $2` / `key unknown` / `spend ledger unreadable` / `spend guard blocked` / `time`),
-  seconds, cost, reserve, searches, input / output tokens, reading; the forecast as shadow variant
-  `gpt-shadow`. Off: the `skipped: switched off` entry rides along only in files saved anyway.
-- **Public log:** `Question N: GPT shadow <status>, $cost`, and one summary line (counts, $, searches).
-  Frontier report: GPT shadow calls on their own rows ("OpenRouter (GPT shadow)"). Scoreboard: variant
-  `gpt-shadow` per type; per model as `openai/gpt-6.1-sol (GPT shadow)` (never in the subsets).
-- **Daily OpenRouter stop rule:** with paid Flash at its $1.00 cap, GPT shadow's $1.50 can take a UTC day
-  to $2.50, over the $2.00 stop rule in CLAUDE.md: the architect sets the rule before switching it on.
+  seconds, cost, reserve, searches (or `searches_estimated`), input / output tokens, reading, and the
+  cited DOMAINS (`domains` sorted unique, `domains_count`, `metaculus_cited`: metaculus.com or a
+  subdomain; from `choices[0].message.annotations[].url_citation.url`, which LiteLLM passes through on
+  its Message; never URLs or text); the forecast as shadow variant `gpt-shadow`. Off: the `skipped:
+  switched off` entry rides along only in files saved anyway.
+- **Public log:** `Question N: GPT shadow <status>, $cost[, domains N, metaculus cited: yes/no]`, and one
+  summary line (counts, $, searches). Frontier report: GPT shadow calls on their own rows ("OpenRouter
+  (GPT shadow)"). Scoreboard, twice: variant `gpt-shadow` (all questions) and `gpt-shadow (no
+  metaculus)` (only where `metaculus_cited` is known false), per type and per model (never in the subsets).
+- **Daily OpenRouter stop rule:** $3.50 (architect, 22 Oct; was $2.00): paid Flash $1.00 + GPT shadow
+  $1.50 per UTC day fit under it; the separate caps stay.
 
 ## Free news fallback (27 Sep 2026)
 

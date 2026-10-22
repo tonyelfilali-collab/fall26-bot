@@ -28,7 +28,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   question with paid Flash, none when the key has under $2 left).
 - Spend check: the key's usage (Credit check workflow) must equal the key usage at the start of the
   day + today's spend in the ledger (fall26-data `status/spend.json`: `key_day_start[today]` +
-  `days[today]`). If it is ever above that, or OpenRouter spend is above $2.00 in a UTC day, stop
+  `days[today]`). If it is ever above that, or OpenRouter spend is above $3.50 in a UTC day, stop
   everything and tell the architect.
 - When a task is done, report in 3-5 plain sentences what was done and paste the proof
   (links to Actions runs).

@@ -8,6 +8,8 @@ import copy
 import logging
 import time
 
+from types import SimpleNamespace
+
 import pytest
 from forecasting_tools.ai_models.ai_utils.response_types import TextTokenCostResponse
 
@@ -33,6 +35,7 @@ class FakeGpt(gpt.GptShadowLlm):
     mode = "ok"
     cost = 0.07
     requests: list = []
+    urls: list | None = None  # cited URLs (None: no response object at all)
 
     async def _raw_call(self, prompt):
         FakeGpt.requests.append({"prompt": prompt, "extra_body": self.litellm_kwargs.get("extra_body"),
@@ -51,13 +54,17 @@ class FakeGpt(gpt.GptShadowLlm):
         usage = {"prompt_tokens": 9000, "completion_tokens": 3000, "cost": cost, "server_tool_use": {"web_search_requests": 2}}
         if FakeGpt.mode == "no_tool_use":  # as in the 22 Oct Test Bot: no server_tool_use in the usage
             usage.pop("server_tool_use")
+        # LiteLLM's ModelResponse: choices[0].message.annotations (url_citation dicts, OpenRouter's shape).
+        urls = FakeGpt.urls
+        self._raw = None if urls is None else SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            annotations=[{"type": "url_citation", "url_citation": {"url": u, "title": "t", "content": "secret text"}} for u in urls]))])
         return TextTokenCostResponse(data=text, prompt_tokens_used=9000, completion_tokens_used=3000,
                                      total_tokens_used=12000, model=self.model, cost=cost), usage
 
 
 @pytest.fixture(autouse=True)
 def fresh_fake():
-    FakeGpt.mode, FakeGpt.cost, FakeGpt.requests = "ok", 0.07, []
+    FakeGpt.mode, FakeGpt.cost, FakeGpt.requests, FakeGpt.urls = "ok", 0.07, [], None
     yield
 
 
@@ -408,6 +415,71 @@ def test_one_call_per_llm_and_release_without_a_call():
     asyncio.run(twice())
     assert len(FakeGpt.requests) == 1 and len(shadow.spend.questions["s"]["calls"]) == 1
     assert shadows_path("questions/tournament/x/1.json").endswith("_shadows.json")
+
+
+# ---------------------------------------------------------------- metaculus.com (architect, 22 Oct)
+
+
+def test_system_note_says_do_not_use_metaculus():
+    assert "Do not use metaculus.com." in gpt.SEARCH_NOTE and "at most 3 searches" in gpt.SEARCH_NOTE
+    _run(_bot(_shadow()), [QUESTIONS[0]])
+    assert "Do not use metaculus.com." in str(FakeGpt.requests[0]["prompt"])
+
+
+def test_cited_domains_shapes():
+    def raw(annotations):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(annotations=annotations))])
+
+    cite = lambda u: {"type": "url_citation", "url_citation": {"url": u}}  # noqa: E731
+    assert gpt.cited_domains(None) is None
+    assert gpt.cited_domains(raw(None)) == []  # no annotations
+    assert gpt.cited_domains(SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace())])) == []
+    assert gpt.cited_domains(raw([cite("https://www.Reuters.com/a?b=1"), cite("https://reuters.com/x"),
+                                  cite("http://bls.gov/cpi"), cite("not a url"), {"type": "url_citation"}, "junk"])) == [
+        "bls.gov", "reuters.com"]
+    # dict-shaped responses work too
+    assert gpt.cited_domains({"choices": [{"message": {"annotations": [cite("https://a.org/1")]}}]}) == ["a.org"]
+    assert gpt.citation_numbers(raw([cite("https://www.metaculus.com/questions/1")]))["metaculus_cited"] is True
+    assert gpt.citation_numbers(raw([cite("https://forum.metaculus.com/x")]))["metaculus_cited"] is True
+    assert gpt.citation_numbers(raw([cite("https://notmetaculus.com/x")]))["metaculus_cited"] is False
+    assert gpt.citation_numbers(None) == {}
+
+
+@pytest.mark.parametrize("urls, cited", [
+    (["https://www.reuters.com/a", "https://reuters.com/b", "https://bls.gov/c"], False),
+    (["https://www.metaculus.com/questions/1/", "https://bls.gov/c"], True),
+])
+def test_domains_in_the_private_file_count_and_flag_in_the_public_log(caplog, urls, cited):
+    FakeGpt.urls = urls
+    with caplog.at_level(logging.INFO, logger="fall26"):
+        _, files = _run(_bot(_shadow()), [QUESTIONS[0]])
+    entry = files["binary"]["gpt_shadow"]
+    domains = ["bls.gov", "metaculus.com"] if cited else ["bls.gov", "reuters.com"]
+    assert entry["domains"] == domains and entry["domains_count"] == 2 and entry["metaculus_cited"] is cited
+    assert "secret text" not in str(entry) and not any("/" in d for d in entry["domains"])  # domains only
+    [line] = [r.getMessage() for r in caplog.records if r.name == "fall26" and "GPT shadow saved" in r.getMessage()]
+    assert line == f"Question 1: GPT shadow saved, $0.0700, domains 2, metaculus cited: {'yes' if cited else 'no'}"
+    assert not any(d in line for d in domains)
+
+
+def test_scoreboard_scores_the_gpt_shadow_with_and_without_metaculus():
+    import scoreboard
+
+    def files(post, cited):
+        extra = {"gpt_shadow": {"status": "saved"}, "shadow": {gpt.VARIANT: 0.8}}
+        if cited is not None:
+            extra["gpt_shadow"]["metaculus_cited"] = cited
+        return {f"q/{post}.json": {"question": {"id_of_post": post, "question_type": "binary"}, "final_forecast": 0.6},
+                f"q/{post}_shadows.json": extra}
+
+    every = {**files(1, False), **files(2, True), **files(3, None)}
+    records = scoreboard.merge_shadow_files(every)
+    resolution = {1: "yes", 2: "yes", 3: "yes"}.get
+    report = scoreboard.report_markdown(scoreboard.score_records(records, resolution))
+    assert f"| binary | {gpt.VARIANT} | 3 |" in report
+    assert f"| binary | {scoreboard.GPT_SHADOW_NO_METACULUS} | 1 |" in report  # cited and unknown left out
+    names = [m for row in scoreboard.score_models(records, resolution) for m, _, _ in row["models"]]
+    assert names.count(scoreboard.GPT_SHADOW_NAME) == 3 and names.count(scoreboard.GPT_SHADOW_NAME_NO_METACULUS) == 1
 
 
 # ---------------------------------------------------------------- ledger saved twice (22 Oct Test Bot 39791878519)
