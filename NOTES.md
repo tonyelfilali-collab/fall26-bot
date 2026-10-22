@@ -636,7 +636,11 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   It sees each forecaster's number plus a two-line reason and answers "Probability: ZZ%". Shadow
   `referee` = mean of its answer and the submitted forecast, kept between the lowest and highest
   finished forecast; saved in `<log>_shadows.json` (`shadow.referee` + `referee` = model, status,
-  seconds, cost), never in the question's log; the Scoreboard merges it in. Public log: `Question N: referee <status>, $cost` only.
+  seconds, cost, reason), never in the question's log; the Scoreboard merges it in. Public log: `Question N: referee <status>, $cost` only.
+  Every binary question (switch on) gets that record, even with no call: `referee.reason` = `ran` (a call was made:
+  saved / no answer / timed out / failed), `skipped: forecasts agree`, `skipped: fewer than 2`, `skipped: time`
+  (minute 45+) or `skipped: Claude off/cap` (Claude off/blocked, or `refused (cap)` before any request); a skip
+  is `{"status": "skipped", "reason": ...}` (22 Oct).
 - **Scoring:** see Scoreboard below. PLAN.md: the referee goes live only after ≥80 resolved
   binary questions and only if it beats the median.
 

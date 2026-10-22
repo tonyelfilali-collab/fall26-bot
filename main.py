@@ -109,7 +109,13 @@ from distributions import (
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
 from shadow import (
+    REFEREE_AGREE,
+    REFEREE_CLAUDE,
     REFEREE_ENABLED,
+    REFEREE_FEWER,
+    REFEREE_MIN_FORECASTS,
+    REFEREE_RAN,
+    REFEREE_TIME,
     REFEREE_TIMEOUT_SECONDS,
     WINDOW_BLEND,
     combine_with_shadow,
@@ -1163,6 +1169,11 @@ class FallBot2026(ForecastBot):
                 for f in record["forecasts"] if f.get("status") == "ok"
             ]
             if not referee_needed([p for p, _ in finished]):
+                # Not needed: no call, but the shadows file still says why (private).
+                reason = REFEREE_FEWER if len(finished) < REFEREE_MIN_FORECASTS else REFEREE_AGREE
+                self.__dict__.setdefault("_pending_referees", []).append(
+                    {"question": question, "record": record, "started": started, "skipped": reason}
+                )
                 return
             item = {
                 "question": question, "record": record, "started": started, "finished": finished,
@@ -1182,6 +1193,9 @@ class FallBot2026(ForecastBot):
         waits for the '<log>_shadows.json' file; the public log gets the status
         and cost only."""
         question = item["question"]
+        if "skipped" in item:  # not needed (_referee_later): only recorded, no call, no public log
+            self._referee_skipped(question, item["skipped"])
+            return
         # It runs outside the question's own task: set the question's budget context.
         replay_question.set(question)
         current_question_key.set(item["key"])
@@ -1193,10 +1207,12 @@ class FallBot2026(ForecastBot):
             seconds = shadow_seconds(elapsed, REFEREE_TIMEOUT_SECONDS)
             if seconds <= 0:
                 logger.info(f"Question {question.id_of_post}: referee skipped (run at minute {int(elapsed // 60)})")
+                self._referee_skipped(question, REFEREE_TIME)
                 return
             llm = self._referee_llm()
             if llm is None:
                 logger.info(f"Question {question.id_of_post}: referee skipped (Claude off)")
+                self._referee_skipped(question, REFEREE_CLAUDE)
                 return
         except Exception as e:
             logger.warning(f"Question {question.id_of_post}: referee shadow failed ({type(e).__name__})")
@@ -1217,11 +1233,17 @@ class FallBot2026(ForecastBot):
             status = f"failed ({type(e).__name__})"
         cost = budget.question_spent(key) - before
         result = {"model": str(getattr(llm, "model", "")), "status": status,
-                  "seconds": round(time.monotonic() - started, 1), "cost": round(cost, 6)}
+                  "seconds": round(time.monotonic() - started, 1), "cost": round(cost, 6),
+                  # A cap refusal comes before any request: no call was made.
+                  "reason": REFEREE_CLAUDE if status == "refused (cap)" else REFEREE_RAN}
         if value is not None:
             result["value"] = value
         self.__dict__.setdefault("_referee_results", {})[id(question)] = result
         logger.info(f"Question {question.id_of_post}: referee {status}, ${cost:.4f}")
+
+    def _referee_skipped(self, question: MetaculusQuestion, reason: str) -> None:
+        """No referee call: why, for the question's '<log>_shadows.json' only."""
+        self.__dict__.setdefault("_referee_results", {})[id(question)] = {"status": "skipped", "reason": reason}
 
     def _shadow_later(self, question: MetaculusQuestion, record: dict, started: datetime) -> None:
         """Run timing: the shadow forecast waits for the end of the run."""

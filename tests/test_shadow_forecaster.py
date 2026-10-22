@@ -182,6 +182,9 @@ def test_shadows_skipped_after_minute_45(caplog, monkeypatch):
     bot.run_started = time.monotonic() - 46 * 60  # the run "started" 46 minutes ago
     with caplog.at_level("INFO", logger="fall26"):
         _run(bot)
-    assert not [p for p in bot.question_log.saved if p.endswith("_shadows.json")]
-    assert len(bot.question_log.saved) == 4
+    # No shadow forecaster; only the binary question's referee record (why it was skipped).
+    extras = [p for p in bot.question_log.saved if p.endswith("_shadows.json")]
+    assert len(extras) == 1 and "shadow_model" not in bot.question_log.files[extras[0]]
+    assert bot.question_log.files[extras[0]]["referee"]["status"] == "skipped"
+    assert len(bot.question_log.saved) == 5
     assert "shadows skipped: time" in caplog.text

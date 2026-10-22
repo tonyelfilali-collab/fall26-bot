@@ -25,7 +25,9 @@ Zero-cost variants (no model call, computed from the forecasts already made):
   high, the Claude budget, one try, no backups) sees each forecaster's number
   and a two-line reason and gives its own; candidate = mean of it and the
   submitted forecast, kept between the lowest and highest forecast, saved in
-  '<log>_shadows.json'. Claude off: no referee.
+  '<log>_shadows.json'. Claude off: no referee. Every binary question's
+  shadows file says why ("referee": {"status", "reason"}): "ran", or
+  "skipped: forecasts agree" / "fewer than 2" / "time" / "Claude off/cap".
 """
 from __future__ import annotations
 
@@ -54,6 +56,12 @@ REFEREE_ENABLED = True  # switched on (Tony's pre-approval, 22 Oct; a shadow, ne
 REFEREE_MIN_FORECASTS = 2
 REFEREE_MIN_SPREAD = 0.15  # max - min must be over this (15 percentage points)
 REFEREE_TIMEOUT_SECONDS = 240  # then cancelled (charged as any Claude timeout)
+# The private '<log>_shadows.json' always says what the referee did ("referee" -> "reason").
+REFEREE_RAN = "ran"
+REFEREE_AGREE = "skipped: forecasts agree"
+REFEREE_FEWER = "skipped: fewer than 2"
+REFEREE_TIME = "skipped: time"
+REFEREE_CLAUDE = "skipped: Claude off/cap"
 
 
 def geometric_mean_of_odds(forecasts: list[float]) -> float:

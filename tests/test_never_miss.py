@@ -84,7 +84,7 @@ def test_quick_forecast_when_every_planned_forecast_fails(dummy, monkeypatch):  
     [report] = asyncio.run(bot.forecast_questions([_question()], return_exceptions=True))
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.6)
-    [(path, record)] = bot.question_log.records
+    [(path, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     kinds = [(f["kind"], f["status"]) for f in record["forecasts"]]
     assert kinds.count(("planned", "failed")) == 3 and ("quick", "ok") in kinds
 
@@ -106,7 +106,7 @@ def test_quick_forecast_retries_after_overload(dummy, monkeypatch):  # noqa: F81
     [report] = asyncio.run(bot.forecast_questions([_question()], return_exceptions=True))
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.7)
-    [(_, record)] = bot.question_log.records
+    [(_, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     assert [f["status"] for f in record["forecasts"] if f["kind"] == "quick"] == ["failed", "ok"]
 
 
@@ -120,7 +120,7 @@ def test_slow_forecasts_are_cut_off_and_the_finished_ones_submitted(dummy, monke
     [report] = asyncio.run(bot.forecast_questions([_question()], return_exceptions=True))
     assert not isinstance(report, BaseException), report
     assert report.prediction == pytest.approx(0.325)  # median of the two that finished
-    [(_, record)] = bot.question_log.records
+    [(_, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     assert sorted(f["status"] for f in record["forecasts"]) == ["failed", "ok", "ok"]
 
 
@@ -129,7 +129,7 @@ def test_question_record_has_everything(dummy, monkeypatch):  # noqa: F811
     bot = _bot(pool, None)
     monkeypatch.setattr(main.FallBot2026, "_binary_prompt_to_forecast", lambda self, q, p: _answer(self, 0.5))
     asyncio.run(bot.forecast_questions([_question()], return_exceptions=True))
-    [(path, record)] = bot.question_log.records
+    [(path, record)] = [r for r in bot.question_log.records if not r[0].endswith("_shadows.json")]
     assert path.startswith("questions/test_questions/") and "/5_" in path
     assert record["question"]["id_of_post"] == 5
     assert record["research"]["fetched_at"] and "text" in record["research"]

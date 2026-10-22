@@ -181,6 +181,7 @@ def test_disagree_calls_opus_and_saves_in_the_shadows_file(monkeypatch, on, capl
     # clip(mean(90%, 50%), 30%, 70%) = 70%, in '<log>_shadows.json', not in the question's log
     assert saved["log"] == LOG and saved["shadow"] == {"referee": pytest.approx(0.7)}
     assert saved["referee"]["status"] == "saved" and saved["referee"]["cost"] > 0 and "shadow_model" not in saved
+    assert saved["referee"]["reason"] == "ran" and saved["referee"]["model"].endswith("claude-opus-5-5")
     assert "shadow" not in record and "referee" not in record
     [call] = claude.questions["8"]["calls"]  # in the Claude ledger like any Claude call, under the question's key
     assert call["model"] == OPUS_55 and call["ok"] and call["charged"] > 0
@@ -193,11 +194,19 @@ def test_disagree_calls_opus_and_saves_in_the_shadows_file(monkeypatch, on, capl
     assert "Question 8: referee saved, $" in public and "70" not in public.replace("$", "")
 
 
-@pytest.mark.parametrize("probs", [(0.3, 0.4, 0.42), (0.3,), ()])
-def test_agree_or_too_few_forecasts_no_call(monkeypatch, on, probs):
+@pytest.mark.parametrize("probs, reason", [
+    ((0.3, 0.4, 0.42), "skipped: forecasts agree"), ((0.3, 0.45), "skipped: forecasts agree"),
+    ((0.3,), "skipped: fewer than 2"), ((), "skipped: fewer than 2"),
+])
+def test_agree_or_too_few_forecasts_no_call(monkeypatch, on, probs, reason, caplog):
     fake = Fake()
-    record, claude, saved = _direct(monkeypatch, fake, _record(*probs))
-    assert fake.requests == [] and saved is None and not claude.questions
+    with caplog.at_level(logging.INFO):
+        record, claude, saved = _direct(monkeypatch, fake, _record(*probs))
+    assert fake.requests == [] and not claude.questions
+    # Only why, in the private shadows file; nothing new in the public log.
+    assert saved["referee"] == {"status": "skipped", "reason": reason} and saved["shadow"] == {}
+    assert "shadow_model" not in saved and "referee" not in record
+    assert not [r for r in caplog.records if r.name == "fall26" and "referee" in r.getMessage()]
 
 
 def test_failed_forecasts_do_not_count(monkeypatch, on):
@@ -205,16 +214,17 @@ def test_failed_forecasts_do_not_count(monkeypatch, on):
     record["forecasts"].append({"status": "failed"})
     fake = Fake()
     _, _, saved = _direct(monkeypatch, fake, record)
-    assert fake.requests == [] and saved is None
+    assert fake.requests == [] and saved["referee"] == {"status": "skipped", "reason": "skipped: fewer than 2"}
 
 
 def test_claude_off_no_referee(monkeypatch, on):
     fake = Fake()
+    off = {"status": "skipped", "reason": "skipped: Claude off/cap"}
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), planner=_planner(None))
-    assert fake.requests == [] and saved is None
+    assert fake.requests == [] and saved["referee"] == off and saved["shadow"] == {}
     # No planner at all (today's setup): none either.
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), planner=None)
-    assert fake.requests == [] and saved is None
+    assert fake.requests == [] and saved["referee"] == off
 
 
 def test_credit_error_earlier_no_referee(monkeypatch, on):
@@ -223,13 +233,13 @@ def test_credit_error_earlier_no_referee(monkeypatch, on):
     claude.mark_credit_error()
     fake = Fake()
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), claude=claude, planner=planner)
-    assert fake.requests == [] and saved is None
+    assert fake.requests == [] and saved["referee"] == {"status": "skipped", "reason": "skipped: Claude off/cap"}
 
 
 def test_credit_error_on_the_referee_is_never_retried(monkeypatch, on):
     fake = Fake(CreditError("Your credit balance is too low to access the Anthropic API."))
     _, claude, saved = _direct(monkeypatch, fake, _record(0.3, 0.7))
-    assert len(fake.requests) == 1 and "referee" not in saved["shadow"]
+    assert len(fake.requests) == 1 and "referee" not in saved["shadow"] and saved["referee"]["reason"] == "ran"
     assert claude.blocked and claude.credit_error_this_cycle() and claude.day_spent() == 0.0
 
 
@@ -238,6 +248,7 @@ def test_timeout_cancels_saves_no_value_and_is_charged(monkeypatch, on, caplog):
     with caplog.at_level(logging.INFO):
         _, claude, saved = _direct(monkeypatch, Fake(delay=5), _record(0.3, 0.7))
     assert saved["referee"]["status"] == "timed out" and "referee" not in saved["shadow"]
+    assert saved["referee"]["reason"] == "ran"
     assert claude.day_spent() == pytest.approx(frontier.claude_reserve(OPUS_55))  # the worst case, as any Claude timeout
     assert claude.in_flight.get("8", 0.0) == pytest.approx(0.0)
     assert any("referee timed out" in r.getMessage() for r in caplog.records)
@@ -248,7 +259,8 @@ def test_at_or_after_minute_45_skipped(monkeypatch, on, minute, caplog):
     fake = Fake()
     with caplog.at_level(logging.INFO):
         _, claude, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), elapsed=minute * 60)
-    assert fake.requests == [] and saved is None and not claude.questions
+    assert fake.requests == [] and not claude.questions
+    assert saved["referee"] == {"status": "skipped", "reason": "skipped: time"} and saved["shadow"] == {}
     assert "Question 8: referee skipped (run at minute" in caplog.text
 
 
@@ -273,11 +285,12 @@ def test_minibench_follows_the_9_dollar_rule_at_the_end_of_the_run(monkeypatch, 
     claude = _budget(day=8.80)  # + the $0.36 reservation is over $9
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), claude=claude, seasonal=False)
     assert fake.requests == [] and saved["referee"]["status"] == "refused (cap)" and "referee" not in saved["shadow"]
+    assert saved["referee"]["reason"] == "skipped: Claude off/cap"
     assert claude.day_spent() == pytest.approx(8.80)
     # The same day, a seasonal question (ended in the MiniBench context) still gets its referee.
     fake = Fake()
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), claude=claude, seasonal=True)
-    assert len(fake.requests) == 1 and "referee" in saved["shadow"]
+    assert len(fake.requests) == 1 and "referee" in saved["shadow"] and saved["referee"]["reason"] == "ran"
 
 
 def test_unknown_tournament_fails_closed_to_minibench(monkeypatch, on):
@@ -299,6 +312,7 @@ def test_question_cap_refuses_the_referee(monkeypatch, on):
     fake = Fake()
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), claude=claude, seasonal=False)
     assert fake.requests == [] and "referee" not in saved["shadow"]
+    assert saved["referee"]["status"] == "refused (cap)" and saved["referee"]["reason"] == "skipped: Claude off/cap"
 
 
 def test_the_question_log_is_saved_before_any_referee_call(monkeypatch, on):
@@ -371,6 +385,13 @@ def test_scoreboard_merges_the_referee_into_its_log():
         shadows_path(LOG): {"referee": {"status": "saved"}, "shadow": {"referee": 0.6}},
     })
     assert merged == [{"question": {"id_of_post": 8}, "shadow": {"mean": 0.5, "referee": 0.6}, "referee": {"status": "saved"}}]
+    # A skip-only shadows file: the reason is merged in, no referee forecast to score.
+    skip = {"status": "skipped", "reason": "skipped: forecasts agree"}
+    merged = scoreboard.merge_shadow_files({
+        LOG: {"question": {"id_of_post": 8}, "shadow": {"mean": 0.5}},
+        shadows_path(LOG): {"referee": skip, "shadow": {}},
+    })
+    assert merged == [{"question": {"id_of_post": 8}, "shadow": {"mean": 0.5}, "referee": skip}]
 
 
 # ---------------------------------------------------------------- the submitted forecast
