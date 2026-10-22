@@ -616,7 +616,14 @@ because it writes the spend ledger).
   searches; do not use metaculus.com". OpenRouter documents NO hard cap on native OpenAI searches
   (22 Oct: the server tool's `max_uses` goes to Anthropic only; `max_results` is ignored by native
   search; `exclude_domains` is ignored for OpenAI, so metaculus.com can't be blocked). The reported
-  count (`usage.server_tool_use.web_search_requests`) is saved per call.
+  count (`usage.server_tool_use.web_search_requests`) is saved per call. The first real Test Bot
+  (39791878519, 22 Oct) got no `server_tool_use` (searches None) but the cost included the search fees;
+  then `searches_estimated` = round((cost - token cost) / $0.01) goes in the shadows file (private).
+- **Ledger kept safe (22 Oct).** In that test, `gpt_shadow_days` was lost one minute later: the next
+  live run (main, older code) loaded `spend.json` and saved it back with only the fields it knew. Now
+  every SpendGuard saves fields it doesn't know back unchanged, and each GPT shadow call carries its
+  `day`, so the GPT shadow day total is max(`gpt_shadow_days`, sum of that day's GPT shadow calls in
+  `questions`): a writer that drops the field can't reset the caps.
 - **Money** (OpenRouter, the SAME ledger `status/spend.json`, so key usage = `key_day_start` + `days`
   still holds; GPT shadow $ also in `gpt_shadow_days` and per question `gpt_shadow`, never in `spent`;
   the paid-Flash day caps count `days` minus `gpt_shadow_days`). Reservation per call $0.25 = 60k input

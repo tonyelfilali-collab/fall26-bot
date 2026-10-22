@@ -1397,6 +1397,9 @@ class FallBot2026(ForecastBot):
             "output_tokens": numbers.get("output_tokens"),
             "reading": record.pop("gpt_shadow_reading", []),
         }
+        if numbers.get("searches_estimated") is not None:
+            # OpenRouter didn't report the searches: (cost - token cost) / $0.01 (private file only).
+            result["searches_estimated"] = numbers["searches_estimated"]
         if value is not None:
             result["value"] = to_jsonable(value)  # the private shadows file only
         self._gpt_shadow_result(question, result)

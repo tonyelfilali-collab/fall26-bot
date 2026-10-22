@@ -60,6 +60,8 @@ ESTIMATE_PROMPT_TOKENS = 7500
 ESTIMATE_OUTPUT_TOKENS = 8000  # ASSUMED, as in the 4b cost table
 # Rejected before any generation: never billed.
 PRE_GENERATION_REJECTIONS = (400, 401, 402, 403, 404, 429)
+# The spend ledger fields SpendGuard itself reads and writes (others are kept as they are).
+LEDGER_FIELDS = ("days", "questions", "key_day_start", "lean_days", "alerts", "gpt_shadow_days")
 
 Notify = Callable[[str, str], Any]  # (title, body)
 
@@ -201,6 +203,10 @@ class SpendGuard:
         # sees every dollar in `days`; the paid-Flash day caps leave this share out.
         self.gpt_shadow_days: dict[str, float] = {k: float(v) for k, v in data.get("gpt_shadow_days", {}).items()}
         self.gpt_shadow_in_flight: dict[str, float] = {}  # question -> its running GPT shadow's reservation
+        # Fields this code doesn't know (e.g. written by newer code) are saved back
+        # unchanged: an older or other writer never drops them (22 Oct: a live run
+        # on older code rewrote the ledger without gpt_shadow_days).
+        self.other_fields: dict = {k: v for k, v in data.items() if k not in LEDGER_FIELDS}
         self.caps: dict[str, float] = {}
         self.in_flight: dict[str, float] = {}
         self.timed_out: set[tuple[str, str]] = set()
@@ -228,7 +234,17 @@ class SpendGuard:
         return self.days.get(day or utc_day(), 0.0)
 
     def gpt_shadow_day_spent(self, day: str | None = None) -> float:
-        return self.gpt_shadow_days.get(day or utc_day(), 0.0)
+        """The GPT shadow's spend on a UTC day: the larger of its day total and
+        the sum of its call entries of that day (kept inside `questions`, which
+        every writer saves as it is), so a writer that dropped `gpt_shadow_days`
+        can't reset the caps."""
+        day = day or utc_day()
+        from_calls = sum(
+            float(call.get("charged", 0.0))
+            for entry in self.questions.values() for call in entry.get("calls") or []
+            if call.get("shadow") == "gpt" and call.get("day") == day
+        )
+        return max(self.gpt_shadow_days.get(day, 0.0), from_calls)
 
     def gpt_shadow_question_spent(self, question: str) -> float:
         return float(self.questions.get(question, {}).get("gpt_shadow", 0.0))
@@ -334,6 +350,7 @@ class SpendGuard:
     def snapshot(self) -> dict:
         keep_from = (datetime.now(timezone.utc) - timedelta(days=KEEP_DAYS)).date().isoformat()
         return {
+            **self.other_fields,
             "days": {d: round(v, 6) for d, v in sorted(self.days.items()) if d >= keep_from},
             "questions": {q: e for q, e in self.questions.items() if e.get("last", keep_from) >= keep_from},
             "key_day_start": {d: v for d, v in self.key_day_start.items() if d >= keep_from},

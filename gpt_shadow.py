@@ -120,6 +120,16 @@ def usage_numbers(usage: Any) -> dict:
     return {k: (v if isinstance(v, (int, float)) and not isinstance(v, bool) else None) for k, v in out.items()}
 
 
+def estimate_searches(cost: float | None, input_tokens: int | None, output_tokens: int | None) -> int | None:
+    """When OpenRouter doesn't report the searches (22 Oct Test Bot: usage had no
+    server_tool_use): round((cost - token cost) / $0.01), at least 0; None if a
+    number is missing. Private log only."""
+    if not cost or cost <= 0 or input_tokens is None or output_tokens is None:
+        return None
+    tokens = (input_tokens * PRICE_INPUT + output_tokens * PRICE_OUTPUT) / 1_000_000
+    return max(0, round((cost - tokens) / SEARCH_PRICE))
+
+
 @dataclass
 class Reservation:
     """One question's reserved worst case, settled once (charged) or released (no call made)."""
@@ -241,7 +251,8 @@ class GptShadow:
         entry["gpt_shadow"] = float(entry.get("gpt_shadow", 0.0)) + charge
         entry["last"] = day
         call = {
-            "model": LEDGER_MODEL, "shadow": "gpt", "ok": ok, "charged": round(charge, 6),
+            # "day": the GPT shadow's day total can be rebuilt from its calls (spend.gpt_shadow_day_spent).
+            "model": LEDGER_MODEL, "shadow": "gpt", "day": day, "ok": ok, "charged": round(charge, 6),
             "cost_known": bool(ok and cost), "output_tokens": output_tokens, "input_tokens": input_tokens,
             "searches": searches, "reserve": reservation.amount,
         }
@@ -339,4 +350,6 @@ class GptShadowLlm(GeneralLlm):
                 ok=response is not None, cost=cost, error=failure, seconds=time.monotonic() - started,
                 searches=numbers["searches"], input_tokens=numbers["input_tokens"], output_tokens=numbers["output_tokens"],
             )
+            if numbers["searches"] is None and response is not None:
+                numbers["searches_estimated"] = estimate_searches(cost, numbers["input_tokens"], numbers["output_tokens"])
             self.numbers = numbers

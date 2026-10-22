@@ -49,6 +49,8 @@ class FakeGpt(gpt.GptShadowLlm):
             text = "No numbers from me."
         cost = 0.0 if FakeGpt.mode == "unknown" else FakeGpt.cost
         usage = {"prompt_tokens": 9000, "completion_tokens": 3000, "cost": cost, "server_tool_use": {"web_search_requests": 2}}
+        if FakeGpt.mode == "no_tool_use":  # as in the 22 Oct Test Bot: no server_tool_use in the usage
+            usage.pop("server_tool_use")
         return TextTokenCostResponse(data=text, prompt_tokens_used=9000, completion_tokens_used=3000,
                                      total_tokens_used=12000, model=self.model, cost=cost), usage
 
@@ -406,3 +408,72 @@ def test_one_call_per_llm_and_release_without_a_call():
     asyncio.run(twice())
     assert len(FakeGpt.requests) == 1 and len(shadow.spend.questions["s"]["calls"]) == 1
     assert shadows_path("questions/tournament/x/1.json").endswith("_shadows.json")
+
+
+# ---------------------------------------------------------------- ledger saved twice (22 Oct Test Bot 39791878519)
+
+
+class JsonStore(MemoryStore):
+    """Like the data repo: each load is a fresh copy of what was last saved."""
+
+    def load(self):
+        import json
+
+        return None if self.data is None else json.loads(json.dumps(self.data))
+
+
+def _run_with_store(store):
+    spend = SpendGuard(store)
+    _run(_bot(_shadow(spend)), [QUESTIONS[0], QUESTIONS[3]])  # two seasonal GPT shadows, $0.07 each
+    spend.save()
+    return spend
+
+
+def test_two_saves_at_the_end_of_a_run_keep_the_gpt_shadow_days():
+    store = JsonStore({"days": {}, "future_field": {"x": 1}})
+    _run_with_store(store)
+    assert store.data["gpt_shadow_days"] == {utc_day(): pytest.approx(0.14)}
+    # A second writer (another SpendGuard: the planner's, or the next run) loads and saves again.
+    second = SpendGuard(store)
+    second.days[utc_day()] += 0.03  # e.g. a paid Flash call
+    second.save()
+    assert store.data["gpt_shadow_days"] == {utc_day(): pytest.approx(0.14)}
+    assert store.data["future_field"] == {"x": 1}  # fields it doesn't know are kept too
+    again = SpendGuard(store)
+    assert again.gpt_shadow_day_spent() == pytest.approx(0.14) and again.flash_day_spent() == pytest.approx(0.03)
+
+
+def test_a_writer_that_drops_gpt_shadow_days_cannot_reset_the_caps():
+    """What happened on 22 Oct: a live run on older code (no gpt_shadow_days)
+    rewrote the ledger right after the Test Bot. Its `questions` (with the GPT
+    shadow calls and their day) are saved as they are, so the caps still hold."""
+    store = JsonStore({"days": {}})
+    _run_with_store(store)
+    old = store.load()
+    del old["gpt_shadow_days"]  # the older writer's snapshot
+    store.save(old)
+    fresh = SpendGuard(store)
+    assert "gpt_shadow_days" not in store.data
+    assert fresh.gpt_shadow_day_spent() == pytest.approx(0.14)
+    assert fresh.flash_day_spent() == pytest.approx(0.0) and fresh.day_spent() == pytest.approx(0.14)
+    fresh.gpt_shadow_days.clear()
+    fresh.questions["x"] = {"spent": 0.0, "calls": [{"shadow": "gpt", "day": utc_day(), "charged": 1.20}]}
+    assert _shadow(fresh).reserve("y", True) == gpt.DAY_CAP  # 1.34 + 0.25 > 1.50, from the calls alone
+    assert _shadow(fresh).reserve("y", False) == gpt.DAY_CAP
+
+
+def test_searches_estimated_when_openrouter_does_not_report_them():
+    # (0.07 - (9000 x $2 + 3000 x $10) / 1M) / 0.01 = (0.07 - 0.048) / 0.01 = 2.2 -> 2
+    assert gpt.estimate_searches(0.07, 9000, 3000) == 2
+    assert gpt.estimate_searches(0.04, 9000, 3000) == 0  # never negative
+    assert gpt.estimate_searches(None, 9000, 3000) is None and gpt.estimate_searches(0.07, None, 3000) is None
+    FakeGpt.mode = "no_tool_use"
+    spend = _spend()
+    _, files = _run(_bot(_shadow(spend)), [QUESTIONS[0]])
+    entry = files["binary"]["gpt_shadow"]
+    assert entry["searches"] is None and entry["searches_estimated"] == 2
+    [call] = spend.questions["1"]["calls"]
+    assert call["searches"] is None and "searches_estimated" not in call  # private shadows file only
+    FakeGpt.mode = "ok"
+    _, files = _run(_bot(_shadow()), [QUESTIONS[0]])
+    assert files["binary"]["gpt_shadow"]["searches"] == 2 and "searches_estimated" not in files["binary"]["gpt_shadow"]
