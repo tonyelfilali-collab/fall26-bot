@@ -276,6 +276,12 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   total vs the sum of call charges); the weekly Scoreboard has the same over the ledger's 7 days.
   The ledger's calls have no time: "last 24 h" there = questions last charged UTC today or yesterday.
   Test Bot keys (`-test-`) are left out (the totals line counts them: the days include them).
+  **Since 22 Oct** the report also lists the Claude ledger $ per UTC day (last 7 days, ledger `days`, every
+  key) and the cycle total, to compare with the Anthropic Console; and **on Mondays (UTC)** our standing in
+  Fall (33121) and the current MiniBench round (`standings.py`: rank, score, 95% range or "n/a", change
+  since the last stored Monday; public leaderboard `leaderboards/project/<id>/`, our bot Quillfeather-Vex,
+  user id 309271). Each Monday's values are kept in fall26-data `status/standings.json` (keyed by UTC date).
+  Never red: if nothing can be read the report says "standings: unavailable".
 - 07:00 UK is 23:00 Pacific, the end of Google's quota day, so the quota warning will be common.
 - Test Bot has a "fail planned forecasts" option to prove the quick forecast.
 - **Test Bot never uses the live Gemini quota:** by default it runs the `free` lineup (OpenRouter

@@ -210,6 +210,33 @@ def claude_report(ledger: dict, days: set[str] | None, kinds: dict[str, str]) ->
     return lines
 
 
+LEDGER_DAYS_SHOWN = 7
+
+
+def claude_days_lines(ledger: dict, today: date, cycle: date | None, budget: float,
+                      shown: int = LEDGER_DAYS_SHOWN) -> list[str]:
+    """The ledger's Claude $ per UTC day (the last `shown` days, today
+    included) and the cycle total, to compare with the Anthropic Console.
+    Dollars only (every key, Test Bot included, as the Console counts it)."""
+    days = {str(k): float(v) for k, v in (ledger.get("days") or {}).items()}
+    lines = ["| UTC day | Claude $ |", "|---|---|"]
+    for back in range(shown - 1, -1, -1):
+        day = (today - timedelta(days=back)).isoformat()
+        lines.append(f"| {day} | ${days.get(day, 0.0):.4f} |")
+    lines.append(f"| last {shown} days | ${sum(days.get((today - timedelta(days=b)).isoformat(), 0.0) for b in range(shown)):.4f} |")
+    lines.append("")
+    if cycle is None:
+        lines.append("Cycle total: n/a (billing cycle reset date not set)")
+        return lines
+    total = sum(v for d, v in days.items() if cycle.isoformat() <= d <= today.isoformat())
+    line = f"Cycle total (since {cycle.isoformat()}): ${total:.4f} of ${budget:.2f}"
+    saved = (ledger.get("cycles") or {}).get(cycle.isoformat())
+    if saved is not None and abs(float(saved) - total) > TOTALS_TOLERANCE:
+        line += f" (ledger cycle field: ${float(saved):.4f})"
+    lines.append(line)
+    return lines
+
+
 # ---------------------------------------------------------------- data (fall26-data)
 
 

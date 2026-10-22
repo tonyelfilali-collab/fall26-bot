@@ -20,6 +20,7 @@ on:
     paths:
       - health_check.py
       - claude_health.py
+      - standings.py
       - .github/workflows/health.yml
 
 permissions:
