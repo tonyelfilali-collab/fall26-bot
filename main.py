@@ -144,9 +144,12 @@ from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from frontier import FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
-from spend import SpendCapReached, SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
+from spend import SPEND_PATH, SpendCapReached, SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, window_baseline
+import bot_config
+import gpt_shadow as gpt
+from gpt_shadow import GptShadow
 from question_log import QuestionLogWriter, question_snapshot, questions_per_day, record_path, shadows_path, to_jsonable, utc_now
 
 dotenv.load_dotenv()
@@ -432,7 +435,9 @@ _question_seasonal: contextvars.ContextVar = contextvars.ContextVar("question_se
 _research_deadline: contextvars.ContextVar = contextvars.ContextVar("research_deadline", default=None)
 # True inside the shadow forecaster's own task (Build 1b): its answer is only
 # read directly (no parser call) and its reading is logged apart from live.
+# The GPT shadow's task sets it to "gpt_shadow" (its reading is kept apart too).
 _in_shadow: contextvars.ContextVar = contextvars.ContextVar("in_shadow", default=False)
+GPT_SHADOW_SLOT = "gpt_shadow"
 # Build 2c: how long research waits for the official data fetch (it runs
 # beside research and is usually done first).
 HARD_DATA_WAIT_SECONDS = 45
@@ -561,6 +566,8 @@ class FallBot2026(ForecastBot):
     keep_records = False
     # Build 1b: the shadow forecaster's LLM (never submitted), or None.
     shadow_llm = None
+    # GPT shadow (gpt_shadow.py, never submitted): this run's GptShadow, or None (switched off).
+    gpt_shadow: GptShadow | None = None
     # Test switch (replay-credits --retry-run): the submission fails, so the
     # question is retried with its finished forecasts saved.
     fail_submission = False
@@ -1039,6 +1046,9 @@ class FallBot2026(ForecastBot):
         only in the public log; a reply that couldn't be read directly is kept
         in the question log (private fall26-data), to fix the reader."""
         record = self._record_for(question)
+        if _in_shadow.get() == GPT_SHADOW_SLOT:
+            record.setdefault("gpt_shadow_reading", []).append(how)
+            return
         if _in_shadow.get():
             record.setdefault("shadow_model", {}).setdefault("reading", []).append(how)
             return
@@ -1261,6 +1271,10 @@ class FallBot2026(ForecastBot):
             return
         elapsed = self._run_elapsed()
         seconds = shadow_seconds(elapsed, SHADOW_FORECAST_TIMEOUT_SECONDS)
+        # GPT shadow: every question's reservation decided now, seasonal first
+        # (MiniBench then sees the seasonal reservations in the day's total).
+        gpt_jobs = self._plan_gpt_shadows(pending, shadow_seconds(elapsed, gpt.TIMEOUT_SECONDS))
+        gpt_only = list(pending)
         if pending and seconds <= 0:
             for question, _, _ in pending:
                 self.__dict__.get("_shadow_research", {}).pop(id(question), None)
@@ -1270,8 +1284,14 @@ class FallBot2026(ForecastBot):
         results = await asyncio.gather(
             *[self._finish_shadow_forecast(question, record, seconds) for question, record, _ in pending],
             *[asyncio.create_task(self._referee_at_end(item)) for item in referees],
+            *[asyncio.create_task(self._gpt_shadow_at_end(*job)) for job in gpt_jobs],
             return_exceptions=True,
         )
+        for job, result in zip(gpt_jobs, results[len(pending) + len(referees):]):
+            if isinstance(result, BaseException):
+                job[3].release()  # never raised by _gpt_shadow_at_end, but be safe
+                logger.warning(f"Question {job[0].id_of_post}: GPT shadow failed ({type(result).__name__})")
+        results = results[: len(pending) + len(referees)]
         # One file per question: [question, record, started, the shadow forecaster finished].
         to_save: dict[int, list] = {}
         for (question, record, started), result in zip(pending, results):
@@ -1282,15 +1302,122 @@ class FallBot2026(ForecastBot):
             if isinstance(result, BaseException):
                 logger.warning(f"Question {item['question'].id_of_post}: referee shadow failed ({type(result).__name__})")
             to_save.setdefault(id(item["question"]), [item["question"], item["record"], item["started"], False])
+        # GPT shadow on: every question gets its entry (run or skipped). Off: the
+        # "switched off" entry rides along only in files saved anyway (no extra saves).
+        for question, record, started in gpt_only if self.gpt_shadow is not None else []:
+            to_save.setdefault(id(question), [question, record, started, False])
         for question, record, started, with_shadow in to_save.values():
             await self._save_shadows(question, record, started, with_shadow)
+
+    # ------------------------------------------------ GPT shadow (gpt_shadow.py, never submitted)
+
+    def _plan_gpt_shadows(self, pending: list, seconds: float) -> list[tuple]:
+        """Each pending question's GPT shadow: a reservation (a job to run) or
+        why not (saved at once in its shadows entry). Seasonal questions are
+        reserved first. Returns the jobs: (question, record, research, reservation, seconds)."""
+        jobs: list[tuple] = []
+        research_of = self.__dict__.get("_shadow_research", {})
+        # sorted() is stable: seasonal first, then the run's own order.
+        for question, record, _ in sorted(pending, key=lambda item: item[1].get("seasonal") is not True):
+            try:
+                research = research_of.get(id(question))
+                if self.gpt_shadow is None:
+                    reason = gpt.OFF
+                elif seconds <= 0:
+                    reason = gpt.TIME
+                elif research is None:
+                    reason = gpt.NO_RESEARCH
+                else:
+                    reserved = self.gpt_shadow.reserve(self._question_key(question), record.get("seasonal"))
+                    if not isinstance(reserved, str):
+                        jobs.append((question, record, research, reserved, seconds))
+                        continue
+                    reason = reserved
+            except Exception as e:
+                reason = f"failed ({type(e).__name__})"
+            self._gpt_shadow_result(question, {"model": gpt.LEDGER_MODEL, "status": reason, "cost": 0.0})
+        return jobs
+
+    def _gpt_shadow_result(self, question: MetaculusQuestion, result: dict) -> None:
+        """Kept for the question's '<log>_shadows.json'; the public log gets the status and cost only."""
+        self.__dict__.setdefault("_gpt_shadow_results", {})[id(question)] = result
+        if self.gpt_shadow is not None:
+            self.gpt_shadow.count(result["status"])
+            line = f"Question {question.id_of_post}: GPT shadow {result['status']}, ${result.get('cost', 0.0):.4f}"
+            if "domains_count" in result:  # the count and yes/no only, never the domains
+                line += f", domains {result['domains_count']}, metaculus cited: {'yes' if result['metaculus_cited'] else 'no'}"
+            logger.info(line)
+
+    def _hold_record(self, question: MetaculusQuestion, record: dict) -> None:
+        """The saved record is back in _question_records while a shadow notes
+        how its answer was read (the free shadow and the GPT shadow may overlap)."""
+        holds = self.__dict__.setdefault("_record_holds", {})
+        holds[id(question)] = holds.get(id(question), 0) + 1
+        self.__dict__.setdefault("_question_records", {})[id(question)] = record
+
+    def _drop_record(self, question: MetaculusQuestion) -> None:
+        holds = self.__dict__.setdefault("_record_holds", {})
+        holds[id(question)] = holds.get(id(question), 1) - 1
+        if holds[id(question)] <= 0:
+            holds.pop(id(question), None)
+            self.__dict__.setdefault("_question_records", {}).pop(id(question), None)
+
+    async def _gpt_shadow_task(self, question: MetaculusQuestion, research: str, llm: Any, timeout: float) -> Any:
+        _in_shadow.set(GPT_SHADOW_SLOT)
+        _planned_forecaster.set(llm)
+        replay_question.set(question)
+        current_question_key.set(self._question_key(question))
+        prediction = await asyncio.wait_for(self._forecast_by_type(question, research), timeout)
+        return prediction.prediction_value
+
+    async def _gpt_shadow_at_end(self, question: MetaculusQuestion, record: dict, research: str,
+                                 reservation: Any, seconds: float) -> None:
+        """One GPT shadow call in its own task: at most `seconds` (240 s, and
+        never past minute 47), then cancelled and charged its reservation."""
+        assert self.gpt_shadow is not None
+        llm, value, started = None, None, time.monotonic()
+        self._hold_record(question, record)
+        try:
+            llm = self.gpt_shadow.make_llm(reservation, seconds)
+            value = await asyncio.create_task(self._gpt_shadow_task(question, research, llm, seconds))
+            status = gpt.SAVED if value is not None else gpt.NO_ANSWER
+        except asyncio.TimeoutError:
+            status = gpt.TIMED_OUT
+        except SpendCapReached:
+            status = f"skipped: {self.gpt_shadow.off or 'stopped'}"
+        except NoValidForecast:
+            status = gpt.NO_ANSWER  # the reply couldn't be read directly (no parser call for a shadow)
+        except Exception as e:
+            status = f"failed ({type(e).__name__})"
+        finally:
+            reservation.release()  # no request was sent: nothing charged
+            self._drop_record(question)
+        numbers = getattr(llm, "numbers", {}) or {}
+        result = {
+            "model": gpt.LEDGER_MODEL, "status": status, "seconds": round(time.monotonic() - started, 1),
+            "cost": round(reservation.charged, 6), "reserve": reservation.amount,
+            "searches": numbers.get("searches"), "input_tokens": numbers.get("input_tokens"),
+            "output_tokens": numbers.get("output_tokens"),
+            "reading": record.pop("gpt_shadow_reading", []),
+        }
+        if "domains" in numbers:
+            # The cited URLs' domains only (never URLs or text), private file only.
+            result.update(domains=numbers["domains"], domains_count=numbers["domains_count"],
+                          metaculus_cited=numbers["metaculus_cited"])
+        if numbers.get("searches_estimated") is not None:
+            # OpenRouter didn't report the searches: (cost - token cost) / $0.01 (private file only).
+            result["searches_estimated"] = numbers["searches_estimated"]
+        if value is not None:
+            result["value"] = to_jsonable(value)  # the private shadows file only
+        self._gpt_shadow_result(question, result)
 
     async def _save_shadows(self, question, record: dict, started: datetime, with_shadow: bool = True) -> None:  # type: ignore[no-untyped-def]
         """The shadow forecaster's and the referee's results in their own file
         next to the log (the log itself is never rewritten)."""
         referee = self.__dict__.get("_referee_results", {}).pop(id(question), None)
+        gpt_result = self.__dict__.get("_gpt_shadow_results", {}).pop(id(question), None)
         with_shadow = with_shadow and "shadow_model" in record
-        if self.question_log is None or (not with_shadow and referee is None):
+        if self.question_log is None or (not with_shadow and referee is None and gpt_result is None):
             return
         path = record_path(self.run_mode, question, started)
         payload: dict = {
@@ -1306,6 +1433,13 @@ class FallBot2026(ForecastBot):
             payload["referee"] = referee
             if value is not None:
                 variants["referee"] = value
+        if gpt_result is not None:
+            # GPT shadow: model, status, seconds, cost, searches, tokens; its forecast as the "gpt-shadow" variant.
+            gpt_result = dict(gpt_result)
+            value = gpt_result.pop("value", None)
+            payload["gpt_shadow"] = gpt_result
+            if value is not None:
+                variants[gpt.VARIANT] = value
         payload["shadow"] = variants
         payload["saved_at"] = utc_now()
         await asyncio.to_thread(self.question_log.save, shadows_path(path), payload)
@@ -1564,9 +1698,23 @@ class FallBot2026(ForecastBot):
         """Keep the research for the shadow forecaster, which runs only AFTER
         the live forecast is submitted (or has failed), so its time limit
         never delays a real submission."""
-        if self.shadow_llm is None or _in_shadow.get():
+        # The free shadow forecaster and the GPT shadow (even switched off: its
+        # shadows entry then says so) both use the question's dossier.
+        if (self.shadow_llm is None and self.gpt_shadow is None) or _in_shadow.get():
             return
         self.__dict__.setdefault("_shadow_research", {}).setdefault(id(question), research)
+
+    def _forecast_by_type(self, question: MetaculusQuestion, research: str):  # type: ignore[no-untyped-def]
+        """The per-type forecast directly (the main forecasters' prompt and
+        reading): the library's _make_prediction needs the question's notepad,
+        gone once the live forecast is done. Discrete questions are numeric."""
+        if isinstance(question, BinaryQuestion):
+            return self._run_forecast_on_binary(question, research)
+        if isinstance(question, MultipleChoiceQuestion):
+            return self._run_forecast_on_multiple_choice(question, research)
+        if isinstance(question, NumericQuestion):
+            return self._run_forecast_on_numeric(question, research)
+        raise ValueError(f"no shadow forecast for {type(question).__name__}")
 
     async def _shadow_forecast(self, question: MetaculusQuestion, research: str, timeout: float) -> tuple:
         _in_shadow.set(True)
@@ -1576,17 +1724,7 @@ class FallBot2026(ForecastBot):
         current_question_key.set(self._question_key(question))
         started = time.monotonic()
         try:
-            # The per-type forecast directly: the library's _make_prediction
-            # needs the question's notepad, gone once the live forecast is done.
-            if isinstance(question, BinaryQuestion):
-                forecast = self._run_forecast_on_binary(question, research)
-            elif isinstance(question, MultipleChoiceQuestion):
-                forecast = self._run_forecast_on_multiple_choice(question, research)
-            elif isinstance(question, NumericQuestion):
-                forecast = self._run_forecast_on_numeric(question, research)
-            else:
-                raise ValueError(f"no shadow forecast for {type(question).__name__}")
-            prediction = await asyncio.wait_for(forecast, timeout)
+            prediction = await asyncio.wait_for(self._forecast_by_type(question, research), timeout)
             status, value = "ok", prediction.prediction_value
         except asyncio.TimeoutError:
             status, value = "timeout", None
@@ -1601,18 +1739,17 @@ class FallBot2026(ForecastBot):
         failure is only logged."""
         research = self.__dict__.get("_shadow_research", {}).pop(id(question), None)
         live = self.__dict__.get("_live_predictions", {}).pop(id(question), None)
-        if research is None:
+        if research is None or self.shadow_llm is None:  # (research kept for the GPT shadow only)
             return
         # The log is already saved: the record is back only while the shadow
         # notes how its answer was read.
-        records = self.__dict__.setdefault("_question_records", {})
-        records[id(question)] = record
+        self._hold_record(question, record)
         try:
             status, value, seconds = await asyncio.create_task(self._shadow_forecast(question, research, timeout))
         except Exception as e:  # never raised by _shadow_forecast, but be safe
             status, value, seconds = f"failed: {describe_exception(e)}"[:200], None, None
         finally:
-            records.pop(id(question), None)
+            self._drop_record(question)
         shadow = record.setdefault("shadow_model", {})
         shadow.update(model=getattr(self.shadow_llm, "model", str(self.shadow_llm)), status=status, seconds=seconds)
         stats = self.__dict__.setdefault("shadow_stats", {"asked": 0, "answered": 0})
@@ -2434,6 +2571,12 @@ if __name__ == "__main__":
         default="seasonal",
         help="Test mode, frontier lineup: forecast the test questions as seasonal or as MiniBench questions",
     )
+    parser.add_argument(
+        "--gpt-shadow",
+        action="store_true",
+        help="Test mode only (free, gemini-free or frontier lineup): switch the GPT shadow on for this test "
+        "(openrouter/openai/gpt-6.1-sol, never submitted; bot_config.GPT_SHADOW_ENABLED stays as it is)",
+    )
     args = parser.parse_args()
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
 
@@ -2569,6 +2712,23 @@ if __name__ == "__main__":
         )
     elif lineup.name in ("replay", "replay-gemini"):
         template_bot.shadow_llm = ReplayLlm()
+    # GPT shadow (gpt_shadow.py; bot_config.GPT_SHADOW_ENABLED, or --gpt-shadow
+    # in a test): its OpenRouter spend goes in the same spend ledger as paid
+    # Flash (the planner's guard when there is one, so one object writes it).
+    gpt_shadow_spend: SpendGuard | None = None  # our own guard (no paid-Flash guard in this lineup)
+    if args.gpt_shadow and (run_mode != "test_questions" or lineup.name not in ("free", "gemini-free", "frontier")):
+        raise SystemExit("--gpt-shadow only runs with --mode test_questions and the free, gemini-free or frontier lineup.")
+    if (bot_config.GPT_SHADOW_ENABLED or args.gpt_shadow) and lineup.name in ("free", "gemini-free", "frontier"):
+        shadow_spend = getattr(lineup.planner, "spend", None)
+        if shadow_spend is None:
+            from gemini_budget import make_store as _spend_store
+
+            shadow_spend = gpt_shadow_spend = SpendGuard(_spend_store(SPEND_PATH))
+            # The same fail-closed checks as paid Flash: ledger readable, key usage vs ledger.
+            paid_fallback_guard(shadow_spend, ensemble.openrouter_key_usage(), ensemble.open_alert_issue)
+        shadow_credit = ensemble.openrouter_credit()
+        template_bot.gpt_shadow = GptShadow(shadow_spend, shadow_credit[0] if shadow_credit else None, enabled=True)
+        print(f"GPT shadow: ON ({'test switch' if args.gpt_shadow else 'GPT_SHADOW_ENABLED'}; never submitted)")
     if lineup.name == "replay-gemini":
         template_bot.keep_records = True
     # Consistency shadow index: the real one only for live tournament runs.
@@ -2825,6 +2985,18 @@ if __name__ == "__main__":
         if summary_path:
             with open(summary_path, "a", encoding="utf-8") as f:
                 f.write(f"{line}\n\n")
+    if template_bot.gpt_shadow is not None:
+        # GPT shadow: counts and $ only (public); its ledger entries are saved with the spend ledger.
+        line = template_bot.gpt_shadow.summary()
+        print(line)
+        summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(f"{line}\n\n")
+        gpt.overrun_alert(template_bot.gpt_shadow, ensemble.open_alert_issue)
+        if gpt_shadow_spend is not None:
+            unknown_cost_alert(gpt_shadow_spend, ensemble.open_alert_issue)
+            gpt_shadow_spend.save()
     # Data-repo saves that failed during the run get 3 more tries (about 2 minutes).
     lost_logs = template_bot.question_log.retry_failed()
     if lost_logs:

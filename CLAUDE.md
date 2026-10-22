@@ -21,13 +21,14 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   charged. Never retry a credit error.
 - OpenRouter: paid models allowed only: google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its
   caps ($0.10/question, $1.00/UTC day, MiniBench paid only while the day's paid spend is under $0.50,
-  paid only until a question has 3 real forecasts). Every other paid model stays refused. The key
+  paid only until a question has 3 real forecasts); openai/gpt-6.1-sol as the GPT shadow only,
+  $0.25/question, $1.50/UTC day, OFF until switched on. Every other paid model stays refused. The key
   limit ($25; Tony raised it from $8 to $15 on 21 Oct and to $25 on 22 Oct) is the hard ceiling. Keep free-model use under 600 requests a day. GPT-5.6 Sol is OFF
   (`FRONTIER_GPT_ENABLED = False`; if the architect switches it on: seasonal only, $0.30 per seasonal
   question with paid Flash, none when the key has under $2 left).
 - Spend check: the key's usage (Credit check workflow) must equal the key usage at the start of the
   day + today's spend in the ledger (fall26-data `status/spend.json`: `key_day_start[today]` +
-  `days[today]`). If it is ever above that, or OpenRouter spend is above $2.00 in a UTC day, stop
+  `days[today]`). If it is ever above that, or OpenRouter spend is above $3.50 in a UTC day, stop
   everything and tell the architect.
 - When a task is done, report in 3-5 plain sentences what was done and paste the proof
   (links to Actions runs).

@@ -844,7 +844,10 @@ def frontier_report(planner: FrontierPlanner) -> str:
             continue
         for question, entry in guard.questions.items():
             for call in entry.get("calls", [])[planner.calls_before.get((provider, question), 0):]:
-                row = rows.setdefault((provider, call["model"]), {"calls": 0, "ok": 0, "tokens": [], "seconds": [], "dollars": 0.0, "failed": []})
+                # The GPT shadow (gpt_shadow.py) is counted apart from paid Flash: its own row and $.
+                shadow = provider == "OpenRouter" and call.get("shadow") == "gpt"
+                where = "OpenRouter (GPT shadow)" if shadow else provider
+                row = rows.setdefault((where, call["model"]), {"calls": 0, "ok": 0, "tokens": [], "seconds": [], "dollars": 0.0, "failed": []})
                 row["calls"] += 1
                 row["ok"] += bool(call.get("ok"))
                 row["dollars"] += call.get("charged", 0.0)
@@ -854,7 +857,7 @@ def frontier_report(planner: FrontierPlanner) -> str:
                     row["seconds"].append(call["seconds"])
                 if not call.get("ok"):
                     row["failed"].append(str(call.get("http_status", "?")))
-                per_question[(provider, question)] = per_question.get((provider, question), 0.0) + call.get("charged", 0.0)
+                per_question[(where, question)] = per_question.get((where, question), 0.0) + call.get("charged", 0.0)
     lines = ["| Provider | Model | Calls | Answered | Output tokens (max) | Seconds (max) | Over 6 min | $ | Failed (HTTP) |",
              "|---|---|---|---|---|---|---|---|---|"]
     for (provider, model), r in sorted(rows.items()):
