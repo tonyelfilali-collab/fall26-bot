@@ -111,6 +111,7 @@ class Fake:
 def _planner(claude: ClaudeBudget, agent: bool = True):
     planner = frontier._frontier_pool(MemoryStore(), SpendGuard(MemoryStore({"days": {}})), claude)
     planner.agent_enabled = agent
+    planner.seasonal_agents = 1  # one agent here (two: test_seasonal_agents.py)
     planner.claude_pacer = frontier.RequestPacer(60000)
     planner.start_run(5.0, api_key=True)
     return planner
