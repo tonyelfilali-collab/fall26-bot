@@ -181,7 +181,7 @@ FRONTIER_SEASONAL_AGENTS = 2
 # allowed (it is not in any lineup; is_free_model stays False for it). Its
 # OpenRouter spend goes in the same ledger (status/spend.json) with its own caps.
 # Test Bot: --gpt-shadow switches it on for that run only.
-GPT_SHADOW_ENABLED = False
+GPT_SHADOW_ENABLED = True  # ON (architect pre-approval, 22 Oct: search worked, every call <= $0.25, submitted forecasts identical)
 GPT_SHADOW_MODEL = "openrouter/openai/gpt-6.1-sol"
 GPT_SHADOW_QUESTION_CAP = 0.25  # dollars per question
 GPT_SHADOW_DAILY_CAP = 1.50  # dollars per UTC day (GPT shadow spend only)
