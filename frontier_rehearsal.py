@@ -27,7 +27,7 @@ The agent (PR 4; the real agent code, the Anthropic client swapped for
 recorded replies with tool results; FRONTIER_AGENT_ENABLED is pinned off for A-J):
 K. Full agent path: seasonal and MiniBench = agent + Opus 5.5 + Flash x2;
    pause_turn continued; searches / fetches / URLs in the private log;
-   Claude <= $3.00 / $1.60 per question.
+   Claude <= $3.60 / $1.60 per question.
 L. Agent past its 7-minute cap (1:100 clock): cancelled, charged its worst
    case, the plain Opus fallback answers inside the planned wait; the 4
    seasonal agents' reservations ($9.12) keep MiniBench to today's setup.
@@ -38,14 +38,14 @@ N2. Every search and fetch used at a pause: not continued, plain Opus answers.
 O. Credit error on the agent: never retried, no fallback, no more Claude.
 P. A question already near its cap: the agent is refused; seasonal plain Opus
    (or Haiku) within $1.50; MiniBench with no Claude room: today's setup.
-Q. The Claude day at $14.00: no seasonal agent ($2.28 would pass $15): plain
+Q. The Claude day at $14.00: no seasonal agent ($2.88 would pass $15): plain
    Opus; MiniBench no Claude (the day is over its $9 limit).
 T. Free Flash quota at 0 with Claude on: the 2 Flash slots are paid Flash
    (within $0.10 a question). T2: a paid day at $0.98: the $1.00 cap refuses
    them. T3: at $0.48: seasonal paid, MiniBench refused (under $0.50 only).
 S. Two seasonal agents (FRONTIER_SEASONAL_AGENTS = 2, set for the phase only):
    seasonal = agent + agent2 + Flash x2 (caps 8/3 and 4/2), MiniBench as K;
-   question cap $4.70, Claude day cap $20.
+   question cap $5.30, Claude day cap $20.
 S2. Both seasonal agents past their 7-minute cap: both cancelled at their
    worst case, each one's own Opus fallback answers inside the planned wait.
 
@@ -479,11 +479,11 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          and all(i["claude"] >= 1 and i["claude_spent"] <= frontier.CLAUDE_SEASONAL_QUESTION_CAP + 1e-9 for i in infos("P", True))
          # MiniBench at $0.80: the agent's $0.87 passes $1.60 and plain Opus's $0.60 cap is already passed.
          and all(i["claude"] == 0 for i in infos("P", False))),
-        (f"Q: Claude day at $14.00 -> no seasonal agent ($2.28 would pass $15), plain Opus; MiniBench no Claude (over $9); ${q_day:.2f} <= $15.00",
+        (f"Q: Claude day at $14.00 -> no seasonal agent ($2.88 would pass $15), plain Opus; MiniBench no Claude (over $9); ${q_day:.2f} <= $15.00",
          all(i["agent"] == 0 and i["opus"] >= 1 and i["submitted"] for i in infos("Q", True))
          and all(i["claude"] == 0 and i["submitted"] for i in infos("Q", False))
          and q_day <= frontier.CLAUDE_DAILY_CAP + 1e-9),
-        ("S: two seasonal agents (test switch 2) -> seasonal = agent + agent2 + Flash x2; MiniBench = agent + Opus + Flash x2; caps $4.70 / $1.60; day cap $20",
+        ("S: two seasonal agents (test switch 2) -> seasonal = agent + agent2 + Flash x2; MiniBench = agent + Opus + Flash x2; caps $5.30 / $1.60; day cap $20",
          all(i["forecasts"] == 4 and i["agent"] == 1 and i["agent2"] == 1 and i["flash"] == 2 and i["submitted"] for i in infos("S", True))
          and all(i["agent"] == 1 and i["opus"] == 1 and i["agent2"] == 0 and i["submitted"] for i in infos("S", False))
          and all(s_planner.claude.caps[str(i["post"])] == (frontier.AGENT2_SEASONAL_QUESTION_CAP if i["seasonal"]

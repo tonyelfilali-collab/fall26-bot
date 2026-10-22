@@ -300,15 +300,16 @@ def test_plain_opus_slots_keep_the_full_timeout(monkeypatch):
 
 def test_worst_case_reservations_fit_the_raised_caps():
     plain = frontier.claude_reserve(OPUS_55)
-    # Seasonal (live: two agents): both agents + their two Opus fallbacks. With one
-    # agent the $3.00 cap no longer covers the agent's Opus fallback (22 Oct, 600k).
+    # Seasonal, one agent: agent + the plain Opus slot + the agent's Opus fallback.
+    assert frontier.agent_reserve(True) + 2 * plain <= frontier.AGENT_SEASONAL_QUESTION_CAP + 1e-9
+    # Seasonal (live: two agents): both agents + their two Opus fallbacks.
     assert frontier.agent_reserve(True) + frontier.agent_reserve(True, frontier.AGENT2) + 2 * plain <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
     # MiniBench: agent + the plain Opus slot + the agent's Opus fallback.
     assert frontier.agent_reserve(False) + 2 * plain <= frontier.AGENT_MINIBENCH_QUESTION_CAP + 1e-9
     # 22 Oct: seasonal agent input 450k -> 600k ($2.88; a real call read 538k).
     assert frontier.agent_reserve(True) == pytest.approx(2.88) and frontier.agent_reserve(False) == pytest.approx(0.87)
     assert frontier.agent_caps(True).input_tokens == 600000
-    assert frontier.AGENT_SEASONAL_QUESTION_CAP == 3.00 and frontier.AGENT_MINIBENCH_QUESTION_CAP == 1.60
+    assert frontier.AGENT_SEASONAL_QUESTION_CAP == 3.60 and frontier.AGENT_MINIBENCH_QUESTION_CAP == 1.60
     assert frontier.AGENT_FETCH_MAX_CONTENT_TOKENS == 3000
 
 
@@ -330,7 +331,7 @@ def test_plan_raises_the_caps_and_replaces_one_opus_slot():
     try:
         chains = planner.plan(True)
         assert [c.model for c in chains][:2] == [AGENT, OPUS_55] and len(chains) == 4
-        assert planner.claude.caps["21"] == 3.00 and planner.last_plan["agent"] is True
+        assert planner.claude.caps["21"] == 3.60 and planner.last_plan["agent"] is True
         assert chains[0]._backup.model == OPUS_55 and chains[0]._backup.deadline_aware
         assert chains[0]._backup_on_any_error and not chains[1].deadline_aware
     finally:

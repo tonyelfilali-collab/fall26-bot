@@ -133,7 +133,7 @@ PARSE_MARGIN_SECONDS = 20  # a deadline-aware fallback ends this long before the
 FALLBACK_MIN_SECONDS = 45  # under this, the fallback is not started
 AGENT_MAX_CONTINUATIONS = 3  # pause_turn continuations per agent turn
 AGENT_MIN_OUTPUT_TOKENS = 2000  # a continuation needs at least this much output left
-AGENT_SEASONAL_QUESTION_CAP = 3.00
+AGENT_SEASONAL_QUESTION_CAP = 3.60  # 22 Oct: agent $2.88 + plain Opus + its Opus fallback ($0.72)
 # Two seasonal agents (architect, 21 Oct; 22 Oct: agent 600k input): agent $2.88 +
 # agent2 $1.64 + their two Opus fallbacks ($0.72) = $5.24; the Claude day cap rises to $20 with them.
 AGENT2_SEASONAL_QUESTION_CAP = 5.30
@@ -154,7 +154,7 @@ class AgentCaps:
 # call read 413k input tokens; the input ceilings are set from that):
 # seasonal $1.80 + $0.40 + $0.08 = $2.28 (22 Oct: a real call read 538k input, so
 # 600k: $2.40 + $0.40 + $0.08 = $2.88), so agent + plain Opus ($0.36) + the
-# agent's Opus fallback ($0.36) = $3.00 at 450k; MiniBench $0.60 + $0.24 + $0.03 =
+# agent's Opus fallback ($0.36) = $3.60 (was $3.00 at 450k); MiniBench $0.60 + $0.24 + $0.03 =
 # $0.87, + plain Opus ($0.36) + its fallback ($0.36) = $1.59 (cap $1.60;
 # architect, 21 Oct: MiniBench gets a plain Opus slot next to the agent).
 AGENT_CAPS = {

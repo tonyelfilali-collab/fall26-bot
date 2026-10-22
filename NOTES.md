@@ -585,7 +585,7 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   agent + Opus 5.5 + Flash x2, MiniBench agent + Flash x2; low / minimal modes: plain Opus (cheaper).
   Worst case (reserved; architect, 21 Oct, after a test call read 413k input tokens): seasonal $2.28
   (450k input ASSUMED + 20k output + 8 searches x $0.01), MiniBench $0.87 (150k + 12k + 3), so agent +
-  plain Opus + the agent's Opus fallback fit $3.00, MiniBench agent + plain Opus + fallback fit $1.60 (architect, 21 Oct: MiniBench gets a plain Opus slot too). Reservations of running
+  plain Opus + the agent's Opus fallback fit $3.00 (22 Oct, a real call read 538k: seasonal agent 600k input, $2.88; one-agent cap $3.60, two-agent cap $5.30), MiniBench agent + plain Opus + fallback fit $1.60 (architect, 21 Oct: MiniBench gets a plain Opus slot too). Reservations of running
   agents count in the $9 MiniBench day limit (4 seasonal agents at once hold $9.12: MiniBench then uses
   today's setup until they finish). Cost charged: tokens at Opus 5.5 prices + $0.01 per search
   (`usage.server_tool_use`); a timeout or cut connection: the worst case. Input tokens inside one
