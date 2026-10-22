@@ -11,6 +11,10 @@ MiniBench rounds (the next tournament ids). Ids, types, states and times
 only, never forecasts.
 --standing: our bot's Metaculus username, and its rank, score and 95% range on
 each tournament's leaderboard (public on Metaculus; no forecasts).
+EXTRA_TOURNAMENTS (slugs or ids, comma-separated): another tournament's facts
+(name, id, dates, prize pool, leaderboard size) and its RAW post count by kind.
+CHECK_COMMENT (a post id): yes/no only: our private comment exists, and its
+"Final Prediction" equals the forecast we submitted (binary). No values shown.
 
     poetry run python tournament_info.py [--audit] [--standing]
 """
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -49,7 +54,63 @@ def tournament_facts(slug_or_id: str | int) -> list[str]:
         f"- Name: {data.get('name')}",
         f"- Id: {data.get('id')}, slug: `{data.get('slug')}`",
         f"- Start: {data.get('start_date')}, close: {data.get('close_date')}",
-    ]
+    ] + ([f"- Prize pool: {data.get('prize_pool')}"] if data.get("prize_pool") else [])
+
+
+def leaderboard_size_line(slug_or_id: str | int, get=requests.get) -> str:  # type: ignore[no-untyped-def]
+    """How many entries (bots and people) the tournament's leaderboard lists."""
+    tid = slug_or_id
+    if not str(tid).isdigit():
+        found = get(f"{API}/projects/tournaments/{tid}/", headers=_auth(), timeout=30)
+        tid = found.json().get("id", tid) if found.status_code == 200 else tid
+    response = get(f"{API}/leaderboards/project/{tid}/", headers=_auth(), timeout=60)
+    if response.status_code != 200:
+        return f"- Leaderboard: not readable (HTTP {response.status_code})"
+    sizes = [f"{name.removeprefix(', ') or 'leaderboard'} {len(b.get('entries') or [])}"
+             for name, b in leaderboards(response.json())]
+    return f"- Leaderboard entries: {', '.join(sizes) or 'none'}"
+
+
+FINAL_PREDICTION = re.compile(r"\*Final Prediction\*:\s*([0-9.]+)%")
+
+
+def comment_check_lines(post_id: str | int, get=requests.get) -> list[str]:  # type: ignore[no-untyped-def]
+    """Yes/no only (the job page is public): does our private comment exist on
+    the post, and does its "Final Prediction" equal our latest submitted
+    forecast? Never prints the comment or the forecast."""
+    response = get(f"{API}/users/me/", headers=_auth(), timeout=30)
+    if response.status_code != 200:
+        return [f"- Our account: not readable (HTTP {response.status_code})"]
+    me = response.json().get("id")
+    response = get(f"{API}/posts/{post_id}/", headers=_auth(), timeout=30)
+    if response.status_code != 200:
+        return [f"- Post {post_id}: not readable (HTTP {response.status_code})"]
+    question = response.json().get("question") or {}
+    latest = (question.get("my_forecasts") or {}).get("latest") or {}
+    values = latest.get("forecast_values")
+    lines = [f"- Post {post_id} ({question.get('type')}): our forecast on Metaculus: {'yes' if values else 'no'}"]
+    response = get(f"{API}/comments/", params={"post": post_id, "author": me, "limit": 100}, headers=_auth(), timeout=30)
+    if response.status_code != 200:
+        return lines + [f"- Comments: not readable (HTTP {response.status_code})"]
+    data = response.json()
+    comments = data.get("results", data) if isinstance(data, dict) else data
+    def author(c: dict):  # type: ignore[no-untyped-def]
+        a = c.get("author")
+        return a.get("id") if isinstance(a, dict) else a
+
+    # The filter is checked here too, in case the API ignores a parameter.
+    ours = [c for c in comments if isinstance(c, dict) and author(c) == me and c.get("on_post", int(post_id)) == int(post_id)]
+    lines.append(f"- Our comment exists: {'yes' if ours else 'no'} ({len(ours)} found)")
+    if not ours:
+        return lines
+    newest = max(ours, key=lambda c: c.get("created_at") or "")
+    lines.append(f"- Newest one is private: {'yes' if newest.get('is_private') else 'no'}")
+    found = FINAL_PREDICTION.findall(newest.get("text") or "")
+    if question.get("type") != "binary" or not values:
+        return lines + ["- Final Prediction = submitted forecast: not checked (binary questions only)"]
+    same = bool(found) and abs(float(found[-1]) / 100 - float(values[-1])) < 0.0005
+    return lines + [f"- Final Prediction = submitted forecast: {'yes' if same else 'no'}"
+                    + ("" if found else " (no Final Prediction line)")]
 
 
 def open_question_lines(slug_or_id: str | int) -> list[str]:
@@ -257,7 +318,8 @@ def standing_lines(tournaments: list[tuple[str, str | int]], get=requests.get) -
     return lines
 
 
-def main(audit: bool = False, standing: bool = False, extra_ids: tuple[str, ...] = ()) -> None:
+def main(audit: bool = False, standing: bool = False, extra_ids: tuple[str, ...] = (),
+         extra_tournaments: tuple[str, ...] = (), check_comment: str = "") -> None:
     sections: list[str] = []
     minibench_id, how = current_minibench()
     sections += [f"**Current MiniBench round: {minibench_id}** (found by {how})", ""]
@@ -276,6 +338,11 @@ def main(audit: bool = False, standing: bool = False, extra_ids: tuple[str, ...]
         sections += ["## Our standing", ""] + standing_lines(
             [("Seasonal tournament", FALL_2026_TOURNAMENT_ID), ("MiniBench", minibench_id)]
             + [("Tournament", tid) for tid in extra_ids]) + [""]
+    for slug_or_id in extra_tournaments:
+        sections += [f"## Other tournament (`{slug_or_id}`)", ""] + tournament_facts(slug_or_id)
+        sections += [leaderboard_size_line(slug_or_id)] + raw_lines(slug_or_id) + [""]
+    if check_comment:
+        sections += ["## Comment check", ""] + comment_check_lines(check_comment) + [""]
     if audit:
         sections += ["## MiniBench rounds", ""] + newer_minibench_lines(minibench_id) + [""]
     report = "\n".join(sections)
@@ -291,4 +358,6 @@ if __name__ == "__main__":
         sys.exit("METACULUS_TOKEN is not set")
     extra = os.getenv("STANDING_IDS", "")
     main(audit="--audit" in sys.argv, standing="--standing" in sys.argv,
-         extra_ids=tuple(t.strip() for t in extra.split(",") if t.strip().isdigit()))
+         extra_ids=tuple(t.strip() for t in extra.split(",") if t.strip().isdigit()),
+         extra_tournaments=tuple(t.strip() for t in os.getenv("EXTRA_TOURNAMENTS", "").split(",") if t.strip()),
+         check_comment=os.getenv("CHECK_COMMENT", "").strip() if os.getenv("CHECK_COMMENT", "").strip().isdigit() else "")

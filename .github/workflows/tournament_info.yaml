@@ -17,6 +17,14 @@ on:
         description: "With standing: more tournament ids to check, comma-separated (e.g. an earlier MiniBench round)"
         type: string
         default: ""
+      extra_tournaments:
+        description: "Other tournaments (slugs or ids, comma-separated, e.g. market-pulse-26q4): facts, leaderboard size, post count by kind"
+        type: string
+        default: ""
+      check_comment:
+        description: "A post id: yes/no only, our private comment exists and its Final Prediction = our submitted forecast (binary)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -50,3 +58,5 @@ jobs:
           AUDIT: ${{ inputs.audit }}
           STANDING: ${{ inputs.standing }}
           STANDING_IDS: ${{ inputs.standing_ids }}
+          EXTRA_TOURNAMENTS: ${{ inputs.extra_tournaments }}
+          CHECK_COMMENT: ${{ inputs.check_comment }}
