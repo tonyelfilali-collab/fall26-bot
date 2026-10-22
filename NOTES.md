@@ -28,7 +28,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Official data line | `hard_data.py` (no switch) | ON | FRED / CoinGecko line in the dossier; exact match feeds the unit check; stand-in warning | #62, #68 |
 | `YAHOO_ENABLED` | `hard_data.py` | ON, but Yahoo answers 429 | Stocks/indices/commodities/FX via Yahoo; blocked, skipped gracefully (stocks not covered) | #87 |
 | Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
-| `GPT_SHADOW_ENABLED` | `bot_config.py` (gpt_shadow.py) | **OFF** (built 22 Oct; Test Bot `gpt_shadow` input switches it on for one test) | End of run: OpenRouter `openai/gpt-6.1-sol` + native web search (3 searches asked) on the question's dossier, every live question and type; private `<log>_shadows.json` only, never submitted; $0.25/question, $1.50/UTC day, MiniBench only under $1.00, seasonal first, none under $2 key left | this PR |
+| `GPT_SHADOW_ENABLED` | `bot_config.py` (gpt_shadow.py) | **ON** (22 Oct, architect pre-approval; built OFF in #170) | End of run: OpenRouter `openai/gpt-6.1-sol` + native web search (3 searches asked) on the question's dossier, every live question and type; private `<log>_shadows.json` only, never submitted; $0.25/question, $1.50/UTC day, MiniBench only under $1.00, seasonal first, none under $2 key left | this PR |
 | Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct), window-blend (50/50 live + window, 21 Oct) | #27, #44, #63, #110 |
 | Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
 | Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; since PR L (21 Oct): own queue (`replay-lab`, never delays a live run), no Gemini, ends by minute 8 | #92, PR L |
@@ -599,9 +599,9 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   seconds, cost, reserve. Claude ledger calls: searches, fetches. Step summary: agent calls, searches,
   fetches, seconds, $ (numbers only). Public logs: nothing new (model + error class name only).
 
-## GPT shadow (22 Oct 2026, built OFF)
+## GPT shadow (22 Oct 2026, ON)
 
-`gpt_shadow.py`; switch `bot_config.GPT_SHADOW_ENABLED` (OFF); Test Bot input `gpt_shadow` (`--gpt-shadow`,
+`gpt_shadow.py`; switch `bot_config.GPT_SHADOW_ENABLED` (ON since 22 Oct); Test Bot input `gpt_shadow` (`--gpt-shadow`,
 test_questions mode, lineups free / gemini-free / frontier; that test joins the live `forecast-bot` queue
 because it writes the spend ledger).
 - **What.** A shadow: saved in the private `<log>_shadows.json` only, NEVER submitted. At the end of the

@@ -120,8 +120,8 @@ def _run(bot, questions=QUESTIONS, submitted=None):
 # ---------------------------------------------------------------- switch
 
 
-def test_off_by_default_and_only_this_exact_paid_model():
-    assert bot_config.GPT_SHADOW_ENABLED is False
+def test_switched_on_live_and_only_this_exact_paid_model(monkeypatch):
+    assert bot_config.GPT_SHADOW_ENABLED is True  # ON (architect pre-approval, 22 Oct)
     assert bot_config.GPT_SHADOW_MODEL == "openrouter/openai/gpt-6.1-sol"
     assert not bot_config.is_free_model(bot_config.GPT_SHADOW_MODEL)
     # No lineup carries it (the lineup guard still refuses every other paid model).
@@ -129,6 +129,7 @@ def test_off_by_default_and_only_this_exact_paid_model():
         assert bot_config.GPT_SHADOW_MODEL not in bot_config.get_lineup(name).llm_model_names()
         assert bot_config.GPT_SHADOW_MODEL not in bot_config.get_lineup(name).allowed_paid
     # The switch read from bot_config: off -> no reservation.
+    monkeypatch.setattr(bot_config, "GPT_SHADOW_ENABLED", False)
     assert gpt.GptShadow(_spend(), 10.0).reserve("1", True) == gpt.OFF
 
 
