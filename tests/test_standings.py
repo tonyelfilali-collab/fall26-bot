@@ -111,3 +111,16 @@ def test_publish_shows_the_new_sections(capsys):
     health_check.publish(report)
     out = capsys.readouterr().out
     assert "### Claude ledger per UTC day" in out and "### Our standing (Mondays)" in out
+
+
+def test_claude_days_lines_pacing():
+    from datetime import datetime, timezone
+
+    ledger = {"days": {"2026-10-22": 40.0}, "cycles": {"2026-10-18": 40.0}}
+    now = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
+    lines = claude_health.claude_days_lines(ledger, now.date(), date(2026, 10, 18), 170.0,
+                                            reset=date(2026, 11, 18), now=now)
+    assert lines[-1] == "Pacing: paced-1; cycle spent $40.00; line $24.68; gap $+15.32"
+    ledger["cycles"]["2026-10-18"] = 20.0
+    lines = claude_health.claude_days_lines(ledger, now.date(), date(2026, 10, 18), 170.0, reset=date(2026, 11, 18), now=now)
+    assert lines[-1].startswith("Pacing: full; cycle spent $20.00") and lines[-1].endswith("gap $-4.68")

@@ -171,6 +171,40 @@ def kinds_by_key(records: list[dict]) -> dict[str, str]:
     return kinds
 
 
+QUESTION_TYPES = ("seasonal binary", "seasonal numeric+discrete", "seasonal MC", "MiniBench")
+
+
+def types_by_key(records: list[dict]) -> dict[str, str]:
+    """Question key (post id) -> one of QUESTION_TYPES, from question logs."""
+    types = {}
+    for record in records:
+        question = record.get("question") or {}
+        post, seasonal = question.get("id_of_post"), record.get("seasonal")
+        if post is None or seasonal is None:
+            continue
+        kind = question.get("question_type")
+        types[str(post)] = ("MiniBench" if not seasonal else "seasonal binary" if kind == "binary"
+                            else "seasonal MC" if kind == "multiple_choice" else "seasonal numeric+discrete")
+    return types
+
+
+def claude_type_lines(ledger: dict, days: set[str] | None, types: dict[str, str]) -> list[str]:
+    """Average Claude $ per live question, by type (architect, 22 Oct)."""
+    per_type: dict[str, list[float]] = {}
+    for key, entry in live_recent(ledger, days).items():
+        spent = sum(c.get("charged", 0.0) for c in entry.get("calls") or [])
+        if spent > 0:
+            per_type.setdefault(types.get(key, "unknown"), []).append(spent)
+    lines = ["| Question type | Questions | Average Claude $ | Max |", "|---|---|---|---|"]
+    for kind in (*QUESTION_TYPES, "unknown"):
+        values = per_type.get(kind)
+        if values:
+            lines.append(f"| {kind} | {len(values)} | ${sum(values) / len(values):.4f} | ${max(values):.4f} |")
+    if not per_type:
+        lines.append("| (no live Claude spend) | 0 | - | - |")
+    return lines
+
+
 def claude_report(ledger: dict, days: set[str] | None, kinds: dict[str, str]) -> list[str]:
     """The Claude numbers: $ per question (seasonal, MiniBench), agent searches
     and fetches per call, agent calls over $1, and ledger days total vs the
@@ -214,9 +248,10 @@ LEDGER_DAYS_SHOWN = 7
 
 
 def claude_days_lines(ledger: dict, today: date, cycle: date | None, budget: float,
-                      shown: int = LEDGER_DAYS_SHOWN) -> list[str]:
+                      shown: int = LEDGER_DAYS_SHOWN, reset: date | None = None, now: datetime | None = None) -> list[str]:
     """The ledger's Claude $ per UTC day (the last `shown` days, today
-    included) and the cycle total, to compare with the Anthropic Console.
+    included) and the cycle total, to compare with the Anthropic Console,
+    and (with `reset`) the pacing: mode, cycle spent, line, gap.
     Dollars only (every key, Test Bot included, as the Console counts it)."""
     days = {str(k): float(v) for k, v in (ledger.get("days") or {}).items()}
     lines = ["| UTC day | Claude $ |", "|---|---|"]
@@ -234,6 +269,13 @@ def claude_days_lines(ledger: dict, today: date, cycle: date | None, budget: flo
     if saved is not None and abs(float(saved) - total) > TOTALS_TOLERANCE:
         line += f" (ledger cycle field: ${float(saved):.4f})"
     lines.append(line)
+    if reset is not None:
+        from frontier import cycle_end, pace_line, pace_mode
+
+        # The bot paces on the ledger's cycle field (frontier.ClaudeBudget.pacing).
+        spent = float(saved) if saved is not None else total
+        mark = pace_line(budget, cycle, cycle_end(cycle, reset), now or datetime.now(timezone.utc))
+        lines.append(f"Pacing: {pace_mode(spent, mark)}; cycle spent ${spent:.2f}; line ${mark:.2f}; gap ${spent - mark:+.2f}")
     return lines
 
 

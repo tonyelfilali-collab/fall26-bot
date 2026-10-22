@@ -569,6 +569,13 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   under 10% -> seasonal Opus x1, MiniBench no Claude; a credit error ("credit balance is too
   low", never retried, recorded for the cycle), an unreadable/missing ledger, no reset date or no key
   -> no Claude and no GPT (today's setup). No Claude slot can run -> today's setup.
+- **Pacing** (architect, 22 Oct; once per run, full mode with the agent): line = $170 x the share
+  of the cycle gone (18 Oct - 18 Nov, UTC midnights). Cycle spend over line + $10 -> `paced-1`:
+  MiniBench drops the agent (plain Opus + Flash x2, $0.60 cap); over line + $20 -> `paced-2`: also
+  seasonal drops agent2 (agent + plain Opus + Flash x2, $3.60 cap). Back to `full` at or under
+  line + $10. Step-downs, the $20 day cap and the question caps stay as backstops; seasonal agent1
+  is never cut by pacing. Public log: `; pacing <mode>` only. Daily health: mode, cycle spent,
+  line, gap, and the average Claude $ per live question by type (24 h).
 - **OpenRouter** (GPT only if switched on). GPT + paid Flash share $0.30 per seasonal question (MiniBench Flash $0.10 as now);
   the paid-Flash $1.00/UTC day cap covers GPT too; no GPT when the key has under $2 left (a third
   Flash instead).

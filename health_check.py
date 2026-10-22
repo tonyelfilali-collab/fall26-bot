@@ -317,7 +317,8 @@ def check_claude(now: datetime, report: Report) -> None:
         return
     assert ledger is not None
     report.claude_days += claude_health.claude_days_lines(
-        ledger, now.date(), cycle_start(now.date(), reset_date(CLAUDE_CYCLE_RESET_DATE)), CLAUDE_BUDGET_PER_CYCLE
+        ledger, now.date(), cycle_start(now.date(), reset_date(CLAUDE_CYCLE_RESET_DATE)), CLAUDE_BUDGET_PER_CYCLE,
+        reset=reset_date(CLAUDE_CYCLE_RESET_DATE), now=now,
     )
     days = claude_health.window_days(now)
     runs = frontier_runs(now - timedelta(hours=24))
@@ -327,6 +328,7 @@ def check_claude(now: datetime, report: Report) -> None:
     claude_health.check_claude_failures(ledger, days, report)
     claude_health.check_claude_forecasts(records, len(runs), report)
     report.info += claude_health.claude_report(ledger, days, claude_health.kinds_by_key(records))
+    report.info += ["", *claude_health.claude_type_lines(ledger, days, claude_health.types_by_key(records))]
 
 
 def workflows() -> list[dict]:
