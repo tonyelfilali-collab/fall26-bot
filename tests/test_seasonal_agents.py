@@ -108,6 +108,9 @@ def test_agent2_call_uses_its_caps_and_both_calls_keep_their_stats(monkeypatch):
     assert [t["max_uses"] for t in tools[0]] == [8, 3] and [t["max_uses"] for t in tools[1]] == [4, 2]
     # Both agents get the same research lines (markets, base rate).
     assert all("Polymarket, Kalshi or Manifold" in r["system"] and "base rate" in r["system"] for r in fake.agent_requests())
+    # The research floor (architect, 25 Oct): agent 1 only.
+    floor = "make at least 3 searches: the latest news on the question, the resolution source"
+    assert floor in fake.agent_requests()[0]["system"] and floor not in fake.agent_requests()[1]["system"]
     calls = claude.questions["36"]["calls"]
     assert [(c["model"], c["searches"], c["fetches"]) for c in calls] == [(AGENT, 1, 1), (AGENT2, 2, 0)]
     assert [e["model"] for e in log] == [AGENT, AGENT2] and log[1]["reserve"] == pytest.approx(1.64)
