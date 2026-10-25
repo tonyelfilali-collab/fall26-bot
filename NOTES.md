@@ -576,6 +576,10 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   line + $10. Step-downs, the $20 day cap and the question caps stay as backstops; seasonal agent1
   is never cut by pacing. Public log: `; pacing <mode>` only. Daily health: mode, cycle spent,
   line, gap, and the average Claude $ per live question by type (24 h).
+- **Agent 1 research floor** (architect, 25 Oct): agent 1's note (seasonal and MiniBench) adds
+  "Before answering, make at least 3 searches: the latest news on the question, the resolution source
+  named in the criteria, and a base rate for similar events." Agent2 keeps the plain note (the
+  Scoreboard compares them on the same questions). Caps 8 / 3 searches unchanged.
 - **OpenRouter** (GPT only if switched on). GPT + paid Flash share $0.30 per seasonal question (MiniBench Flash $0.10 as now);
   the paid-Flash $1.00/UTC day cap covers GPT too; no GPT when the key has under $2 left (a third
   Flash instead).

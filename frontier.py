@@ -185,9 +185,23 @@ AGENT_SYSTEM = (
     "{fetches} pages) to check the key facts, find newer information and read the resolution source. "
     "If Polymarket, Kalshi or Manifold has a market on the same event, check its current price and weigh it. "
     "Look for a base rate: how often similar events happened in similar time windows. "
+    "{floor}"
     "Then write your answer exactly as the user message asks, ending with the final answer in the format "
     "it gives."
 )
+# Agent 1 only (architect, 25 Oct; seasonal and MiniBench): a research floor.
+# Agent2 keeps the plain note, so the per-model Scoreboard compares them on the same questions.
+AGENT1_RESEARCH_FLOOR = (
+    "Before answering, make at least 3 searches: the latest news on the question, the resolution source "
+    "named in the criteria, and a base rate for similar events. "
+)
+
+
+def agent_note(name: str, caps: AgentCaps) -> str:
+    """The agent's system note (agent 1 with the research floor)."""
+    floor = AGENT1_RESEARCH_FLOOR if name.removeprefix("replay/") == AGENT else ""
+    return AGENT_SYSTEM.format(searches=caps.searches, fetches=caps.fetches, floor=floor)
+
 
 # Set per forecast by main.py: the loop-independent deadline (time.monotonic)
 # of the planned wait, and the agent runs of this forecast (private log).
@@ -637,7 +651,7 @@ class _AgentCall(GeneralLlm):
 
         caps = run.caps
         system, messages = _messages(prompt)
-        note = AGENT_SYSTEM.format(searches=caps.searches, fetches=caps.fetches)
+        note = agent_note(run.name, caps)
         request: dict[str, Any] = dict(
             model=OPUS_55.removeprefix("anthropic/"), output_config={"effort": CLAUDE_EFFORT},
             system=note if not system else f"{note}\n\n{system}",

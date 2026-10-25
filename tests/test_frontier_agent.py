@@ -165,6 +165,8 @@ def test_request_shape_tools_and_answer(monkeypatch):
     assert request["messages"] == [{"role": "user", "content": "Forecast this. Probability: ZZ%"}]  # the same prompt
     assert "8 searches" in request["system"] and "3 pages" in request["system"]
     assert "Polymarket, Kalshi or Manifold" in request["system"] and "base rate" in request["system"]
+    assert "Before answering, make at least 3 searches: the latest news on the question, the resolution source " \
+           "named in the criteria, and a base rate for similar events. Then write" in request["system"]
     assert fake.clients[0]["max_retries"] == 0
     assert not fake.plain_requests()  # no fallback
 
@@ -549,3 +551,13 @@ def test_an_overrun_opens_one_alert_a_day():
     assert alerts == ["Spend alert (2026-10-21): agent call over its reservation",
                       "Spend alert (2026-10-22): agent call over its reservation"]
     assert claude.snapshot()["alerts"]["agent-overrun"] == "2026-10-22"  # saved with the Claude ledger
+
+
+def test_research_floor_agent1_only_seasonal_and_minibench():
+    for seasonal in (True, False):
+        note = frontier.agent_note(frontier.AGENT, frontier.agent_caps(seasonal))
+        assert frontier.AGENT1_RESEARCH_FLOOR in note and "{" not in note
+    assert frontier.AGENT1_RESEARCH_FLOOR not in frontier.agent_note(frontier.AGENT2, frontier.agent_caps(True, frontier.AGENT2))
+    assert frontier.AGENT1_RESEARCH_FLOOR in frontier.agent_note("replay/" + frontier.AGENT, frontier.agent_caps(True))
+    # The caps stay: 8 / 3 seasonal, 3 / 2 MiniBench.
+    assert (frontier.agent_caps(True).searches, frontier.agent_caps(False).searches) == (8, 3)
