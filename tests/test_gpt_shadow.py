@@ -17,6 +17,7 @@ import bot_config
 import gpt_shadow as gpt
 import main
 import replay
+from forecast_safety import NoValidForecast
 from gemini_budget import MemoryStore
 from question_log import shadows_path
 from spend import SpendGuard, utc_day
@@ -50,6 +51,8 @@ class FakeGpt(gpt.GptShadowLlm):
             text = "Searched twice.\nProbability: 97%"
         if FakeGpt.mode == "unreadable":
             text = "No numbers from me."
+        if FakeGpt.mode == "messy_mc" and question.question_type == "multiple_choice":
+            text = MESSY_MC
         cost = 0.0 if FakeGpt.mode == "unknown" else FakeGpt.cost
         usage = {"prompt_tokens": 9000, "completion_tokens": 3000, "cost": cost, "server_tool_use": {"web_search_requests": 2}}
         if FakeGpt.mode == "no_tool_use":  # as in the 22 Oct Test Bot: no server_tool_use in the usage
@@ -364,17 +367,68 @@ def test_unknown_cost_is_charged_the_reservation():
     assert call["cost_known"] is False
 
 
-def test_unreadable_answer_is_no_answer_without_a_parser_call(monkeypatch):
-    async def parser_must_not_run(*args, **kwargs):
-        raise AssertionError("the parser model was called for the GPT shadow")
+MESSY_MC = "After searching:\n- red ~ 0.5\n- the green one, maybe 30\n- blue: twenty percent\n"
 
-    monkeypatch.setattr(main, "structure_output", parser_must_not_run)
+
+def test_messy_mc_reply_is_read_by_the_parser_fallback_and_saved_privately(monkeypatch, caplog):
+    """Architect, 28 Oct (46278): a paid shadow's reply not readable directly
+    goes to the free parser like a live one; its raw reply is kept privately."""
+    without: dict = {}
+    _run(_bot(None), submitted=without)
+    parsed_texts: list = []
+
+    async def parser_answers(text_to_structure=None, output_type=None, **kwargs):
+        parsed_texts.append(text_to_structure)
+        return main.PredictedOptionList.model_validate({"predicted_options": [
+            {"option_name": "Red", "probability": 0.5}, {"option_name": "Green", "probability": 0.3},
+            {"option_name": "Blue", "probability": 0.2}]})
+
+    monkeypatch.setattr(main, "structure_output", parser_answers)
+    FakeGpt.mode = "messy_mc"
+    submitted: dict = {}
+    with caplog.at_level(logging.INFO):
+        records, files = _run(_bot(_shadow()), submitted=submitted)
+    assert submitted == without  # the live forecasts: unchanged
+    assert parsed_texts == [MESSY_MC]  # the parser ran once, for the shadow's MC reply only
+    entry = files["multiple_choice"]["gpt_shadow"]
+    assert entry["status"] == gpt.SAVED and entry["reading"] == ["parser"] and entry["reply"] == MESSY_MC
+    assert gpt.VARIANT in files["multiple_choice"]["shadow"]
+    assert files["multiple_choice"]["shadow_model"]["reading"] == ["direct"]  # the free shadow's own reading
+    assert records["multiple_choice"]["reading"] == ["direct"]  # live: untouched
+    assert "unread_replies" not in records["multiple_choice"]
+    for kind in ("binary", "numeric", "discrete"):  # read directly: the raw reply saved too
+        assert files[kind]["gpt_shadow"]["reading"] == ["direct"] and files[kind]["gpt_shadow"]["reply"]
+    # Never in a public log (any logger).
+    assert not any("twenty percent" in r.getMessage() or "Searched twice" in r.getMessage() for r in caplog.records)
+
+
+def test_unreadable_even_by_the_parser_is_no_answer_with_its_reply_saved(monkeypatch):
+    async def parser_fails(*args, **kwargs):
+        raise NoValidForecast("unreadable")
+
+    monkeypatch.setattr(main, "structure_output", parser_fails)
     FakeGpt.mode = "unreadable"
     records, files = _run(_bot(_shadow()), [QUESTIONS[0]])
     entry = files["binary"]["gpt_shadow"]
     assert entry["status"] == gpt.NO_ANSWER and entry["reading"] == ["dropped"]
+    assert entry["reply"] == "No numbers from me."
     assert entry["cost"] == pytest.approx(0.07)  # answered: its real cost
     assert files["binary"]["shadow_model"]["reading"] == ["direct"]  # the free shadow's own reading
+    assert "gpt_shadow_reply" not in records["binary"]
+
+
+def test_free_shadow_still_never_calls_the_parser(monkeypatch):
+    async def parser_must_not_run(*args, **kwargs):
+        raise AssertionError("the parser model was called for the free shadow forecaster")
+
+    monkeypatch.setattr(main, "structure_output", parser_must_not_run)
+    bot = _bot(None)
+    main._in_shadow.set(True)
+    try:
+        with pytest.raises(NoValidForecast):
+            bot.get_llm("parser", "llm")
+    finally:
+        main._in_shadow.set(False)
 
 
 def test_call_over_its_reservation_switches_it_off_and_alerts():

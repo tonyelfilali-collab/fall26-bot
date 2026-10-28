@@ -17,7 +17,7 @@ import main
 import replay
 from spend import SpendGuard, utc_day
 from gemini_budget import MemoryStore
-from tests.test_gpt_shadow import FakeGpt, TYPES, _bot, _run, _shadow as _gpt_shadow, _spend
+from tests.test_gpt_shadow import MESSY_MC, FakeGpt, TYPES, _bot, _run, _shadow as _gpt_shadow, _spend
 from tests.test_replay import QUESTIONS
 
 
@@ -42,6 +42,8 @@ class FakeKimi(kimi.KimiShadowLlm):
         text = replay.recorded_reply(question)
         if question.question_type == "binary":
             text = "Searched three times.\nProbability: 91%"
+        if FakeKimi.mode == "messy_mc" and question.question_type == "multiple_choice":
+            text = MESSY_MC
         cost = FakeKimi.cost
         usage = {"prompt_tokens": 60000, "completion_tokens": 5000, "cost": cost, "server_tool_use": {"web_search_requests": 3}}
         urls = FakeKimi.urls
@@ -157,6 +159,31 @@ def test_on_saves_every_type_privately_and_never_changes_the_submission(caplog):
     assert "Question 1: Kimi shadow saved, $0.0900" in public and len(public) == 4
     assert not any("91" in line for line in public)
     assert shadow.summary().startswith("Kimi shadow (moonshotai/kimi-k3, never submitted): saved 4; $0.3600")
+
+
+def test_messy_mc_reply_goes_to_the_parser_fallback_for_each_shadow_apart(monkeypatch):
+    """46278 (28 Oct): Kimi's MC reply wasn't readable directly; now the free
+    parser reads it, like a live forecast, and the raw reply is kept privately."""
+    without: dict = {}
+    _run(_bot(None), submitted=without)
+    parsed: list = []
+
+    async def parser_answers(text_to_structure=None, output_type=None, **kwargs):
+        parsed.append(text_to_structure)
+        return main.PredictedOptionList.model_validate({"predicted_options": [
+            {"option_name": "Red", "probability": 0.5}, {"option_name": "Green", "probability": 0.3},
+            {"option_name": "Blue", "probability": 0.2}]})
+
+    monkeypatch.setattr(main, "structure_output", parser_answers)
+    FakeKimi.mode = FakeGpt.mode = "messy_mc"
+    submitted: dict = {}
+    records, files = _run(_kimi_bot(_shadow(), _gpt_shadow()), submitted=submitted)
+    assert submitted == without and parsed == [MESSY_MC, MESSY_MC]
+    mc = files["multiple_choice"]
+    for slot, variant in (("kimi_shadow", kimi.VARIANT), ("gpt_shadow", gpt.VARIANT)):
+        assert mc[slot]["status"] == gpt.SAVED and mc[slot]["reading"] == ["parser"]
+        assert mc[slot]["reply"] == MESSY_MC and variant in mc["shadow"]
+    assert records["multiple_choice"]["reading"] == ["direct"]
 
 
 def test_off_kimi_adds_nothing_to_the_shadows_file():

@@ -629,7 +629,9 @@ because it writes the spend ledger).
   run (beside the free shadow and the referee, `main._finish_run`; none at or after minute 45, each call
   at most min(240 s, time left until minute 47)), one call per live question, seasonal and MiniBench,
   all 4 types (binary, numeric, discrete, multiple choice): the main forecasters' prompt for the type on
-  the question's own dossier (same answer reading, read directly, no parser call), plus OpenRouter's
+  the question's own dossier (same answer reading: read directly, else the free Flash-Lite parser above
+  the reserve, as live; since 28 Oct, after 46278; the raw reply is saved in the shadows file as `reply`,
+  last 20,000 characters, never in a public log), plus OpenRouter's
   native web search. Model `openrouter/openai/gpt-6.1-sol` ($2 / $10 per million tokens), reasoning
   effort medium, max 10,000 output tokens. One try, no retries, no backups.
 - **Search limit.** Sent: `plugins: [{"id": "web", "engine": "native", "max_results": 5}]`, top-level

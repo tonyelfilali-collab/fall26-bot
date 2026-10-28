@@ -8,7 +8,7 @@ live question (seasonal and MiniBench; binary, numeric, discrete, multiple
 choice) to OpenRouter `openai/gpt-6.1-sol` with:
 - the main forecasters' prompt for the question type, on the question's own
   research dossier (no new research of ours), and the same answer reading
-  (read directly; the parser model is never called for a shadow);
+  (read directly; the free Flash-Lite parser if that fails, above the reserve only);
 - OpenRouter's NATIVE web search (plugins: [{"id": "web", "engine": "native"}]).
   OpenRouter documents NO hard limit on the number of native searches for
   OpenAI models (the server tool's `max_uses` is forwarded to Anthropic only;
