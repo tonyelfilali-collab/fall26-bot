@@ -139,7 +139,8 @@ Free models that support structured output (candidates for the `:free` forecaste
 ## Model settings (Task 3)
 
 All model choices are in `bot_config.py`:
-- **Free lineup (active):** `openrouter/nvidia/nemotron-3-super-120b-a12b:free` as forecaster and
+- **Free lineup (active):** `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` (since 28 Oct; the
+  `nemotron-3-super-120b-a12b:free` variant was removed from OpenRouter, HTTP 404) as forecaster and
   parser. 1 forecast per question, 1 parse, no research summary, to stay inside free rate limits.
   The code refuses to use a non-`:free` model in this lineup, and refuses to run any mode except
   `test_questions` with it.
