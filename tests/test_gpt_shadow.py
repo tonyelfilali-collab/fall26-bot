@@ -121,7 +121,7 @@ def _run(bot, questions=QUESTIONS, submitted=None):
 
 
 def test_switched_on_live_and_only_this_exact_paid_model(monkeypatch):
-    assert bot_config.GPT_SHADOW_ENABLED is True  # ON (architect pre-approval, 22 Oct)
+    assert bot_config.GPT_SHADOW_ENABLED is False  # OFF (architect, 28 Oct)
     assert bot_config.GPT_SHADOW_MODEL == "openrouter/openai/gpt-6.1-sol"
     assert not bot_config.is_free_model(bot_config.GPT_SHADOW_MODEL)
     # No lineup carries it (the lineup guard still refuses every other paid model).
