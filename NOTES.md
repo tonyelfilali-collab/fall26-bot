@@ -323,7 +323,11 @@ total within ~6,000 tokens (`research.with_official_line`).
   for an intraday value / maximum / minimum / average; or it names another data site (Yahoo
   Finance, Bloomberg, Coinbase...) and not FRED / the series id / the official publisher; or a
   coin question doesn't name CoinGecko; or the latest value is outside the question's range
-  (units may differ).
+  (units may differ); or (28 Oct, architect) a FRED spot series (`FRED_SPOT_SERIES`: WTI
+  DCOILWTICO, Brent DCOILBRENTEU) on a question about futures (futures, front-month, settlement,
+  NYMEX/CME/CBOT/ICE Futures, CL/BZ tickers) that doesn't name FRED or the series id: "spot price,
+  not the futures price the question asks about" (post 45912: Brent spot ran $10-20 above futures).
+  Gold, silver, copper, natural gas are Yahoo futures (=F); wheat has no series.
 - The window baseline (replaced the 2b random walk, 1 Oct) is never in the dossier: it stays a shadow until scored.
 - Research waits at most 45 s for the fetch; a failure or no match = no line.
 - Question log: `official_data` (line, exact), `official_current_value` (exact only).
