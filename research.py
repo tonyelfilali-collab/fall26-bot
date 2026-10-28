@@ -15,6 +15,10 @@ PLAN.md Step 7: better research.
 4. Gap-fill: one extra search only if the dossier writer says a key fact is
    missing (and it's appended to the dossier).
 If the planner or dossier writer fails, the articles themselves are used.
+5. Current-value check (architect, 28 Oct): when the question itself states a
+   dated current value and the dossier's CURRENT VALUE disagrees by more than
+   20%, one "Note:" line is added and the unit check uses the more recent of
+   the two (neither unless both are dated).
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from bot_helpers import PUBLIC_LOGGER_NAME
@@ -72,6 +77,9 @@ class ResearchResult:
     wikipedia_section: str = ""
     # The research time limit was reached in this stage (None = it wasn't).
     time_limit_hit: str | None = None
+    # Current-value check: the question's and the dossier's values and which one
+    # the unit check uses ("question" / "research" / "neither"); None = they agree.
+    value_check: dict | None = None
 
     @property
     def articles(self) -> int:
@@ -172,6 +180,147 @@ def parse_current_value(text: str) -> CurrentValue | None:
     except ValueError:
         return None
     return CurrentValue(value=value, unit=match.group(2).strip(), date=match.group(3).strip())
+
+
+# ---------------------------------------------------------------- current-value check
+
+VALUE_DISAGREE_RATIO = 1.2  # "differs by more than 20%": the larger is over 1.2x the smaller
+_MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), start=1)}
+_MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+_DATE = (
+    rf"(?:(?P<y1>\d{{4}})-(?P<m1>\d{{2}})-(?P<d1>\d{{2}})"
+    rf"|(?P<mon2>{_MONTH})\s+(?P<d2>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(?P<y2>\d{{4}}))?"
+    rf"|(?P<d3>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<mon3>{_MONTH})(?:,?\s+(?P<y3>\d{{4}}))?)"
+)
+_NUMBER = r"(?P<num>[-+]?\$?\d[\d,]*(?:\.\d+)?)\s*%?"
+_VALUE_WORDS = (r"(?:current(?:ly)?|latest|settled|closed|stood|stands|was|is|traded|trading|"
+                r"reached|level|value|price)")
+# "<value word> ... <number> ... on / as of / ( <date>", or "As of / On <date>, ... <value word> ... <number>".
+_STATED_AFTER = re.compile(
+    rf"\b{_VALUE_WORDS}\b[^.;\n]{{0,40}}?{_NUMBER}[^.;\n\d]{{0,25}}?(?:\bon\b|\bas of\b|\()\s*{_DATE}",
+    re.IGNORECASE,
+)
+_STATED_BEFORE = re.compile(
+    rf"\b(?:as of|on)\s+{_DATE},?\s[^.;\n]{{0,60}}?\b{_VALUE_WORDS}\b[^.;\n\d]{{0,25}}?{_NUMBER}",
+    re.IGNORECASE,
+)
+# A threshold, not a current value: "will the price be above $100 on Oct 15".
+_THRESHOLD_WORDS = re.compile(
+    r"\b(?:above|below|exceed\w*|over|under|more|less|least|most|than|between|reach|hit|surpass\w*|fall|rise|will|be)\b",
+    re.IGNORECASE,
+)
+# The same value in another unit right after it: "683 cents ($6.83)".
+_ALTERNATIVE = re.compile(r"\s*[a-z/ ]{0,15}\(\s*\$?(\d[\d,]*(?:\.\d+)?)", re.IGNORECASE)
+
+
+@dataclass
+class StatedValue:
+    value: float
+    text: str  # the number as written
+    day: date
+    alternatives: tuple[str, ...] = ()  # the same value written in another unit
+
+
+def _month(name: str) -> int:
+    return _MONTHS[name.lower().rstrip(".")[:3]]
+
+
+def _date_of(match: re.Match, year: int) -> date | None:
+    g = match.groupdict()
+    try:
+        if g.get("y1"):
+            return date(int(g["y1"]), int(g["m1"]), int(g["d1"]))
+        if g.get("mon2"):
+            return date(int(g["y2"] or year), _month(g["mon2"]), int(g["d2"]))
+        if g.get("mon3"):
+            return date(int(g["y3"] or year), _month(g["mon3"]), int(g["d3"]))
+    except (ValueError, KeyError):
+        return None
+    return None
+
+
+def stated_value(texts: list[str], year: int, today: date | None = None) -> StatedValue | None:
+    """The latest dated current value the question's own text states, if any.
+    Conservative: a number next to a value word with a past date beside it (a
+    value with no date, a future date or a threshold word is ignored); bare
+    years (1900-2099) are never taken as values."""
+    today = today or datetime.now(timezone.utc).date()
+    found: list[StatedValue] = []
+    for text in texts:
+        for pattern in (_STATED_AFTER, _STATED_BEFORE):
+            for match in pattern.finditer(text or ""):
+                raw = match.group("num")
+                if re.fullmatch(r"[-+]?(19|20)\d\d", raw):
+                    continue
+                if _THRESHOLD_WORDS.search(text[match.start():match.start("num")]):
+                    continue
+                try:
+                    value = float(raw.replace("$", "").replace(",", ""))
+                except ValueError:
+                    continue
+                day = _date_of(match, year)
+                if day is not None and day <= today:
+                    other = _ALTERNATIVE.match(text, match.end("num"))
+                    found.append(StatedValue(value, raw.lstrip("+$"), day, (other.group(1),) if other else ()))
+    return max(found, key=lambda v: v.day) if found else None
+
+
+def research_day(text: str) -> date | None:
+    """The dossier's DATE: YYYY-MM-DD (or YYYY-MM: the 1st), else None."""
+    match = re.match(r"(\d{4})-(\d{2})(?:-(\d{2}))?$", (text or "").strip())
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3) or 1))
+    except ValueError:
+        return None
+
+
+def disagree(a: float, b: float) -> bool:
+    return a != b and _ratio(a, b) > VALUE_DISAGREE_RATIO
+
+
+def _ratio(a: float, b: float) -> float:
+    return max(abs(a), abs(b)) / min(abs(a), abs(b)) if a and b and (a > 0) == (b > 0) else float("inf")
+
+
+def _number_text(value: float) -> str:
+    return f"{value:,.6f}".rstrip("0").rstrip(".")
+
+
+def check_current_value(
+    research: CurrentValue | None, stated: StatedValue | None
+) -> tuple[CurrentValue | None, str | None, dict | None]:
+    """(the value the unit check uses, the dossier note line, the record) for the
+    question's stated value vs the dossier's CURRENT VALUE. No disagreement: unchanged."""
+    if research is None or stated is None:
+        return research, None, None
+    # Of the ways the question writes it, the one closest to our research's unit.
+    for text in stated.alternatives:
+        value = float(text.replace(",", ""))
+        if _ratio(value, research.value) < _ratio(stated.value, research.value):
+            stated = StatedValue(value, text, stated.day)
+    if not disagree(stated.value, research.value):
+        return research, None, None
+    ours = research_day(research.date)
+    note = (f"Note: the question says {stated.text} ({stated.day.isoformat()}); "
+            f"our research says {_number_text(research.value)} ({ours.isoformat() if ours else 'no date'}). "
+            "Check which is more recent.")
+    use = "neither" if ours is None or ours == stated.day else "question" if stated.day > ours else "research"
+    chosen = {"question": CurrentValue(stated.value, research.unit, stated.day.isoformat()),
+              "research": research, "neither": None}[use]
+    record = {"question": {"value": stated.value, "date": stated.day.isoformat()},
+              "research": {"value": research.value, "date": research.date}, "used": use}
+    return chosen, note, record
+
+
+def question_year(question: Any) -> int:
+    for name in ("open_time", "published_time", "close_time"):
+        when = getattr(question, name, None)
+        if isinstance(when, datetime):
+            return when.year
+    return datetime.now(timezone.utc).year
 
 
 def split_missing(dossier: str) -> tuple[str, str | None]:
@@ -399,6 +548,12 @@ async def run_planned_research(
     else:
         result.dossier = cap_tokens(body)
     result.current_value = parse_current_value(result.dossier)
+    texts = [text, getattr(question, "background_info", None) or "", criteria, getattr(question, "fine_print", None) or ""]
+    result.current_value, note, result.value_check = check_current_value(
+        result.current_value, stated_value(texts, question_year(question))
+    )
+    if note:
+        result.dossier = f"{result.dossier}\n\n{note}"
     return result
 
 

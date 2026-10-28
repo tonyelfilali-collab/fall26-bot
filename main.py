@@ -1835,6 +1835,8 @@ class FallBot2026(ForecastBot):
                 if result.current_value
                 else None
             ),
+            # Current-value check (28 Oct): question vs dossier value, and which one the unit check uses.
+            "current_value_check": result.value_check,
             "queries": result.queries,
             "asknews_calls": result.asknews_calls,
             "asknews_articles": result.asknews_articles,
