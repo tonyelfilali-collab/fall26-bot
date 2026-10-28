@@ -47,9 +47,12 @@ RESERVATION = round(
 )  # 0.068 + 0.156 + 0.021 = $0.245
 TIMEOUT_SECONDS = 240  # then cancelled and charged the reservation (also capped by the run's minute 47)
 REASONING = {"effort": "medium"}
+# Test Bot 40730415966: with "use the research given below first" Kimi made no
+# search on 4 of 4, so the note asks for searches (like agent 1's floor).
 SEARCH_NOTE = (
-    f"You may search the web, at most {MAX_SEARCHES} searches in all. Do not use metaculus.com. "
-    "Use the research given below first."
+    f"Before answering, search the web: make 2 to {MAX_SEARCHES} searches (at most {MAX_SEARCHES} searches in all), "
+    "for the latest news on the question and for the resolution source named in the criteria. "
+    "Do not use metaculus.com. Then combine what you find with the research given below."
 )
 
 

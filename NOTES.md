@@ -681,8 +681,10 @@ GPT shadow's plumbing (`gpt_shadow.ShadowSpec`: one spec per paid shadow, the GP
   support on 28 Oct: $0.1577/M in, $9.7439/M out). The provider is recorded in the shadows entry and each ledger call.
 - **Search:** OpenRouter's server tool `{"type": "openrouter:web_search", "parameters": {"engine": "exa",
   "max_uses": 3, "max_results": 5, "max_total_results": 15, "max_characters": 2000, "excluded_domains":
-  ["metaculus.com"]}}` + top-level `max_tool_calls: 3` (Exa $0.007 per search). The system note says at most 3
-  searches and "Do not use metaculus.com."; searches from `usage.server_tool_use.web_search_requests`; cited
+  ["metaculus.com"]}}` + top-level `max_tool_calls: 3` (Exa $0.007 per search). The model decides whether to
+  search, so the system note asks for 2 to 3 searches (latest news, the resolution source; first Test Bot
+  40730415966 said "use the research given below first" and Kimi made 0 searches on 4 of 4), at most 3, and
+  "Do not use metaculus.com."; searches from `usage.server_tool_use.web_search_requests`; cited
   domains, count and metaculus yes/no as for the GPT shadow.
 - **Money:** its own share of the spend ledger (`kimi_shadow_days`; calls `"shadow": "kimi"`; question entries
   `kimi_shadow`); the GPT shadow's caps ($0.25/question, $1.50/UTC day, MiniBench only under $1.00, seasonal

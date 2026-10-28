@@ -103,6 +103,7 @@ def test_request_pins_one_provider_and_exa_search_without_metaculus():
     assert extras["max_tool_calls"] == 3 and extras["reasoning"] == {"effort": "medium"}
     assert "plugins" not in extras  # the server tool, not the (deprecated) web plugin
     assert "Do not use metaculus.com." in kimi.SEARCH_NOTE and "at most 3 searches" in kimi.SEARCH_NOTE
+    assert kimi.SEARCH_NOTE.startswith("Before answering, search the web: make 2 to 3 searches")
 
 
 def test_test_bot_input_passes_the_flag():
