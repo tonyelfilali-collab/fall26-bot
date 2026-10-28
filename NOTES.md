@@ -889,6 +889,19 @@ parser quota, and half of each free-model Test Bot run (OpenRouter ~50/day).
   distribution around the current value). Tests: `tests/test_unit_check.py` (x1000 and x11 examples). Not done yet: the
   "median more than 10x or under 0.1x the current value from research" check, because the
   research has no structured current value yet (planner facts, Step 7).
+- **Current-value check (28 Oct, architect; `research.check_current_value`):** when the question text,
+  background, resolution criteria or fine print states a dated current value (a number next to a value
+  word such as settled / closed / was / stood / latest, with a past date beside it; thresholds like
+  "above $100 on Oct 15", undated values and bare years are ignored; "683 cents ($6.83)" also tries the
+  bracketed figure) and the dossier's CURRENT VALUE differs by more than 20% (the larger over 1.2x the
+  smaller), one line is added at the end of the dossier: "Note: the question says <value> (<date>); our
+  research says <value> (<date>). Check which is more recent." The unit check then uses the more recent
+  of the two when both are dated, else neither (same day: neither). Agreeing values: unchanged. Skipped
+  (no line, unit check unchanged) when exactly one of the two is a percentage ("%" / "percent", the
+  research side from its UNIT) or their signs differ: probably different quantities. The
+  private question log keeps both values and which was used (`research_detail.current_value_check`).
+  On 203 earlier question logs (read 28 Oct) it would have fired 2 times (45899 wheat, 45933).
+  Tests: `tests/test_current_value_check.py`.
 - **Every prompt** includes today's date and the question's close and resolve dates.
 - **Before submitting,** the bot re-fetches the question and submits only if it's still open and
   unresolved. The library's own publishing is off; the bot submits itself. If the re-check itself
