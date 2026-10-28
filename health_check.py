@@ -280,14 +280,21 @@ def recent_annotation_titles(since: datetime) -> list[str]:
     return titles
 
 
+_LOGS: dict[int, str] = {}
+
+
 def job_log(job_id: int) -> str:
-    """One job's plain-text log (GitHub answers with a redirect to it)."""
+    """One job's plain-text log (GitHub answers with a redirect to it); kept for
+    the run, so the Claude and AskNews checks read each log once."""
+    if job_id in _LOGS:
+        return _LOGS[job_id]
     response = requests.get(
         f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/jobs/{job_id}/logs",
         headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}", "Accept": "application/vnd.github+json"},
         timeout=60,
     )
     response.raise_for_status()
+    _LOGS[job_id] = response.text
     return response.text
 
 
@@ -483,6 +490,7 @@ def run(simulate_miss: bool) -> Report:
             ),
         ),
         ("AskNews", lambda: check_asknews_status(asknews_status(), report)),
+        ("AskNews 402s", lambda: claude_health.check_asknews_runs(frontier_runs(now - timedelta(hours=24)), report)),
         ("log failures", lambda: check_log_failures(recent_annotation_titles(now - timedelta(hours=24)), report)),
         ("workflow states", lambda: check_workflow_states(workflows(), report)),
         ("main activity", lambda: check_main_activity(main_last_commit(), now, report)),

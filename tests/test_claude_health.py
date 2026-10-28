@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 import pytest
+from types import SimpleNamespace
 
 import claude_health
 import health_check
@@ -67,13 +68,35 @@ def test_check_claude_red_when_ledger_missing(monkeypatch):
     assert any("Claude ledger" in r for r in report.red)
 
 
+# ---------------------------------------------------------------- AskNews 402s
+
+
+def test_asknews_402s_counted_per_question_from_the_run_logs():
+    log = (LOG_FULL
+           + "Question 46201: AskNews failed (HTTP 402), using free news sources\n"
+           + "Question 46202: AskNews failed (HTTP 402), using free news sources\n"
+           + "Question 46203: AskNews failed, using free news sources\n"
+           + "Question 46278: articles found: 23 (AskNews 23 in 3 call(s), free news 0); 3 queries\n"
+           + "Question 46279: articles found: 6 (AskNews 0 in 1 call(s), free news 6); 3 queries\n")
+    run = claude_health.run_from_log(log)
+    assert (run["asknews_402"], run["asknews_other_failed"], run["asknews_found"]) == (2, 1, 1)
+    report = SimpleNamespace(ok=[], warnings=[], red=[])
+    claude_health.check_asknews_runs([run, claude_health.run_from_log(LOG_FULL)], report)
+    assert report.warnings == ["AskNews, last 24 hours: 402 on 2 question(s) in 1 run(s); other failures 1; "
+                               "articles found on 1 question(s) (free news used instead)"] and not report.red
+    clean = SimpleNamespace(ok=[], warnings=[], red=[])
+    claude_health.check_asknews_runs([claude_health.run_from_log(LOG_FULL)], clean)
+    assert clean.ok and not clean.warnings
+
+
 # ---------------------------------------------------------------- run modes
 
 
 def test_frontier_line_parsed_from_a_run_log():
     assert claude_health.run_from_log("no frontier here\n") is None
     run = claude_health.run_from_log(LOG_FULL + "## Frontier lineup: calls this run\n")
-    assert run == {"mode": "full", "reason": "98% of the cycle budget left", "overruns": 0}
+    assert run == {"mode": "full", "reason": "98% of the cycle budget left", "overruns": 0,
+                   "asknews_402": 0, "asknews_other_failed": 0, "asknews_found": 0}
     low = claude_health.run_from_log("Frontier lineup: low (20% of the cycle budget left); GPT-5.6 Sol off (frontier off)")
     assert low["mode"] == "low"
 
