@@ -95,7 +95,7 @@ def test_research_undated_line_appears_but_neither_is_used():
 
 
 def test_same_day_disagreement_uses_neither():
-    chosen, note, record = check_current_value(CurrentValue(10.0, "%", "2026-10-02"),
+    chosen, note, record = check_current_value(CurrentValue(10.0, "$/bu", "2026-10-02"),
                                                StatedValue(6.83, "6.83", date(2026, 10, 2)))
     assert chosen is None and note and record["used"] == "neither"
 
@@ -144,6 +144,32 @@ def test_real_wheat_wording_cents_and_dollars():
 def test_disagree_rule():
     assert not research.disagree(6.0, 7.2) and research.disagree(6.0, 7.21) and research.disagree(7.21, 6.0)
     assert research.disagree(-21.0, 38.2) and research.disagree(0.0, 1.0) and not research.disagree(0.0, 0.0)
+
+
+def test_45936_style_percent_vs_net_approval_is_skipped():
+    # The background gives the approve share; the question (and our research) is the net approval.
+    text = ("As of October 1, 2026, the RCP Average (covering the 9/8-10/1 window) stood at 38.2% approve "
+            "and 60.3% disapprove.")
+    stated = stated_value([text], 2026, today=TODAY)
+    assert (stated.value, stated.percent) == (38.2, True)
+    research_value = CurrentValue(-21.0, "points (approve minus disapprove)", "2026-10-05")
+    assert check_current_value(research_value, stated) == (research_value, None, None)
+
+
+def test_exactly_one_percentage_is_skipped():
+    stated = stated_value(["The unemployment rate was 4.3 percent on Oct 1."], 2026, today=TODAY)
+    assert stated.percent is True
+    ours = CurrentValue(7.0, "people (millions)", "2026-09-01")
+    assert check_current_value(ours, stated) == (ours, None, None)
+    # Both percentages: still checked.
+    chosen, note, record = check_current_value(CurrentValue(7.0, "%", "2026-09-01"), stated)
+    assert note and record["used"] == "question" and chosen.value == 4.3
+
+
+def test_signs_differ_is_skipped():
+    stated = StatedValue(12.5, "12.5", date(2026, 10, 2))
+    ours = CurrentValue(-3.0, "index points", "2026-09-20")
+    assert check_current_value(ours, stated) == (ours, None, None)
 
 
 def test_dates_without_a_year_use_the_question_year():

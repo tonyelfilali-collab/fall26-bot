@@ -193,7 +193,7 @@ _DATE = (
     rf"|(?P<mon2>{_MONTH})\s+(?P<d2>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(?P<y2>\d{{4}}))?"
     rf"|(?P<d3>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<mon3>{_MONTH})(?:,?\s+(?P<y3>\d{{4}}))?)"
 )
-_NUMBER = r"(?P<num>[-+]?\$?\d[\d,]*(?:\.\d+)?)\s*%?"
+_NUMBER = r"(?P<num>[-+]?\$?\d[\d,]*(?:\.\d+)?)\s*(?P<pct>%|percent\b)?"
 _VALUE_WORDS = (r"(?:current(?:ly)?|latest|settled|closed|stood|stands|was|is|traded|trading|"
                 r"reached|level|value|price)")
 # "<value word> ... <number> ... on / as of / ( <date>", or "As of / On <date>, ... <value word> ... <number>".
@@ -220,6 +220,7 @@ class StatedValue:
     text: str  # the number as written
     day: date
     alternatives: tuple[str, ...] = ()  # the same value written in another unit
+    percent: bool = False  # written as a percentage ("%" / "percent")
 
 
 def _month(name: str) -> int:
@@ -262,7 +263,8 @@ def stated_value(texts: list[str], year: int, today: date | None = None) -> Stat
                 day = _date_of(match, year)
                 if day is not None and day <= today:
                     other = _ALTERNATIVE.match(text, match.end("num"))
-                    found.append(StatedValue(value, raw.lstrip("+$"), day, (other.group(1),) if other else ()))
+                    found.append(StatedValue(value, raw.lstrip("+$"), day, (other.group(1),) if other else (),
+                                             bool(match.group("pct"))))
     return max(found, key=lambda v: v.day) if found else None
 
 
@@ -300,7 +302,11 @@ def check_current_value(
     for text in stated.alternatives:
         value = float(text.replace(",", ""))
         if _ratio(value, research.value) < _ratio(stated.value, research.value):
-            stated = StatedValue(value, text, stated.day)
+            stated = StatedValue(value, text, stated.day, percent=stated.percent)
+    # Probably different quantities (e.g. "38.2% approve" vs a net approval of -21): skip.
+    research_percent = bool(re.search(r"%|percent", research.unit or "", re.IGNORECASE))
+    if stated.percent != research_percent or stated.value * research.value < 0:
+        return research, None, None
     if not disagree(stated.value, research.value):
         return research, None, None
     ours = research_day(research.date)
