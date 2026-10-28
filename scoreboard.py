@@ -161,6 +161,16 @@ GPT_SHADOW_NAME = "openai/gpt-6.1-sol (GPT shadow)"
 # The same, only on questions where its reply cited no metaculus.com page.
 GPT_SHADOW_NO_METACULUS = "gpt-shadow (no metaculus)"
 GPT_SHADOW_NAME_NO_METACULUS = "openai/gpt-6.1-sol (GPT shadow, no metaculus)"
+# The Kimi shadow (kimi_shadow.VARIANT, 28 Oct): the same two ways.
+KIMI_SHADOW_VARIANT = "kimi-shadow"
+KIMI_SHADOW_NAME = "moonshotai/kimi-k3 (Kimi shadow)"
+KIMI_SHADOW_NO_METACULUS = "kimi-shadow (no metaculus)"
+KIMI_SHADOW_NAME_NO_METACULUS = "moonshotai/kimi-k3 (Kimi shadow, no metaculus)"
+# Paid shadows: (shadows-file key, variant, model name, no-metaculus variant, its model name).
+PAID_SHADOWS = (
+    ("gpt_shadow", GPT_SHADOW_VARIANT, GPT_SHADOW_NAME, GPT_SHADOW_NO_METACULUS, GPT_SHADOW_NAME_NO_METACULUS),
+    ("kimi_shadow", KIMI_SHADOW_VARIANT, KIMI_SHADOW_NAME, KIMI_SHADOW_NO_METACULUS, KIMI_SHADOW_NAME_NO_METACULUS),
+)
 # Binary subset medians, through the live final steps (forecast_safety.adjust_binary).
 SUBSETS = {
     "claude-only": lambda name: model_group(name) in ("agent", "claude"),
@@ -249,8 +259,8 @@ def score_models(records: list[dict], resolution_of, switch_on: str | None = Non
                 score = None
             if score is not None:
                 row["models"].append((name, period_of(when, switch_on), score))
-        # The GPT shadow (never submitted) alone, as its own model row; never in the subsets.
-        for variant, name in ((GPT_SHADOW_VARIANT, GPT_SHADOW_NAME), (GPT_SHADOW_NO_METACULUS, GPT_SHADOW_NAME_NO_METACULUS)):
+        # The paid shadows (never submitted) alone, as their own model rows; never in the subsets.
+        for variant, name in [pair for _, v, n, nv, nn in PAID_SHADOWS for pair in ((v, n), (nv, nn))]:
             gpt_value = (record.get("shadow") or {}).get(variant)
             if gpt_value is None:
                 continue
@@ -341,14 +351,16 @@ def merge_shadow_files(files: dict[str, dict]) -> list[dict]:
             record["shadow_model"] = extra["shadow_model"]
         if "referee" in extra:
             record["referee"] = extra["referee"]
-        if "gpt_shadow" in extra:
-            record["gpt_shadow"] = extra["gpt_shadow"]
+        for key, *_ in PAID_SHADOWS:
+            if key in extra:
+                record[key] = extra[key]
         record.setdefault("shadow", {}).update(extra.get("shadow") or {})
-        # The GPT shadow scored twice: all questions, and only those where its
+        # Each paid shadow scored twice: all questions, and only those where its
         # reply cited no metaculus.com page (metaculus_cited known False).
-        gpt_value = record["shadow"].get(GPT_SHADOW_VARIANT)
-        if gpt_value is not None and (extra.get("gpt_shadow") or {}).get("metaculus_cited") is False:
-            record["shadow"][GPT_SHADOW_NO_METACULUS] = gpt_value
+        for key, variant, _, no_metaculus, _ in PAID_SHADOWS:
+            value = record["shadow"].get(variant)
+            if value is not None and (extra.get(key) or {}).get("metaculus_cited") is False:
+                record["shadow"][no_metaculus] = value
     return list(records.values())
 
 

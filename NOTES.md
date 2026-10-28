@@ -29,6 +29,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | `YAHOO_ENABLED` | `hard_data.py` | ON, but Yahoo answers 429 | Stocks/indices/commodities/FX via Yahoo; blocked, skipped gracefully (stocks not covered) | #87 |
 | Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
 | `GPT_SHADOW_ENABLED` | `bot_config.py` (gpt_shadow.py) | OFF (28 Oct, architect; ON 22-28 Oct; built OFF in #170) | End of run: OpenRouter `openai/gpt-6.1-sol` + native web search (3 searches asked) on the question's dossier, every live question and type; private `<log>_shadows.json` only, never submitted; $0.25/question, $1.50/UTC day, MiniBench only under $1.00, seasonal first, none under $2 key left | this PR |
+| `KIMI_SHADOW_ENABLED` | `bot_config.py` (kimi_shadow.py) | OFF (28 Oct, built OFF; architect pre-approval to switch on after one Test Bot) | End of run: OpenRouter `moonshotai/kimi-k3` pinned to `KIMI_SHADOW_PROVIDER` (`relace/fp4`, no fallbacks) + the web search server tool on Exa (max_uses 3, 5 results, metaculus.com excluded) on the question's dossier; private shadows file only, never submitted; the GPT shadow's caps | this PR |
 | Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct), window-blend (50/50 live + window, 21 Oct) | #27, #44, #63, #110 |
 | Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
 | Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; since PR L (21 Oct): own queue (`replay-lab`, never delays a live run), no Gemini, ends by minute 8 | #92, PR L |
@@ -669,6 +670,31 @@ because it writes the spend ledger).
   metaculus)` (only where `metaculus_cited` is known false), per type and per model (never in the subsets).
 - **Daily OpenRouter stop rule:** $3.50 (architect, 22 Oct; was $2.00): paid Flash $1.00 + GPT shadow
   $1.50 per UTC day fit under it; the separate caps stay.
+
+## Kimi shadow (28 Oct 2026, built OFF)
+
+`kimi_shadow.py`; switch `bot_config.KIMI_SHADOW_ENABLED` (OFF); Test Bot input `kimi_shadow` (`--kimi-shadow`,
+free / gemini-free / frontier lineups, test mode only; joins the live queue). Architect 28 Oct, option (a): the
+GPT shadow's plumbing (`gpt_shadow.ShadowSpec`: one spec per paid shadow, the GPT shadow's behaviour unchanged).
+- **Model and provider:** OpenRouter `moonshotai/kimi-k3`, pinned to ONE endpoint for the whole test:
+  `provider: {"order": ["relace/fp4"], "allow_fallbacks": false}` (Relace, fp4, the cheapest endpoint with tool
+  support on 28 Oct: $0.1577/M in, $9.7439/M out). The provider is recorded in the shadows entry and each ledger call.
+- **Search:** OpenRouter's server tool `{"type": "openrouter:web_search", "parameters": {"engine": "exa",
+  "max_uses": 3, "max_results": 5, "max_total_results": 15, "max_characters": 2000, "excluded_domains":
+  ["metaculus.com"]}}` + top-level `max_tool_calls: 3` (Exa $0.007 per search). The system note says at most 3
+  searches and "Do not use metaculus.com."; searches from `usage.server_tool_use.web_search_requests`; cited
+  domains, count and metaculus yes/no as for the GPT shadow.
+- **Money:** its own share of the spend ledger (`kimi_shadow_days`; calls `"shadow": "kimi"`; question entries
+  `kimi_shadow`); the GPT shadow's caps ($0.25/question, $1.50/UTC day, MiniBench only under $1.00, seasonal
+  first, none under $2 key left; the key check counts both shadows' running reservations). Reservation $0.245:
+  400k input tokens (the prompt may be billed once per search step) x $0.17/M + 16k output x $9.75/M + 3 x $0.007.
+  Over its reservation: charged in full, off for the run, alert `kimi-shadow-overrun` (once a day).
+- **Shadows file:** `kimi_shadow` entry (model, provider, status, seconds, cost, searches, tokens, reading,
+  domains), variant `kimi-shadow`. Public log: `Question N: Kimi shadow <status>, $cost[, domains N, metaculus
+  cited: yes/no]` and one summary line. Scoreboard: variants `kimi-shadow` and `kimi-shadow (no metaculus)`, model
+  rows "moonshotai/kimi-k3 (Kimi shadow[, no metaculus])". Frontier report: own rows "OpenRouter (Kimi shadow)".
+- **Gate (architect pre-approval):** ONE real Test Bot with `kimi_shadow` on; switch on if search worked on at least
+  3 of 4, every call <= $0.25, and the submitted forecasts are identical on/off.
 
 ## Free news fallback (27 Sep 2026)
 

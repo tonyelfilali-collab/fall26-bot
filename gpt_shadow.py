@@ -35,13 +35,19 @@ case first (RESERVATION, $0.25), fail closed:
   for a timeout / cancel, or a failure after it may have been billed; $0 when
   rejected before generating (HTTP 400-404, 429).
 Public log: "Question N: GPT shadow <status>, $cost" only.
+
+The same plumbing runs other paid shadows (ShadowSpec; kimi_shadow.py, 28 Oct):
+each has its own switch and caps in bot_config (<CONFIG>_ENABLED, _MODEL,
+_QUESTION_CAP, _DAILY_CAP, _MINIBENCH_DAILY_CAP, _MIN_KEY_LEFT), its own share
+of the spend ledger (`<tag>_shadow_days`, calls marked "shadow": <tag>) and its
+own entry and variant in the shadows file.
 """
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from forecasting_tools import GeneralLlm
 
@@ -98,6 +104,49 @@ def request_extras() -> dict:
         "max_tool_calls": MAX_SEARCHES,
         "web_search_options": {"search_context_size": "low"},
     }
+
+
+@dataclass(frozen=True)
+class ShadowSpec:
+    """One paid shadow's fixed facts. Switch and caps are read from bot_config
+    (`<config>_ENABLED`, ...) at use, so a test can change them."""
+
+    name: str  # "GPT shadow": the public log and alerts
+    tag: str  # "gpt": ledger calls' "shadow", question entries' "<tag>_shadow", the day field "<tag>_shadow_days"
+    config: str  # "GPT_SHADOW": the bot_config names' prefix
+    variant: str  # its forecast's name in the shadows file's "shadow" variants
+    price_input: float  # dollars per million tokens
+    price_output: float
+    search_price: float  # dollars per search
+    reservation: float  # reserved per call (its worst case)
+    max_output_tokens: int
+    timeout: Callable[[], float]  # seconds (read at use)
+    extras: Callable[[], dict]  # the OpenRouter-only request fields
+    search_note: str  # the system note
+    provider: str | None = None  # the ONE OpenRouter provider endpoint it is pinned to, if any
+
+    def setting(self, name: str) -> Any:
+        return getattr(bot_config, f"{self.config}_{name}")
+
+    @property
+    def model(self) -> str:
+        return self.setting("MODEL")
+
+    @property
+    def ledger_model(self) -> str:
+        return self.model.removeprefix("openrouter/")
+
+    @property
+    def slot(self) -> str:
+        """Its key in the shadows file ("gpt_shadow") and its task's _in_shadow value."""
+        return f"{self.tag}_shadow"
+
+
+GPT = ShadowSpec(
+    name="GPT shadow", tag="gpt", config="GPT_SHADOW", variant=VARIANT, price_input=PRICE_INPUT,
+    price_output=PRICE_OUTPUT, search_price=SEARCH_PRICE, reservation=RESERVATION, max_output_tokens=MAX_OUTPUT_TOKENS,
+    timeout=lambda: TIMEOUT_SECONDS, extras=request_extras, search_note=SEARCH_NOTE,
+)
 
 
 def _get(obj: Any, name: str) -> Any:
@@ -159,14 +208,15 @@ def citation_numbers(raw: Any) -> dict:
     }
 
 
-def estimate_searches(cost: float | None, input_tokens: int | None, output_tokens: int | None) -> int | None:
+def estimate_searches(cost: float | None, input_tokens: int | None, output_tokens: int | None,
+                      spec: ShadowSpec = GPT) -> int | None:
     """When OpenRouter doesn't report the searches (22 Oct Test Bot: usage had no
-    server_tool_use): round((cost - token cost) / $0.01), at least 0; None if a
-    number is missing. Private log only."""
+    server_tool_use): round((cost - token cost) / search price), at least 0; None
+    if a number is missing. Private log only."""
     if not cost or cost <= 0 or input_tokens is None or output_tokens is None:
         return None
-    tokens = (input_tokens * PRICE_INPUT + output_tokens * PRICE_OUTPUT) / 1_000_000
-    return max(0, round((cost - tokens) / SEARCH_PRICE))
+    tokens = (input_tokens * spec.price_input + output_tokens * spec.price_output) / 1_000_000
+    return max(0, round((cost - tokens) / spec.search_price))
 
 
 @dataclass
@@ -176,7 +226,7 @@ class Reservation:
     shadow: "GptShadow"
     key: str
     seasonal: bool
-    amount: float = RESERVATION
+    amount: float = RESERVATION  # the shadow's spec.reservation
     settled: bool = False
     charged: float = 0.0
     call: dict = field(default_factory=dict)
@@ -196,13 +246,16 @@ class Reservation:
 
 
 class GptShadow:
-    """The run's GPT shadow: caps, reservations and the spend ledger entries."""
+    """The run's GPT shadow (or another paid shadow: `spec`): caps, reservations
+    and the spend ledger entries."""
+
+    spec: ShadowSpec = GPT
 
     def __init__(self, spend: SpendGuard | None, key_left: float | None, enabled: bool | None = None,
                  llm_class: type | None = None) -> None:
         self.spend = spend
         self.key_left = key_left
-        self.enabled = bot_config.GPT_SHADOW_ENABLED if enabled is None else enabled
+        self.enabled = self.spec.setting("ENABLED") if enabled is None else enabled
         self.llm_class = llm_class or GptShadowLlm
         self.day_spent_at_start = spend.day_spent() if spend is not None else 0.0
         self.off: str | None = None  # set during the run: a credit error, or a call over its reservation
@@ -215,9 +268,9 @@ class GptShadow:
     # ------------------------------------------------------------ deciding
 
     def _run_committed(self) -> float:
-        """This run's OpenRouter spend so far (every model) + running GPT shadow reservations."""
+        """This run's OpenRouter spend so far (every model) + running paid shadow reservations (every shadow)."""
         assert self.spend is not None
-        return max(0.0, self.spend.day_spent() - self.day_spent_at_start) + sum(self.spend.gpt_shadow_in_flight.values())
+        return max(0.0, self.spend.day_spent() - self.day_spent_at_start) + self.spend.shadows_in_flight()
 
     def reserve(self, key: str, seasonal: bool | None) -> Reservation | str:
         """A reservation, or why there is no GPT shadow for this question (a
@@ -233,19 +286,20 @@ class GptShadow:
             return BLOCKED
         if self.key_left is None:
             return KEY_UNKNOWN
-        if self.key_left - self._run_committed() - RESERVATION < bot_config.GPT_SHADOW_MIN_KEY_LEFT - 1e-9:
+        spec, amount = self.spec, self.spec.reservation
+        if self.key_left - self._run_committed() - amount < spec.setting("MIN_KEY_LEFT") - 1e-9:
             return KEY_LOW
-        in_flight = spend.gpt_shadow_in_flight
-        if spend.gpt_shadow_question_spent(key) + in_flight.get(key, 0.0) + RESERVATION > bot_config.GPT_SHADOW_QUESTION_CAP + 1e-9:
+        in_flight = spend.shadow_in_flight(spec.tag)
+        if spend.shadow_question_spent(spec.tag, key) + in_flight.get(key, 0.0) + amount > spec.setting("QUESTION_CAP") + 1e-9:
             return QUESTION_CAP
-        day = spend.gpt_shadow_day_spent() + sum(in_flight.values()) + RESERVATION
-        if day > bot_config.GPT_SHADOW_DAILY_CAP + 1e-9:
+        day = spend.shadow_day_spent(spec.tag) + sum(in_flight.values()) + amount
+        if day > spec.setting("DAILY_CAP") + 1e-9:
             return DAY_CAP
-        if seasonal is not True and day > bot_config.GPT_SHADOW_MINIBENCH_DAILY_CAP + 1e-9:
+        if seasonal is not True and day > spec.setting("MINIBENCH_DAILY_CAP") + 1e-9:
             # MiniBench (or unknown: fail closed) keeps $0.50 of the day for seasonal.
             return MINIBENCH_PRIORITY
-        in_flight[key] = in_flight.get(key, 0.0) + RESERVATION
-        return Reservation(self, key, seasonal is True)
+        in_flight[key] = in_flight.get(key, 0.0) + amount
+        return Reservation(self, key, seasonal is True, amount=amount)
 
     def stop_reason(self) -> str | None:
         return self.off
@@ -257,7 +311,7 @@ class GptShadow:
 
     def _unreserve(self, reservation: Reservation) -> None:
         assert self.spend is not None
-        in_flight = self.spend.gpt_shadow_in_flight
+        in_flight = self.spend.shadow_in_flight(self.spec.tag)
         in_flight[reservation.key] = max(0.0, in_flight.get(reservation.key, 0.0) - reservation.amount)
 
     def _charge(self, reservation: Reservation, ok: bool, cost: float | None, error: BaseException | None,
@@ -270,7 +324,7 @@ class GptShadow:
                 charge = reservation.amount  # fail closed: unknown cost -> the reservation
                 self.unknown_cost_calls += 1
                 spend.unknown_cost_calls += 1
-                logger.warning("GPT shadow: cost unknown, charged the reservation")
+                logger.warning(f"{self.spec.name}: cost unknown, charged the reservation")
             else:
                 charge = float(cost)
         elif http_status(error) in PRE_GENERATION_REJECTIONS:
@@ -278,23 +332,26 @@ class GptShadow:
         else:
             charge = reservation.amount  # timeout, cancel, cut connection, failure after billing
         if http_status(error) == 402:
-            self.off = "credit error"  # never retried; no more GPT shadow calls this run
+            self.off = "credit error"  # never retried; no more calls of this shadow this run
         if charge > reservation.amount + 1e-9:
             self.overruns += 1
             self.off = "over its reservation"
-            logger.warning(f"GPT shadow over its reservation (${charge:.4f}): off for the rest of the run")
-        day = utc_day()
+            logger.warning(f"{self.spec.name} over its reservation (${charge:.4f}): off for the rest of the run")
+        spec, day = self.spec, utc_day()
         spend.days[day] = spend.days.get(day, 0.0) + charge
-        spend.gpt_shadow_days[day] = spend.gpt_shadow_days.get(day, 0.0) + charge
+        days = spend.shadow_days(spec.tag)
+        days[day] = days.get(day, 0.0) + charge
         entry = spend.questions.setdefault(reservation.key, {"spent": 0.0})
-        entry["gpt_shadow"] = float(entry.get("gpt_shadow", 0.0)) + charge
+        entry[spec.slot] = float(entry.get(spec.slot, 0.0)) + charge
         entry["last"] = day
         call = {
-            # "day": the GPT shadow's day total can be rebuilt from its calls (spend.gpt_shadow_day_spent).
-            "model": LEDGER_MODEL, "shadow": "gpt", "day": day, "ok": ok, "charged": round(charge, 6),
+            # "day": the shadow's day total can be rebuilt from its calls (spend.shadow_day_spent).
+            "model": spec.ledger_model, "shadow": spec.tag, "day": day, "ok": ok, "charged": round(charge, 6),
             "cost_known": bool(ok and cost), "output_tokens": output_tokens, "input_tokens": input_tokens,
             "searches": searches, "reserve": reservation.amount,
         }
+        if spec.provider:
+            call["provider"] = spec.provider
         if seconds is not None:
             call["seconds"] = round(seconds, 1)
         if not ok:
@@ -312,34 +369,37 @@ class GptShadow:
     def summary(self) -> str:
         """Numbers only (public log / step summary)."""
         parts = ", ".join(f"{k} {v}" for k, v in sorted(self.statuses.items())) or "none"
-        return (f"GPT shadow ({LEDGER_MODEL}, never submitted): {parts}; ${self.dollars:.4f}; "
+        return (f"{self.spec.name} ({self.spec.ledger_model}, never submitted): {parts}; ${self.dollars:.4f}; "
                 f"searches {self.searches}; over reservation {self.overruns}")
 
 
 def overrun_alert(shadow: GptShadow, notify: Any, today: str | None = None) -> bool:
-    """After a run: a GPT shadow call over its reservation (the GPT shadow was
+    """After a run: a paid shadow call over its reservation (the shadow was
     switched off for the rest of the run) opens an alert issue, once a UTC day."""
     from spend import _alert
 
     if not shadow.overruns or shadow.spend is None:
         return False
-    _alert(shadow.spend, "gpt-shadow-overrun", today or utc_day(), notify, "GPT shadow call over its reservation",
-           f"{shadow.overruns} GPT shadow call(s) this run cost more than the ${RESERVATION:.2f} reservation (more "
-           "searches or search text than allowed for); each was charged in full and the GPT shadow was switched "
-           "off for the rest of the run. Check the GPT shadow line of the run.")
+    name = shadow.spec.name
+    _alert(shadow.spend, f"{shadow.spec.tag}-shadow-overrun", today or utc_day(), notify, f"{name} call over its reservation",
+           f"{shadow.overruns} {name} call(s) this run cost more than the ${shadow.spec.reservation:.2f} reservation (more "
+           f"searches or search text than allowed for); each was charged in full and the {name} was switched "
+           f"off for the rest of the run. Check the {name} line of the run.")
     return True
 
 
 class GptShadowLlm(GeneralLlm):
-    """One guarded OpenRouter call (no retries, no backup) for one question's GPT shadow."""
+    """One guarded OpenRouter call (no retries, no backup) for one question's
+    GPT shadow (or the paid shadow of `shadow.spec`)."""
 
     def __init__(self, shadow: GptShadow, reservation: Reservation, timeout: float) -> None:
+        spec = shadow.spec
         super().__init__(
-            model=MODEL, temperature=None, timeout=timeout, allowed_tries=1,
-            max_tokens=MAX_OUTPUT_TOKENS, extra_body=request_extras(),
+            model=spec.model, temperature=None, timeout=timeout, allowed_tries=1,
+            max_tokens=spec.max_output_tokens, extra_body=spec.extras(),
         )
-        if self.model != bot_config.GPT_SHADOW_MODEL:  # this exact model only
-            raise ValueError("GPT shadow: wrong model")
+        if self.model != spec.setting("MODEL"):  # this exact model only
+            raise ValueError(f"{spec.name}: wrong model")
         self._shadow = shadow
         self._reservation = reservation
         self._raw: Any = None
@@ -348,7 +408,7 @@ class GptShadowLlm(GeneralLlm):
 
     async def invoke(self, prompt: Any, system_prompt: str | None = None) -> str:
         if system_prompt is None and isinstance(prompt, str):
-            system_prompt = SEARCH_NOTE
+            system_prompt = self._shadow.spec.search_note
         return await super().invoke(prompt, system_prompt)
 
     async def _call_litellm(self, prompt: Any) -> Any:
@@ -363,12 +423,12 @@ class GptShadowLlm(GeneralLlm):
 
     async def _mockable_direct_call_to_model(self, prompt: Any) -> Any:
         if self.calls:
-            raise RuntimeError("GPT shadow: one call per question, no retries")
+            raise RuntimeError(f"{self._shadow.spec.name}: one call per question, no retries")
         self.calls += 1
         why = self._shadow.stop_reason()
         if why:
             self._reservation.release()
-            raise SpendCapReached(f"GPT shadow: {why}")
+            raise SpendCapReached(f"{self._shadow.spec.name}: {why}")
         started = time.monotonic()
         response, usage, failure = None, None, None
         try:
@@ -390,7 +450,8 @@ class GptShadowLlm(GeneralLlm):
                 searches=numbers["searches"], input_tokens=numbers["input_tokens"], output_tokens=numbers["output_tokens"],
             )
             if numbers["searches"] is None and response is not None:
-                numbers["searches_estimated"] = estimate_searches(cost, numbers["input_tokens"], numbers["output_tokens"])
+                numbers["searches_estimated"] = estimate_searches(
+                    cost, numbers["input_tokens"], numbers["output_tokens"], self._shadow.spec)
             if response is not None:
                 numbers.update(citation_numbers(self._raw))
             self.numbers = numbers

@@ -911,9 +911,9 @@ def frontier_report(planner: FrontierPlanner) -> str:
             continue
         for question, entry in guard.questions.items():
             for call in entry.get("calls", [])[planner.calls_before.get((provider, question), 0):]:
-                # The GPT shadow (gpt_shadow.py) is counted apart from paid Flash: its own row and $.
-                shadow = provider == "OpenRouter" and call.get("shadow") == "gpt"
-                where = "OpenRouter (GPT shadow)" if shadow else provider
+                # The paid shadows (gpt_shadow.py, kimi_shadow.py) are counted apart from paid Flash: own rows and $.
+                shadow = {"gpt": "GPT shadow", "kimi": "Kimi shadow"}.get(call.get("shadow")) if provider == "OpenRouter" else None
+                where = f"OpenRouter ({shadow})" if shadow else provider
                 row = rows.setdefault((where, call["model"]), {"calls": 0, "ok": 0, "tokens": [], "seconds": [], "dollars": 0.0, "failed": []})
                 row["calls"] += 1
                 row["ok"] += bool(call.get("ok"))

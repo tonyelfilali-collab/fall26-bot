@@ -189,6 +189,20 @@ GPT_SHADOW_DAILY_CAP = 1.50  # dollars per UTC day (GPT shadow spend only)
 GPT_SHADOW_MINIBENCH_DAILY_CAP = 1.00  # MiniBench: only while the day's GPT shadow spend stays under this
 GPT_SHADOW_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, no GPT shadow
 
+# Kimi shadow (architect, 28 Oct, option (a); kimi_shadow.py; built OFF): the
+# GPT shadow's plumbing and caps with OpenRouter moonshotai/kimi-k3 pinned to
+# ONE provider endpoint (the cheapest with tool support) and OpenRouter's web
+# search server tool on Exa (at most 3 searches). Private shadows file only,
+# NEVER submitted; not in any lineup (is_free_model stays False for it).
+# Test Bot: --kimi-shadow switches it on for that run only.
+KIMI_SHADOW_ENABLED = False  # OFF until the Test Bot gate passes (architect pre-approval, 28 Oct)
+KIMI_SHADOW_MODEL = "openrouter/moonshotai/kimi-k3"
+KIMI_SHADOW_PROVIDER = "relace/fp4"  # Relace, fp4; $0.1577/M in, $9.7439/M out (OpenRouter, 28 Oct); no fallbacks
+KIMI_SHADOW_QUESTION_CAP = 0.25  # dollars per question
+KIMI_SHADOW_DAILY_CAP = 1.50  # dollars per UTC day (Kimi shadow spend only)
+KIMI_SHADOW_MINIBENCH_DAILY_CAP = 1.00  # MiniBench: only while the day's Kimi shadow spend stays under this
+KIMI_SHADOW_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, no Kimi shadow
+
 
 
 def is_free_model(model: str) -> bool:

@@ -63,8 +63,8 @@ def test_test_bot_groups():
     # The lineups with the live Gemini key (gemini-free, frontier, frontier-agent(s2)) share the live queue.
     gemini = ("(inputs.lineup == 'gemini-free' || inputs.lineup == 'frontier' || inputs.lineup == 'frontier-agent'"
               " || inputs.lineup == 'frontier-agents2')")
-    # ... and so does a GPT shadow test (it writes the spend ledger like the live run).
-    queue = gemini.removesuffix(")") + " || inputs.gpt_shadow)"
+    # ... and so does a GPT or Kimi shadow test (it writes the spend ledger like the live run).
+    queue = gemini.removesuffix(")") + " || inputs.gpt_shadow || inputs.kimi_shadow)"
     assert f"{queue} && 'forecast-bot' || 'test-bot-no-gemini'" in text
     assert f"{gemini} && secrets.GEMINI_API_KEY || ''" in text
     for workflow in ("run_bot_on_tournament.yaml", "probe.yaml"):
