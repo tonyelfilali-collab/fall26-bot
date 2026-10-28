@@ -41,8 +41,9 @@ RESEARCHER = "planned-research"
 HIGH_REASONING = {"reasoning": {"effort": "high"}}
 
 # Free test model. Picked because it is a large free model on OpenRouter
-# that supports structured output.
-FREE_MODEL = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+# that supports structured output. Nemotron 3 Super's ":free" variant was
+# removed from OpenRouter (404, 28 Oct); Ultra is the same family, still free.
+FREE_MODEL = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
 
 # PLAN.md Step 9 (markets.py): "log-only" = find and judge matching Polymarket
 # / Kalshi / Manifold markets for binary questions and SAVE them (question JSON
