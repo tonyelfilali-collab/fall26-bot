@@ -195,7 +195,7 @@ GPT_SHADOW_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, 
 # search server tool on Exa (at most 3 searches). Private shadows file only,
 # NEVER submitted; not in any lineup (is_free_model stays False for it).
 # Test Bot: --kimi-shadow switches it on for that run only.
-KIMI_SHADOW_ENABLED = False  # OFF until the Test Bot gate passes (architect pre-approval, 28 Oct)
+KIMI_SHADOW_ENABLED = True  # ON (architect pre-approval, 28 Oct: search worked 4/4, every call <= $0.25, submitted forecasts identical)
 KIMI_SHADOW_MODEL = "openrouter/moonshotai/kimi-k3"
 KIMI_SHADOW_PROVIDER = "relace/fp4"  # Relace, fp4; $0.1577/M in, $9.7439/M out (OpenRouter, 28 Oct); no fallbacks
 KIMI_SHADOW_QUESTION_CAP = 0.25  # dollars per question

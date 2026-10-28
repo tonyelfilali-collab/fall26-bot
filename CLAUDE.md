@@ -24,7 +24,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   caps ($0.10/question, $1.00/UTC day, MiniBench paid only while the day's paid spend is under $0.50,
   paid only until a question has 3 real forecasts); openai/gpt-6.1-sol as the GPT shadow only,
   $0.25/question, $1.50/UTC day (ON 22-28 Oct, OFF since 28 Oct; never submitted); moonshotai/kimi-k3 as the Kimi
-  shadow only, the same caps (one pinned provider; OFF until switched on; never submitted). Every other paid model stays refused. The key
+  shadow only, the same caps (one pinned provider; ON since 28 Oct; never submitted). Every other paid model stays refused. The key
   limit ($25; Tony raised it from $8 to $15 on 21 Oct and to $25 on 22 Oct) is the hard ceiling. Keep free-model use under 600 requests a day. GPT-5.6 Sol is OFF
   (`FRONTIER_GPT_ENABLED = False`; if the architect switches it on: seasonal only, $0.30 per seasonal
   question with paid Flash, none when the key has under $2 left).
