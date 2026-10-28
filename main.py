@@ -438,11 +438,14 @@ _research_deadline: contextvars.ContextVar = contextvars.ContextVar("research_de
 # True inside the shadow forecaster's own task (Build 1b): its answer is only
 # read directly (no parser call) and its reading is logged apart from live.
 # The GPT shadow's task sets it to "gpt_shadow" (its reading is kept apart too),
-# the Kimi shadow's to "kimi_shadow".
+# the Kimi shadow's to "kimi_shadow"; these two fall back to the free Flash-Lite
+# parser like live forecasts (above the reserve only; architect, 28 Oct).
 _in_shadow: contextvars.ContextVar = contextvars.ContextVar("in_shadow", default=False)
 GPT_SHADOW_SLOT = "gpt_shadow"
 KIMI_SHADOW_SLOT = "kimi_shadow"
 PAID_SHADOW_SLOTS = (GPT_SHADOW_SLOT, KIMI_SHADOW_SLOT)
+# A paid shadow's raw reply, saved in the private shadows file (its last part).
+SHADOW_REPLY_CHARS = 20000
 # Build 2c: how long research waits for the official data fetch (it runs
 # beside research and is usually done first).
 HARD_DATA_WAIT_SECONDS = 45
@@ -665,6 +668,12 @@ class FallBot2026(ForecastBot):
         return [p for p in predictions if not any(p is f for f in flagged)]
 
     def get_llm(self, purpose="default", guarantee_type=None):  # type: ignore[override]
+        if purpose == "parser" and _in_shadow.get() in PAID_SHADOW_SLOTS:
+            # A paid shadow's reply not readable directly: the free Flash-Lite
+            # parser, never the reserve kept for live forecasts.
+            if isinstance(self.planner, GeminiPool):
+                return self.planner.parser(allow_reserve=False)
+            return super().get_llm(purpose, guarantee_type)
         if purpose == "parser" and _in_shadow.get():
             # The shadow forecaster never uses the live parser quota.
             raise NoValidForecast("shadow forecaster: answer not readable directly")
@@ -1055,6 +1064,8 @@ class FallBot2026(ForecastBot):
         record = self._record_for(question)
         if _in_shadow.get() in PAID_SHADOW_SLOTS:
             record.setdefault(f"{_in_shadow.get()}_reading", []).append(how)
+            if reply:  # kept for the private shadows file if the answer is dropped
+                record[f"{_in_shadow.get()}_reply"] = reply
             return
         if _in_shadow.get():
             record.setdefault("shadow_model", {}).setdefault("reading", []).append(how)
@@ -1387,26 +1398,26 @@ class FallBot2026(ForecastBot):
         _planned_forecaster.set(llm)
         replay_question.set(question)
         current_question_key.set(self._question_key(question))
-        prediction = await asyncio.wait_for(self._forecast_by_type(question, research), timeout)
-        return prediction.prediction_value
+        return await asyncio.wait_for(self._forecast_by_type(question, research), timeout)
 
     async def _gpt_shadow_at_end(self, spec: Any, shadow: Any, question: MetaculusQuestion, record: dict, research: str,
                                  reservation: Any, seconds: float) -> None:
         """One paid shadow call (`spec`) in its own task: at most `seconds` (240 s,
         and never past minute 47), then cancelled and charged its reservation."""
         assert shadow is not None
-        llm, value, started = None, None, time.monotonic()
+        llm, value, reply, started = None, None, None, time.monotonic()
         self._hold_record(question, record)
         try:
             llm = shadow.make_llm(reservation, seconds)
-            value = await asyncio.create_task(self._gpt_shadow_task(question, research, llm, seconds, spec.slot))
+            prediction = await asyncio.create_task(self._gpt_shadow_task(question, research, llm, seconds, spec.slot))
+            value, reply = prediction.prediction_value, prediction.reasoning
             status = gpt.SAVED if value is not None else gpt.NO_ANSWER
         except asyncio.TimeoutError:
             status = gpt.TIMED_OUT
         except SpendCapReached:
             status = f"skipped: {shadow.off or 'stopped'}"
         except NoValidForecast:
-            status = gpt.NO_ANSWER  # the reply couldn't be read directly (no parser call for a shadow)
+            status = gpt.NO_ANSWER  # the reply couldn't be read, even by the parser
         except Exception as e:
             status = f"failed ({type(e).__name__})"
         finally:
@@ -1420,6 +1431,10 @@ class FallBot2026(ForecastBot):
             "output_tokens": numbers.get("output_tokens"),
             "reading": record.pop(f"{spec.slot}_reading", []),
         }
+        reply = reply or record.pop(f"{spec.slot}_reply", None)
+        record.pop(f"{spec.slot}_reply", None)
+        if reply:
+            result["reply"] = reply[-SHADOW_REPLY_CHARS:]  # the private shadows file only, never a public log
         if "domains" in numbers:
             # The cited URLs' domains only (never URLs or text), private file only.
             result.update(domains=numbers["domains"], domains_count=numbers["domains_count"],
