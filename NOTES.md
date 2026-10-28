@@ -263,7 +263,7 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   seasonal/MiniBench question closes within 60 min without our forecast, if there has been no
   successful tournament run for 3 hours, or if a check can't run. **Warning** if any Gemini model
   (forecasters and parsers) has under 20% of its daily quota left (architect, 27 Sep: warning
-  only), if AskNews returns 402, or if any tournament run in the last 24 h had a JSON log or
+  only), if AskNews returns 402 (plus, since 28 Oct, the count of questions with an AskNews 402 in the last 24 h of live-run logs), or if any tournament run in the last 24 h had a JSON log or
   ledger save failure. Since 1 Oct also **red** if any workflow's state (Actions API) isn't "active"
   (named; "deleted" = file removed, not counted) and a **warning** if main's last commit is older than
   21 days (standing rule: a notes PR at least every 21 days). Manual option
