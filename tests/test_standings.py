@@ -48,10 +48,13 @@ def test_monday_lines_with_change_since_last_monday():
     get = fake_get({"leaderboards/project/33121/": board(12, 12.5, 3.1, 20.4),
                     "leaderboards/project/33132/": board(4, 4.0)})
     lines = standings.standings_lines(MONDAY.date(), [("Fall", 33121), ("MiniBench", 33132)], store, get)
-    assert lines[0] == ("- Fall (33121): rank 12, score 12.50, 95% range 3.10 to 20.40; "
+    assert lines[0] == ("- Fall (33121): rank 12, score 12.50, 95% range 3.10 to 20.40, prize shown n/a; "
                         "change since 2026-10-19: rank up 3 (was 15), score +2.50 (was 10.00)")
-    assert "95% range n/a" in lines[1] and "rank down 1 (was 3), score -1.00 (was 5.00)" in lines[1]
-    assert store.data["2026-10-26"]["Fall"] == {"rank": 12, "score": 12.5, "low": 3.1, "high": 20.4, "tid": 33121}
+    assert lines[1] == "  - field (2 entries): #1 99.00, #10 12.50, #50 ?, last paid rank n/a (no prizes shown)"
+    assert lines[2] == "  - resolved questions: n/a"
+    assert "95% range n/a" in lines[3] and "rank down 1 (was 3), score -1.00 (was 5.00)" in lines[3]
+    assert store.data["2026-10-26"]["Fall"] == {"rank": 12, "score": 12.5, "low": 3.1, "high": 20.4, "prize": None,
+                                                "tid": 33121}
     assert store.saved == ["Standings 2026-10-26"]
 
 
@@ -60,7 +63,7 @@ def test_first_monday_new_round_and_one_missing():
     get = fake_get({"leaderboards/project/33132/": [{"name": "Peer", "entries": board(7, 1.0)["entries"]}],
                     "projects/tournaments/minibench/": {"id": 33132}})
     lines = standings.standings_lines(MONDAY.date(), [("Fall", 33121), ("MiniBench", "minibench")], store, get)
-    assert lines[0] == "- Fall: unavailable"
+    assert lines[0] == "- Fall (33121): unavailable (leaderboard not readable)"
     assert "MiniBench (33132): rank 7" in lines[1] and "change: n/a (new round since 2026-10-19)" in lines[1]
     first = standings.standings_lines(MONDAY.date(), [("MiniBench", 33132)], FakeStore(None), get)
     assert "no earlier Monday stored" in first[0]
@@ -68,10 +71,36 @@ def test_first_monday_new_round_and_one_missing():
 
 def test_not_on_board_or_api_down_is_one_line():
     other = board(1, 1.0, user={"id": 5, "username": "someone"})
-    for get in (fake_get({}), fake_get({"leaderboards/project/33121/": other}), lambda path: 1 / 0):
+    for get, why in ((fake_get({}), " (Fall (33121): unavailable (leaderboard not readable))"),
+                     (fake_get({"leaderboards/project/33121/": other}),
+                      " (Fall (33121): unavailable (not on the leaderboard yet (2 entries)))"),
+                     (lambda path: 1 / 0, "")):
         store = FakeStore({})
-        assert standings.standings_lines(MONDAY.date(), [("Fall", 33121)], store, get) == [standings.UNAVAILABLE]
+        assert standings.standings_lines(MONDAY.date(), [("Fall", 33121)], store, get) == [standings.UNAVAILABLE + why]
         assert store.saved == []
+
+
+def test_prize_field_scores_and_resolved_count():
+    entries = [{"user": {"id": 100 + r, "username": f"b{r}"}, "rank": r, "score": 100.0 - r,
+                "prize": 500.0 / r if r <= 136 else 0.0, "contribution_count": 40 - (r % 3)} for r in range(1, 200)]
+    entries[111] = {"user": dict(ME), "rank": 112, "score": 20.36, "ci_lower": 17.9, "ci_upper": 22.8,
+                    "prize": 95.0, "contribution_count": 38}
+    get = fake_get({"leaderboards/project/33121/": {"entries": entries},
+                    "posts/?tournaments=33121&statuses=resolved&limit=1": {"count": 61, "results": []}})
+    lines = standings.standings_lines(MONDAY.date(), [("Fall", 33121)], FakeStore({}), get)
+    assert lines[0].startswith("- Fall (33121): rank 112, score 20.36, 95% range 17.90 to 22.80, prize shown $95; ")
+    assert lines[1] == "  - field (199 entries): #1 99.00, #10 90.00, #50 50.00, last paid #136 -36.00"
+    assert lines[2] == "  - resolved questions: 61"
+    # No posts count: the most questions any entry was scored on.
+    get = fake_get({"leaderboards/project/33121/": {"entries": entries}})
+    lines = standings.standings_lines(MONDAY.date(), [("Fall", 33121)], FakeStore({}), get)
+    assert lines[2] == "  - resolved questions: 40 (most questions scored on the leaderboard)"
+
+
+def test_score_at_skips_missing_ranks():
+    entries = standings.ranked({"entries": [{"rank": 1, "score": 9.0}, {"rank": 12, "score": 3.0}, {"rank": None}]})
+    assert standings.score_at(entries, 10) == 3.0 and standings.score_at(entries, 50) is None
+    assert standings.last_paid(entries) is None
 
 
 def test_store_failures_still_show_the_standing():
@@ -86,7 +115,8 @@ def test_store_failures_still_show_the_standing():
 def test_health_adds_standings_only_soft():
     report = health_check.Report()
     health_check.add_standings(MONDAY, 33132, report, store=FakeStore({}), get=lambda path: None)
-    assert report.standings == [standings.UNAVAILABLE] and not report.red and not report.warnings
+    assert len(report.standings) == 1 and report.standings[0].startswith(standings.UNAVAILABLE)
+    assert not report.red and not report.warnings
     assert standings.is_monday(MONDAY.date()) and not standings.is_monday(date(2026, 10, 22))
 
 
