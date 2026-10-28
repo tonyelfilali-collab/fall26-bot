@@ -71,16 +71,17 @@ def _kimi_bot(shadow, gpt_shadow=None, seasonal_by_post=None):
 # ---------------------------------------------------------------- switch and request
 
 
-def test_built_off_and_only_this_exact_paid_model(monkeypatch):
-    assert bot_config.KIMI_SHADOW_ENABLED is False  # OFF until the Test Bot gate passes
+def test_switch_and_only_this_exact_paid_model(monkeypatch):
+    assert bot_config.KIMI_SHADOW_ENABLED is True  # ON (architect pre-approval, 28 Oct)
     assert bot_config.KIMI_SHADOW_MODEL == "openrouter/moonshotai/kimi-k3"
     assert not bot_config.is_free_model(bot_config.KIMI_SHADOW_MODEL)
     for name in ("free", "gemini-free", "frontier", "replay", "replay-gemini"):
         assert bot_config.KIMI_SHADOW_MODEL not in bot_config.get_lineup(name).llm_model_names()
         assert bot_config.KIMI_SHADOW_MODEL not in bot_config.get_lineup(name).allowed_paid
-    assert kimi.KimiShadow(_spend(), 10.0).reserve("1", True) == gpt.OFF
-    monkeypatch.setattr(bot_config, "KIMI_SHADOW_ENABLED", True)
     assert not isinstance(kimi.KimiShadow(_spend(), 10.0).reserve("1", True), str)
+    # The switch read from bot_config: off -> no reservation.
+    monkeypatch.setattr(bot_config, "KIMI_SHADOW_ENABLED", False)
+    assert kimi.KimiShadow(_spend(), 10.0).reserve("1", True) == gpt.OFF
 
 
 def test_caps_are_the_gpt_shadows():

@@ -29,7 +29,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | `YAHOO_ENABLED` | `hard_data.py` | ON, but Yahoo answers 429 | Stocks/indices/commodities/FX via Yahoo; blocked, skipped gracefully (stocks not covered) | #87 |
 | Shadow forecaster | `SHADOW_FORECAST_MODEL` | Nemotron Ultra `:free` | After each live forecast; never submitted; scored | #61 |
 | `GPT_SHADOW_ENABLED` | `bot_config.py` (gpt_shadow.py) | OFF (28 Oct, architect; ON 22-28 Oct; built OFF in #170) | End of run: OpenRouter `openai/gpt-6.1-sol` + native web search (3 searches asked) on the question's dossier, every live question and type; private `<log>_shadows.json` only, never submitted; $0.25/question, $1.50/UTC day, MiniBench only under $1.00, seasonal first, none under $2 key left | this PR |
-| `KIMI_SHADOW_ENABLED` | `bot_config.py` (kimi_shadow.py) | OFF (28 Oct, built OFF; architect pre-approval to switch on after one Test Bot) | End of run: OpenRouter `moonshotai/kimi-k3` pinned to `KIMI_SHADOW_PROVIDER` (`relace/fp4`, no fallbacks) + the web search server tool on Exa (max_uses 3, 5 results, metaculus.com excluded) on the question's dossier; private shadows file only, never submitted; the GPT shadow's caps | this PR |
+| `KIMI_SHADOW_ENABLED` | `bot_config.py` (kimi_shadow.py) | **ON** (28 Oct, architect pre-approval: Test Bot 40732320965 search 4/4, $0.022-0.025 a call; built OFF in #178) | End of run: OpenRouter `moonshotai/kimi-k3` pinned to `KIMI_SHADOW_PROVIDER` (`relace/fp4`, no fallbacks) + the web search server tool on Exa (max_uses 3, 5 results, metaculus.com excluded) on the question's dossier; private shadows file only, never submitted; the GPT shadow's caps | this PR |
 | Zero-cost shadows | `shadow.py`, `window_baseline.py` | ON | Stretch, mean, geo-mean, trimmed-mean, MC mean, numeric mean-cdf/uniform, window baseline (replaced the random walk, 1 Oct), window-blend (50/50 live + window, 21 Oct) | #27, #44, #63, #110 |
 | Consistency shadow | `consistency.py` (no switch) | ON | Sibling ladders; isotonic "consistent" shadow; never submitted | #78 |
 | Replay lab | `lab.py`, workflow Replay lab | ON (daily, last 3 h Pacific) | E1-E4 on frozen dossiers after resolution; Nemotron <= 300/day; since PR L (21 Oct): own queue (`replay-lab`, never delays a live run), no Gemini, ends by minute 8 | #92, PR L |
@@ -671,9 +671,9 @@ because it writes the spend ledger).
 - **Daily OpenRouter stop rule:** $3.50 (architect, 22 Oct; was $2.00): paid Flash $1.00 + GPT shadow
   $1.50 per UTC day fit under it; the separate caps stay.
 
-## Kimi shadow (28 Oct 2026, built OFF)
+## Kimi shadow (28 Oct 2026, ON)
 
-`kimi_shadow.py`; switch `bot_config.KIMI_SHADOW_ENABLED` (OFF); Test Bot input `kimi_shadow` (`--kimi-shadow`,
+`kimi_shadow.py`; switch `bot_config.KIMI_SHADOW_ENABLED` (ON since 28 Oct); Test Bot input `kimi_shadow` (`--kimi-shadow`,
 free / gemini-free / frontier lineups, test mode only; joins the live queue). Architect 28 Oct, option (a): the
 GPT shadow's plumbing (`gpt_shadow.ShadowSpec`: one spec per paid shadow, the GPT shadow's behaviour unchanged).
 - **Model and provider:** OpenRouter `moonshotai/kimi-k3`, pinned to ONE endpoint for the whole test:
