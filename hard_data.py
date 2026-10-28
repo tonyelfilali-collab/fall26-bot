@@ -67,9 +67,14 @@ FRED_RULES: tuple[tuple[str, str, str], ...] = (
     (r"\bS&P 500\b.{0,40}\b(close|closing|value|level|index)\b", "SP500", "S&P 500"),
     (r"\bNasdaq Composite\b", "NASDAQCOM", "NASDAQ Composite Index"),
     (r"\bDow Jones Industrial Average\b", "DJIA", "Dow Jones Industrial Average"),
-    (r"\b(WTI|West Texas Intermediate)\b", "DCOILWTICO", "Crude Oil Prices: WTI"),
-    (r"\bBrent\b.{0,20}\b(crude|oil)\b", "DCOILBRENTEU", "Crude Oil Prices: Brent"),
+    (r"\b(WTI|West Texas Intermediate)\b", "DCOILWTICO", "Crude Oil Prices: WTI, Cushing (spot price, daily)"),
+    (r"\bBrent\b.{0,20}\b(crude|oil)\b", "DCOILBRENTEU", "Crude Oil Prices: Brent, Europe (spot price, daily)"),
 )
+# FRED's commodity series are spot prices (architect, 28 Oct: Brent spot ran
+# $10-20 above futures in October). Gold, silver, copper and natural gas come
+# from Yahoo futures (=F, checked the other way round); wheat has no series.
+FRED_SPOT_SERIES = frozenset({"DCOILWTICO", "DCOILBRENTEU"})
+_FUTURES = r"\bfutures?\b|\bfront[- ]month\b|\bsettle(d|ment)?\b|\b(NYMEX|CME|CBOT|ICE Futures)\b|\b(CL|BZ)[FGHJKMNQUVXZ]?\d{2}\b"
 
 # Coins: the coin's name or ticker AND a price word.
 COIN_RULES: tuple[tuple[str, str], ...] = (
@@ -308,6 +313,10 @@ def stand_in_reason(question: Any, found: dict) -> str | None:
     # A futures price standing in for a spot price.
     if found.get("source") == "yahoo" and found["series"].endswith("=F") and re.search(r"\bspot\b|\bLBMA\b", everything, re.IGNORECASE):
         return f"stand-in: {title} is a futures price; the question asks about a spot price"
+    # A spot price standing in for a futures price, unless the question names the FRED series.
+    if (found["series"] in FRED_SPOT_SERIES and re.search(_FUTURES, everything, re.IGNORECASE)
+            and not re.search(rf"\bFRED\b|\b{found['series']}\b", everything)):
+        return f"stand-in: {title}: spot price, not the futures price the question asks about"
     if found.get("source") == "fred":
         # FRED ids (e.g. DGS10) only as written; a coin id is just the coin's name.
         named_ours = re.search(rf"\bFRED\b|\b{re.escape(found['series'])}\b", everything) or re.search(

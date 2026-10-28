@@ -210,3 +210,51 @@ def test_match_rules_unchanged_for_the_pack():
 
     numeric_pack = [q for q in real_regression.load_questions() if q.question_type in ("numeric", "discrete")]
     assert {q.id_of_post for q in numeric_pack if hard_data.match_question(q)} == {41084, 41083, 41080, 39492}
+
+
+# ---------------------------------------------------------------- spot vs futures (28 Oct)
+
+BRENT_HISTORY = [["2026-08-28", 98.0], ["2026-09-25", 112.0], ["2026-09-29", 114.0]]
+BRENT_FUTURES_Q = numeric(  # 45912-style
+    "What will be the settlement price of the front-month Brent crude oil futures contract on October 16, 2026?",
+    "Resolves to the ICE Brent front-month futures settlement price for that day, as reported by ICE.",
+    lower=75.0, upper=130.0,
+)
+
+
+def test_brent_futures_question_gets_the_spot_warning(monkeypatch):
+    found = fred("DCOILBRENTEU", "Crude Oil Prices: Brent, Europe (spot price, daily)", BRENT_HISTORY)
+    assert hard_data.match_question(BRENT_FUTURES_Q).series == "DCOILBRENTEU"
+    line = hard_data.official_line(BRENT_FUTURES_Q, found)
+    assert not line.exact and "spot price, not the futures price the question asks about" in line.warning
+    assert "This series is what the question asks about" not in line.text
+    bot = _bot(monkeypatch, [nine(92, 95, 98, 102, 105, 108, 112, 115, 118)])
+    text, _ = _research_then_parse(bot, BRENT_FUTURES_Q, found)
+    assert "WARNING: stand-in" in text
+    assert "official_current_value" not in bot._record_for(BRENT_FUTURES_Q)  # never feeds the unit check
+
+
+@pytest.mark.parametrize("text, criteria, exact", [
+    ("What will the NYMEX WTI crude oil futures (CL) price be on Nov 2?", "Front-month settlement on CME.", False),
+    ("What will the WTI crude oil price be on Nov 2?", "Resolves to FRED DCOILWTICO (EIA spot) for that day.", True),
+    ("What will the Brent crude oil price be on Nov 2?", "According to the EIA daily spot price.", True),
+    # Names the FRED series: exact even though the fine print mentions futures.
+    ("What will the Brent crude oil price be on Nov 2?", "FRED DCOILBRENTEU, not ICE futures.", True),
+])
+def test_fred_oil_spot_or_futures(text, criteria, exact):
+    series = "DCOILWTICO" if "WTI" in text else "DCOILBRENTEU"
+    question = numeric(text, criteria, lower=40.0, upper=150.0)
+    line = hard_data.official_line(question, fred(series, "Crude Oil Prices (spot price, daily)", BRENT_HISTORY))
+    assert line.exact is exact
+    assert ("spot price, not the futures price" in line.text) is not exact
+
+
+def test_wheat_futures_and_yahoo_futures_unchanged():
+    # 45899-style: no wheat series, so no official line at all.
+    wheat = numeric("What will the CBOT December 2026 wheat futures (ZWZ26) settlement price be on October 15, 2026?",
+                    "Per CME Group settlement.", lower=5.8, upper=8.0)
+    assert hard_data.match_question(wheat) is None
+    # Gold and natural gas come from Yahoo futures: a futures question stays exact.
+    for text in ("What will the price of gold futures be on Nov 2?", "What will the natural gas futures price be on Nov 2?"):
+        found = hard_data.match_question(numeric(text))
+        assert found is not None and found.series.endswith("=F") and found.series not in hard_data.FRED_SPOT_SERIES
