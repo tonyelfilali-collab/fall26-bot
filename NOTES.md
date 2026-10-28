@@ -282,7 +282,11 @@ So there is no free search source while AskNews answers 402; the bot forecasts w
   Fall (33121) and the current MiniBench round (`standings.py`: rank, score, 95% range or "n/a", change
   since the last stored Monday; public leaderboard `leaderboards/project/<id>/`, our bot Quillfeather-Vex,
   user id 309271). Each Monday's values are kept in fall26-data `status/standings.json` (keyed by UTC date).
-  Never red: if nothing can be read the report says "standings: unavailable".
+  Never red: if nothing can be read the report says "standings: unavailable" (with the reason: leaderboard
+  not readable / not on the leaderboard yet). **Since 28 Oct** (architect) also: the prize the leaderboard
+  shows us (entry `prize`, "n/a" if absent), a field line with the scores at rank 1, 10, 50 and the last
+  paid rank (lowest rank with `prize` > 0), and the number of resolved questions (posts count with
+  `statuses=resolved`, else the most questions any entry was scored on, `contribution_count`).
 - 07:00 UK is 23:00 Pacific, the end of Google's quota day, so the quota warning will be common.
 - Test Bot has a "fail planned forecasts" option to prove the quick forecast.
 - **Test Bot never uses the live Gemini quota:** by default it runs the `free` lineup (OpenRouter
