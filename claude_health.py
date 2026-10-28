@@ -43,6 +43,10 @@ AGENT_DEAR_CALL = 1.00  # dollars: agent calls over this are listed
 TOTALS_TOLERANCE = 0.01  # dollars: ledger days total vs sum of call charges
 FRONTIER_LINE = re.compile(r"Frontier lineup: (full|low|minimal|off) \((.*?)\); GPT")
 OVERRUN_LINE = "agent over its reservation"
+# research.py's public warning, one per question whose AskNews call failed.
+ASKNEWS_402_LINE = "AskNews failed (HTTP 402)"
+ASKNEWS_FAILED_LINE = "AskNews failed"
+ASKNEWS_FOUND = re.compile(r"\(AskNews [1-9]\d* in \d+ call")
 
 
 def is_live_key(key: str) -> bool:
@@ -330,4 +334,25 @@ def run_from_log(text: str) -> dict | None:
     match = FRONTIER_LINE.search(text)
     if match is None:
         return None
-    return {"mode": match.group(1), "reason": match.group(2), "overruns": text.count(OVERRUN_LINE)}
+    return {
+        "mode": match.group(1), "reason": match.group(2), "overruns": text.count(OVERRUN_LINE),
+        "asknews_402": text.count(ASKNEWS_402_LINE),
+        "asknews_other_failed": text.count(ASKNEWS_FAILED_LINE) - text.count(ASKNEWS_402_LINE),
+        "asknews_found": len(ASKNEWS_FOUND.findall(text)),
+    }
+
+
+def check_asknews_runs(runs: list[dict], report: Any) -> None:
+    """AskNews 402s (free tier used up) in the last 24 hours' live runs, counted
+    per question from the public warning (architect, 28 Oct). A warning, never red:
+    the free news sources take over."""
+    count_402 = sum(r.get("asknews_402", 0) for r in runs)
+    other = sum(r.get("asknews_other_failed", 0) for r in runs)
+    found = sum(r.get("asknews_found", 0) for r in runs)
+    with_402 = sum(1 for r in runs if r.get("asknews_402"))
+    line = (f"AskNews, last 24 hours: 402 on {count_402} question(s) in {with_402} run(s); "
+            f"other failures {other}; articles found on {found} question(s)")
+    if count_402 or other:
+        report.warnings.append(line + " (free news used instead)")
+    else:
+        report.ok.append(line)
