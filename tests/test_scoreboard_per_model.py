@@ -16,6 +16,22 @@ FLASH, PAID_FLASH = "gemini/gemini-3.5-flash", "openrouter/google/gemini-3.6-fla
 SWITCH = "2026-10-25T00:00:00+00:00"
 
 
+@pytest.fixture(autouse=True)
+def switch_on_not_set(monkeypatch):
+    """These tests pass the switch-on themselves; the default is 'not set' here."""
+    monkeypatch.setattr(scoreboard, "FRONTIER_SWITCH_ON", None)
+    monkeypatch.setattr(calibration, "FRONTIER_SWITCH_ON", None)
+
+
+def test_the_real_switch_on_is_pr_3s_merge():
+    import importlib
+
+    real = importlib.reload(importlib.import_module("scoreboard")).FRONTIER_SWITCH_ON
+    assert real == "2026-10-21T18:41:31+00:00"  # #150 merged (frontier lineup on)
+    assert scoreboard.period_of("2026-10-21T18:52:00Z", real) == "since"
+    assert scoreboard.period_of("2026-10-21T18:32:00Z", real) == "before"
+
+
 def entry(model, parsed, status="ok", started_at=None, old=False):  # type: ignore[no-untyped-def]
     e = {"kind": "planned", "status": status, "parsed": parsed, "answered_models": [model, "parser/model"]}
     if not old:
