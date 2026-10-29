@@ -985,6 +985,7 @@ All run on `ubuntu-24.04` (pinned; `ubuntu-latest` moves to Ubuntu 26 on 19 Oct 
 | Review recent forecasts | `review_bot.yaml` | schedule Mondays 06:00 UTC; manual | Never spends or forecasts (read-only). The schedule also needs `REVIEW_BOT_ENABLED` and `BOT_ENABLED` both `true` |
 | Credit check | `credit_check.yaml` | manual only | No: reads the key's limit/usage, runs no model |
 | Tournament info | `tournament_info.yaml` | manual only | No: read-only Metaculus API |
+| Scoreboard | `scoreboard.yml` | schedule Mondays 06:30 UTC (Scoreboard); daily 06:45 UTC (`report_schedule.py`: Scoreboard + calibration on Sat 7 Nov, Tue 10 Nov, and once when 15+ agent-era questions have resolved, marked in fall26-data `status/report_schedule.json`); manual (option: calibration) | No: read-only Metaculus API; writes reports to fall26-data |
 | Keepalive | `keepalive.yaml` | schedule daily 05:00 UTC; manual | No: calls GitHub's "enable workflow" API for every workflow (no commit; since 1 Oct main requires the "Validate workflows" check, so a direct push is rejected) |
 | Workflow lint | `workflow_lint.yml` | every pull request | No: YAML parse + actionlint (with shellcheck); job "Validate workflows" is a required check on main (ruleset "main: workflows must validate") |
 

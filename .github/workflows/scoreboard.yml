@@ -5,9 +5,13 @@ name: Scoreboard
 # forecasts nothing, spends nothing. Weekly, plus a manual button.
 # Manual option "calibration": instead, the calibration report (calibration.py),
 # saved only to fall26-data reports/ (the job log shows the path and count only).
+# Daily 06:45 UTC (architect, 29 Oct): report_schedule.py decides whether both
+# the Scoreboard and the calibration report run today (Sat 7 Nov, Tue 10 Nov, or
+# once 15+ agent-era questions have resolved); otherwise the job stops there.
 on:
   schedule:
     - cron: "30 6 * * 1" # Mondays 06:30 UTC
+    - cron: "45 6 * * *" # daily 06:45 UTC: the report schedule check
   workflow_dispatch:
     inputs:
       calibration:
@@ -36,15 +40,27 @@ jobs:
           installer-parallel: true
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
+      - name: Report schedule check
+        id: schedule
+        if: ${{ github.event.schedule == '45 6 * * *' }}
+        run: poetry run python report_schedule.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
       - name: Score resolved questions
-        if: ${{ inputs.calibration != true }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration != true) || github.event.schedule == '30 6 * * 1' || steps.schedule.outputs.run == 'true' }}
         run: poetry run python scoreboard.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
       - name: Calibration report
-        if: ${{ inputs.calibration == true }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration == true) || steps.schedule.outputs.run == 'true' }}
         run: poetry run python calibration.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+      - name: Note the 15+ agent-era run
+        if: ${{ steps.schedule.outputs.mark == 'true' }}
+        run: poetry run python report_schedule.py --mark
+        env:
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
