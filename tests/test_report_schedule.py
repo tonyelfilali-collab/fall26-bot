@@ -97,3 +97,7 @@ def test_workflow_runs_both_tables_when_the_check_says_so():
     for step in (score, calibration):
         assert "steps.schedule.outputs.run == 'true'" in step
     assert "'30 6 * * 1'" in score and "'30 6 * * 1'" not in calibration  # Mondays: the Scoreboard only, as before
+    check = text.split("- name: Report schedule check")[1].split("- name:")[0]
+    assert "inputs.schedule_check == true" in check  # the manual dry run of the daily check
+    for step in (score, calibration):
+        assert "inputs.schedule_check != true" in step

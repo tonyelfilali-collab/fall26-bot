@@ -18,6 +18,10 @@ on:
         description: "Calibration report instead of the Scoreboard (saved to fall26-data reports/ only)"
         type: boolean
         default: false
+      schedule_check:
+        description: "Only the daily report schedule check (and both tables if it says so), as at 06:45 UTC"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,19 +46,19 @@ jobs:
         run: poetry install --no-interaction --no-root
       - name: Report schedule check
         id: schedule
-        if: ${{ github.event.schedule == '45 6 * * *' }}
+        if: ${{ github.event.schedule == '45 6 * * *' || inputs.schedule_check == true }}
         run: poetry run python report_schedule.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
       - name: Score resolved questions
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration != true) || github.event.schedule == '30 6 * * 1' || steps.schedule.outputs.run == 'true' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration != true && inputs.schedule_check != true) || github.event.schedule == '30 6 * * 1' || steps.schedule.outputs.run == 'true' }}
         run: poetry run python scoreboard.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
       - name: Calibration report
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration == true) || steps.schedule.outputs.run == 'true' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration == true && inputs.schedule_check != true) || steps.schedule.outputs.run == 'true' }}
         run: poetry run python calibration.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
