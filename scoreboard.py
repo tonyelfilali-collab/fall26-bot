@@ -148,7 +148,8 @@ def report_markdown(scored: list[dict]) -> str:
 
 # When the frontier lineup (Claude) went live: an ISO UTC datetime string, e.g.
 # "2026-10-25T00:00:00+00:00". None = not switched on yet: everything is "before".
-FRONTIER_SWITCH_ON: str | None = None
+# PR 3 (#150, the frontier lineup on) merged 21 Oct 18:41:31 UTC.
+FRONTIER_SWITCH_ON: str | None = "2026-10-21T18:41:31+00:00"
 PERIODS = ("before", "since")
 PERIOD_TITLES = {"before": "Before frontier switch-on", "since": "Since frontier switch-on"}
 # frontier.AGENT: the agent slot's ledger name (the call is Opus 5.5 with web tools).
