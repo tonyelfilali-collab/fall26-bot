@@ -1,0 +1,48 @@
+name: Queue watchdog
+
+# Cancels live tournament runs that have waited over 10 minutes with NO job
+# started (30 Oct: one run sat "queued" with no runner for 110 minutes and
+# blocked the queue). Never a started run, never a run "pending" behind
+# another; opens an alert issue (once a UTC day) when it cancels anything.
+# See queue_watchdog.py. Forecasts nothing, spends nothing.
+# Started every 10 minutes by cron-job.org (workflow_dispatch); GitHub's own
+# schedule is a backup (it often fires late or not at all).
+on:
+  workflow_dispatch:
+  # A real run on a pull request that changes it (nothing stuck: lists only).
+  pull_request:
+    paths:
+      - queue_watchdog.py
+      - .github/workflows/queue_watchdog.yaml
+  schedule:
+    - cron: "4,14,24,34,44,54 * * * *"
+
+# Its own queue, NOT forecast-bot: it must run while the live queue is stuck.
+concurrency:
+  group: queue-watchdog
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Cancel a never-started tournament run.
+  actions: write
+  # The alert issue (GitHub emails Tony).
+  issues: write
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      # requests only: no Poetry install, so the watchdog is quick and has no PyPI dependency chain.
+      - name: Install requests
+        run: python -m pip install --quiet requests
+      - name: Cancel never-started runs stuck in the queue
+        run: python queue_watchdog.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

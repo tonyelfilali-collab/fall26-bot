@@ -7,6 +7,7 @@ emails Tony) if:
 - an open seasonal or MiniBench question closes within 60 minutes without our
   forecast;
 - there has been no successful tournament run for 3 hours;
+- no live tournament run has STARTED (a runner picked it up) in 45 minutes;
 - any workflow is not "active" (e.g. paused for inactivity), named.
 Warns (yellow, not red) if MiniBench has had no open question for 3 days
 (e.g. a new round the bot can't find), if any Gemini model has less than 20% of its daily
@@ -58,6 +59,7 @@ from question_log import DATA_REPO, LOG_FAILURE_ANNOTATION  # noqa: E402
 TOURNAMENT_WORKFLOW = "run_bot_on_tournament.yaml"
 CLOSING_SOON = timedelta(minutes=60)
 MAX_TIME_WITHOUT_SUCCESS = timedelta(hours=3)
+MAX_TIME_WITHOUT_START = timedelta(minutes=45)
 MIN_QUOTA_LEFT = 0.2
 MINIBENCH_QUIET_LIMIT = timedelta(days=3)
 WATCHED_ANNOTATIONS = (LOG_FAILURE_ANNOTATION, "quota-ledger-failed", COMMENT_FAILED_ANNOTATION)
@@ -123,6 +125,17 @@ def check_recent_success(last_success: datetime | None, now: datetime, report: R
     else:
         minutes = int((now - last_success).total_seconds() // 60)
         report.ok.append(f"Last successful tournament run {minutes} min ago")
+
+
+def check_recent_start(last_start: datetime | None, now: datetime, report: Report) -> None:
+    """Red if no live tournament run has STARTED (a runner picked its job up)
+    in the last 45 minutes (architect, 30 Oct: a run stuck in the queue)."""
+    if last_start is None or now - last_start > MAX_TIME_WITHOUT_START:
+        since = "" if last_start is None else f" (last start {int((now - last_start).total_seconds() // 60)} min ago)"
+        report.red.append(f"No live tournament run has started in the last 45 minutes{since}")
+    else:
+        minutes = int((now - last_start).total_seconds() // 60)
+        report.ok.append(f"Last live tournament run started {minutes} min ago")
 
 
 def check_minibench_activity(recently_open: int, report: Report) -> None:
@@ -265,6 +278,20 @@ def recent_runs(since: datetime) -> list[dict]:
     return _RUNS[key]
 
 
+def last_started_run(runs: list[dict], jobs_of, now: datetime) -> datetime | None:  # type: ignore[no-untyped-def]
+    """When the newest tournament run whose job a runner picked up started.
+    Only runs created in the last 2 hours are looked at (newest first)."""
+    from queue_watchdog import job_started
+
+    for run in sorted(runs, key=lambda r: r.get("created_at", ""), reverse=True):
+        if not run.get("created_at") or now - _parse_time(run["created_at"]) > timedelta(hours=2):
+            continue
+        starts = [_parse_time(j["started_at"]) for j in jobs_of(run["id"]) if job_started(j) and j.get("started_at")]
+        if starts:
+            return max(starts)
+    return None
+
+
 def run_jobs(run_id: int) -> list[dict]:
     if run_id not in _JOBS:
         _JOBS[run_id] = _github(f"actions/runs/{run_id}/jobs")["jobs"]
@@ -301,11 +328,15 @@ def job_log(job_id: int) -> str:
 def frontier_runs(since: datetime) -> list[dict]:
     """Completed live runs since `since` that printed the frontier line, as
     {"mode", "reason", "overruns"} (nothing else is read from the logs)."""
+    from queue_watchdog import job_started
+
     found = []
     for run in recent_runs(since):
         if run.get("status") != "completed":
             continue
         for job in run_jobs(run["id"]):
+            if not job_started(job):  # cancelled before a runner took it (30 Oct): it has no log
+                continue
             parsed = claude_health.run_from_log(job_log(job["id"]))
             if parsed is not None:
                 found.append(parsed)
@@ -481,6 +512,7 @@ def run(simulate_miss: bool) -> Report:
         ("open questions", lambda: check_open_questions(open_questions(minibench_id), now, report)),
         ("MiniBench activity", lambda: check_minibench_activity(minibench_recently_open(minibench_id, now), report)),
         ("recent runs", lambda: check_recent_success(last_successful_tournament_run(), now, report)),
+        ("recent start", lambda: check_recent_start(last_started_run(recent_runs(now - timedelta(hours=2)), run_jobs, now), now, report)),
         (
             "Gemini quota",
             lambda: check_gemini_quota(
