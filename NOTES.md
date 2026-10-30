@@ -987,6 +987,7 @@ All run on `ubuntu-24.04` (pinned; `ubuntu-latest` moves to Ubuntu 26 on 19 Oct 
 | Tournament info | `tournament_info.yaml` | manual only | No: read-only Metaculus API |
 | Scoreboard | `scoreboard.yml` | schedule Mondays 06:30 UTC (Scoreboard); daily 06:45 UTC (`report_schedule.py`: Scoreboard + calibration on Sat 7 Nov, Tue 10 Nov, and once when 15+ agent-era questions have resolved, marked in fall26-data `status/report_schedule.json`); manual (option: calibration) | No: read-only Metaculus API; writes reports to fall26-data |
 | Keepalive | `keepalive.yaml` | schedule daily 05:00 UTC; manual | No: calls GitHub's "enable workflow" API for every workflow (no commit; since 1 Oct main requires the "Validate workflows" check, so a direct push is rejected) |
+| Queue watchdog | `queue_watchdog.yaml` | workflow_dispatch every 10 min (cron-job.org); schedule `4,14,24,34,44,54 * * * *` as a backup; manual | No: cancels only NEVER-started runs of `run_bot_on_tournament.yaml` ("queued"/"waiting" over 10 min, no runner, no step; never "pending" behind another run, never a started run; standing rule, architect 30 Oct); alert issue once a UTC day when it cancels anything; own queue `queue-watchdog` |
 | Workflow lint | `workflow_lint.yml` | every pull request | No: YAML parse + actionlint (with shellcheck); job "Validate workflows" is a required check on main (ruleset "main: workflows must validate") |
 
 Extra safety in code: while `bot_config.USE_CREDIT_KEY_LINEUP` is `False`, `main.py` refuses to run
