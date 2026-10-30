@@ -119,3 +119,21 @@ def test_health_red_when_no_live_run_started_in_45_minutes():
     none = health_check.Report()
     health_check.check_recent_start(health_check.last_started_run([], lambda i: [], NOW), NOW, none)
     assert none.red == ["No live tournament run has started in the last 45 minutes"]
+
+
+def test_health_skips_the_log_of_a_run_cancelled_before_it_started(monkeypatch):
+    # 30 Oct: a never-started run has no log (HTTP 404), which broke the Claude and AskNews 402 checks.
+    runs = [{"id": 1, "status": "completed"}, {"id": 2, "status": "completed"}]
+    jobs = {1: [dict(NEVER_STARTED, id=11, status="completed")], 2: [dict(STARTED, id=22, status="completed")]}
+    read = []
+
+    def job_log(job_id):  # type: ignore[no-untyped-def]
+        read.append(job_id)
+        return "log"
+
+    monkeypatch.setattr(health_check, "recent_runs", lambda since: runs)
+    monkeypatch.setattr(health_check, "run_jobs", lambda run_id: jobs[run_id])
+    monkeypatch.setattr(health_check, "job_log", job_log)
+    monkeypatch.setattr(health_check.claude_health, "run_from_log", lambda text: {"mode": "full"})
+    assert health_check.frontier_runs(NOW) == [{"mode": "full"}]
+    assert read == [22]

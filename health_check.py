@@ -328,11 +328,15 @@ def job_log(job_id: int) -> str:
 def frontier_runs(since: datetime) -> list[dict]:
     """Completed live runs since `since` that printed the frontier line, as
     {"mode", "reason", "overruns"} (nothing else is read from the logs)."""
+    from queue_watchdog import job_started
+
     found = []
     for run in recent_runs(since):
         if run.get("status") != "completed":
             continue
         for job in run_jobs(run["id"]):
+            if not job_started(job):  # cancelled before a runner took it (30 Oct): it has no log
+                continue
             parsed = claude_health.run_from_log(job_log(job["id"]))
             if parsed is not None:
                 found.append(parsed)
