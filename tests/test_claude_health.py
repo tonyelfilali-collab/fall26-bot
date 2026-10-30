@@ -251,7 +251,7 @@ def test_check_claude_end_to_end(monkeypatch):
     runs = [{"id": 1, "status": "completed"}, {"id": 2, "status": "completed"}, {"id": 3, "status": "in_progress"}]
     logs = {11: LOG_FULL, 21: "Frontier lineup: low (20% of the cycle budget left); GPT-5.6 Sol off (frontier off)"}
     monkeypatch.setattr(health_check, "recent_runs", lambda since: runs)
-    monkeypatch.setattr(health_check, "run_jobs", lambda run_id: [{"id": run_id * 10 + 1}])
+    monkeypatch.setattr(health_check, "run_jobs", lambda run_id: [{"id": run_id * 10 + 1, "runner_name": "GitHub Actions 1"}])
     monkeypatch.setattr(health_check, "job_log", lambda job_id: logs[job_id])
     report = health_check.Report()
     health_check.check_claude(NOW, report)
