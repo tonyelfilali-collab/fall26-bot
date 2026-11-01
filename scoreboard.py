@@ -167,6 +167,10 @@ KIMI_SHADOW_VARIANT = "kimi-shadow"
 KIMI_SHADOW_NAME = "moonshotai/kimi-k3 (Kimi shadow)"
 KIMI_SHADOW_NO_METACULUS = "kimi-shadow (no metaculus)"
 KIMI_SHADOW_NAME_NO_METACULUS = "moonshotai/kimi-k3 (Kimi shadow, no metaculus)"
+# Kimi also scored on its searched answers only (architect, 1 Nov): a reply that
+# cited 0 domains counts as "no search" (claude_health.kimi_counts counts them).
+KIMI_SHADOW_SEARCHED = "kimi-shadow (searched)"
+KIMI_SHADOW_NAME_SEARCHED = "moonshotai/kimi-k3 (Kimi shadow, searched only)"
 # Paid shadows: (shadows-file key, variant, model name, no-metaculus variant, its model name).
 PAID_SHADOWS = (
     ("gpt_shadow", GPT_SHADOW_VARIANT, GPT_SHADOW_NAME, GPT_SHADOW_NO_METACULUS, GPT_SHADOW_NAME_NO_METACULUS),
@@ -261,7 +265,8 @@ def score_models(records: list[dict], resolution_of, switch_on: str | None = Non
             if score is not None:
                 row["models"].append((name, period_of(when, switch_on), score))
         # The paid shadows (never submitted) alone, as their own model rows; never in the subsets.
-        for variant, name in [pair for _, v, n, nv, nn in PAID_SHADOWS for pair in ((v, n), (nv, nn))]:
+        pairs = [pair for _, v, n, nv, nn in PAID_SHADOWS for pair in ((v, n), (nv, nn))]
+        for variant, name in [*pairs, (KIMI_SHADOW_SEARCHED, KIMI_SHADOW_NAME_SEARCHED)]:
             gpt_value = (record.get("shadow") or {}).get(variant)
             if gpt_value is None:
                 continue
@@ -362,6 +367,10 @@ def merge_shadow_files(files: dict[str, dict]) -> list[dict]:
             value = record["shadow"].get(variant)
             if value is not None and (extra.get(key) or {}).get("metaculus_cited") is False:
                 record["shadow"][no_metaculus] = value
+        # Kimi a third way: only the answers that cited at least one domain (searched).
+        kimi = record["shadow"].get(KIMI_SHADOW_VARIANT)
+        if kimi is not None and ((extra.get("kimi_shadow") or {}).get("domains_count") or 0) > 0:
+            record["shadow"][KIMI_SHADOW_SEARCHED] = kimi
     return list(records.values())
 
 
@@ -443,6 +452,14 @@ def lab_section(token: str) -> str:
     return "\n" + lab.report(results) + "\n"
 
 
+def kimi_section(records: list[dict]) -> str:
+    """The Kimi shadow's no-search count over every logged attempt (architect, 1 Nov)."""
+    import claude_health
+
+    entries = [r["kimi_shadow"] for r in records if isinstance(r.get("kimi_shadow"), dict)]
+    return f"**Kimi shadow, every logged attempt:** {claude_health.kimi_line(entries)} (no search = 0 domains cited)\n"
+
+
 def claude_section(token: str, records: list[dict]) -> str:
     """The Claude numbers over the whole Claude ledger (it keeps 7 days):
     claude_health.claude_report. Numbers and question ids only."""
@@ -468,7 +485,8 @@ def main() -> None:
     report = (
         f"## Scoreboard {stamp}\n\n{len(records)} forecast question(s) logged, "
         f"{len(scored)} resolved and scored.\n\n{report_markdown(scored)}\n\n"
-        f"**Shadow forecaster answer rate (never submitted):**\n\n{shadow_answer_rate(every)}\n"
+        f"**Shadow forecaster answer rate (never submitted):**\n\n{shadow_answer_rate(every)}\n\n"
+        f"{kimi_section(every)}\n"
     )
     report += lab_section(token)
     report += claude_section(token, every)

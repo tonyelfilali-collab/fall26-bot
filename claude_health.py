@@ -328,6 +328,47 @@ def recent_question_logs(token: str, since: datetime) -> list[dict]:
     return [json.loads(base64.b64decode(_data(f"contents/{path}", token)["content"])) for path in paths]
 
 
+def recent_shadow_files(token: str, since: datetime) -> list[dict]:
+    """The live tournament '<log>_shadows.json' files of logs saved since `since`."""
+    tree = _data("git/trees/HEAD?recursive=1", token)["tree"]
+    paths = [
+        t["path"] for t in tree
+        if t["path"].startswith("questions/tournament/") and t["path"].endswith("_shadows.json")
+        and (when := log_time(t["path"].removesuffix("_shadows.json") + ".json")) is not None and when >= since
+    ]
+    return [json.loads(base64.b64decode(_data(f"contents/{path}", token)["content"])) for path in paths]
+
+
+def kimi_counts(entries: list[dict]) -> tuple[int, int, int]:
+    """(calls, without search, failed) over Kimi shadow entries ('kimi_shadow' in
+    the shadows files; architect, 1 Nov). A call = any status but 'skipped: ...';
+    without search = a reply that cited 0 domains; failed = no reply (an error,
+    or timed out)."""
+    from gpt_shadow import NO_ANSWER, SAVED
+
+    calls = [e for e in entries if e.get("status") and not str(e["status"]).startswith("skipped")]
+    no_search = sum(1 for e in calls if e.get("domains_count") == 0)
+    failed = sum(1 for e in calls if e["status"] not in (SAVED, NO_ANSWER))
+    return len(calls), no_search, failed
+
+
+def kimi_line(entries: list[dict]) -> str:
+    calls, no_search, failed = kimi_counts(entries)
+    return f"Kimi: {calls} calls, {no_search} without search, {failed} failed"
+
+
+def check_kimi(files: list[dict], report: Any) -> None:
+    """The daily report's Kimi line (last 24 hours). A warning only when every
+    call failed (the re-pin rule needs 24 hours of that); never red."""
+    entries = [f["kimi_shadow"] for f in files if isinstance(f.get("kimi_shadow"), dict)]
+    calls, _, failed = kimi_counts(entries)
+    line = f"{kimi_line(entries)} (last 24 hours)"
+    if calls and failed == calls:
+        report.warnings.append(line + ": every call failed")
+    else:
+        report.ok.append(line)
+
+
 def run_from_log(text: str) -> dict | None:
     """{"mode", "reason", "overruns"} from one run's log, or None when the run
     never reached the frontier line (e.g. BOT_ENABLED off)."""

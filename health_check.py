@@ -527,6 +527,8 @@ def run(simulate_miss: bool) -> Report:
         ("workflow states", lambda: check_workflow_states(workflows(), report)),
         ("main activity", lambda: check_main_activity(main_last_commit(), now, report)),
         ("Claude", lambda: check_claude(now, report)),
+        ("Kimi shadow", lambda: claude_health.check_kimi(
+            claude_health.recent_shadow_files(os.environ["DATA_REPO_TOKEN"], now - timedelta(hours=24)), report)),
         ("OpenRouter account", lambda: check_account_balance(*openrouter_account(), report, now.date().isoformat())),
     ]
     for name, check in checks:
