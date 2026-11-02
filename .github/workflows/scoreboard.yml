@@ -8,6 +8,8 @@ name: Scoreboard
 # Daily 06:45 UTC (architect, 29 Oct): report_schedule.py decides whether both
 # the Scoreboard and the calibration report run today (Sat 7 Nov, Tue 10 Nov, or
 # once 15+ agent-era questions have resolved); otherwise the job stops there.
+# Manual option "resolved_review" (architect, 2 Nov): instead, resolved_review.py,
+# saved only to fall26-data reviews/ (the job log shows counts and the path only).
 on:
   schedule:
     - cron: "30 6 * * 1" # Mondays 06:30 UTC
@@ -20,6 +22,10 @@ on:
         default: false
       schedule_check:
         description: "Only the daily report schedule check (and both tables if it says so), as at 06:45 UTC"
+        type: boolean
+        default: false
+      resolved_review:
+        description: "Only the resolved Fall review (peer score per question, Metaculus vs our log), saved to fall26-data reviews/ only"
         type: boolean
         default: false
 
@@ -52,14 +58,20 @@ jobs:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
       - name: Score resolved questions
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration != true && inputs.schedule_check != true) || github.event.schedule == '30 6 * * 1' || steps.schedule.outputs.run == 'true' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration != true && inputs.schedule_check != true && inputs.resolved_review != true) || github.event.schedule == '30 6 * * 1' || steps.schedule.outputs.run == 'true' }}
         run: poetry run python scoreboard.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
       - name: Calibration report
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration == true && inputs.schedule_check != true) || steps.schedule.outputs.run == 'true' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration == true && inputs.schedule_check != true && inputs.resolved_review != true) || steps.schedule.outputs.run == 'true' }}
         run: poetry run python calibration.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+      - name: Resolved review
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.resolved_review == true }}
+        run: poetry run python resolved_review.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
