@@ -92,15 +92,19 @@ def log_cdf_at(declared: list[dict], x: float) -> float:
 
 
 def summary(kind: str, values: Any, question: dict) -> str:
-    if values is None:
+    if not values and values != 0:
         return "-"
     if kind == "binary":
         return f"{values:.2f}"
     if kind == "multiple_choice":
         best = max(values, key=lambda o: o[1])
         return f"top: {best[0]} {best[1]:.2f}"
+
+    def num(v):  # type: ignore[no-untyped-def]
+        return "outside the range" if v is None else f"{v:.4g}"
+
     med, p10, p90 = values
-    return f"median {med:.4g} (10-90%: {p10:.4g} to {p90:.4g})"
+    return f"median {num(med)} (10-90%: {num(p10)} to {num(p90)})"
 
 
 def submitted_values(kind: str, entry: dict | None, question: dict) -> Any:

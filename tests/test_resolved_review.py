@@ -97,3 +97,10 @@ def test_workflow_option_saves_privately():
     text = Path(".github/workflows/scoreboard.yml").read_text()
     assert "resolved_review:" in text and "python resolved_review.py" in text
     assert "inputs.resolved_review != true" in text
+
+
+def test_numeric_quantile_past_the_range_is_named_not_a_crash():
+    # 2 Nov: a CDF that never reaches 90% inside the range (mass above the upper end).
+    q = {"scaling": SCALING}
+    low = [min(0.8, i / 200) for i in range(201)]
+    assert rr.summary("numeric", rr.submitted_values("numeric", {"forecast_values": low}, q), q).endswith("to outside the range)")
