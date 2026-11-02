@@ -84,6 +84,8 @@ def test_rows_worst_first_with_period_models_and_scored_log():
     assert worst["peer"] == -80.0 and worst["ours"] == "0.90" and worst["outcome"] == "no"
     assert worst["period"] == "before" and worst["check"] == "same" and worst["log_count"] == 2
     assert worst["models"] == "claude-opus-5-5-agent"
+    old_log = {"forecasts": [{"status": "ok", "planned_model": "gemini/gemini-3.6-flash"}]}
+    assert rr.models_answered(old_log) == "gemini-3.6-flash"
     assert rows[1]["period"] == "since"
     assert rows[2]["peer"] is None and rows[2]["check"] == "no forecast on Metaculus"
     text = rr.markdown(rows, rr.when("2026-11-02T13:00:00Z"))

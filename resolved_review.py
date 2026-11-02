@@ -190,7 +190,8 @@ def outcome_text(kind: str, question: dict) -> str:
 def models_answered(log: dict | None) -> str:
     if not log:
         return "-"
-    names = [f.get("forecast_model") for f in log.get("forecasts") or [] if f.get("status") == "ok"]
+    # Logs before 21 Oct have no forecast_model: the planned model answered.
+    names = [f.get("forecast_model") or f.get("planned_model") for f in log.get("forecasts") or [] if f.get("status") == "ok"]
     return ", ".join(n.split("/")[-1] for n in names if n) or "-"
 
 
