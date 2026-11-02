@@ -415,20 +415,22 @@ def open_questions(minibench_id: int | str) -> dict:
     }
 
 
-def minibench_recently_open(minibench_id: int | str, now: datetime) -> int:
+def minibench_recently_open(minibench_id: int | str, now: datetime, client=None) -> int:  # type: ignore[no-untyped-def]
     """MiniBench questions (current round and the slug's) open at some point in the last 3 days."""
     from forecasting_tools import ApiFilter, MetaculusClient
 
     from minibench import MINIBENCH_SLUG
 
-    client = MetaculusClient()
+    client = client or MetaculusClient()
     seen = set()
     for tournament in dict.fromkeys([minibench_id, MINIBENCH_SLUG]):
+        # No open_time_lt: the library sends it as a date ("open before today 00:00
+        # UTC"), which dropped a round opened today (2 Nov: false warning). The
+        # statuses already leave out questions that haven't opened yet.
         api_filter = ApiFilter(
             allowed_tournaments=[tournament],
             allowed_statuses=["open", "closed", "resolved"],
             close_time_gt=now - MINIBENCH_QUIET_LIMIT,
-            open_time_lt=now,
             group_question_mode="unpack_subquestions",
         )
         questions = asyncio.run(
