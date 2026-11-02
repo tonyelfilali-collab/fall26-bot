@@ -49,7 +49,7 @@ S. Two seasonal agents (FRONTIER_SEASONAL_AGENTS = 2, set for the phase only):
 S2. Both seasonal agents past their 7-minute cap: both cancelled at their
    worst case, each one's own Opus fallback answers inside the planned wait.
 V. A burst of 60 MiniBench questions from a $0 Claude day (architect, 2 Nov;
-   2 per live run, 30 runs, one ledger): the agent until the day reaches $6,
+   2 per live run, 30 runs, one ledger): the agent until the day reaches $5,
    then plain Opus + Flash x2; every
    MiniBench question keeps a Claude forecast and MiniBench stays under $9; a
    seasonal question after the burst still gets both agents.

@@ -1,4 +1,4 @@
-"""MiniBench burst days (frontier.py, architect 2 Nov): from $6 of the UTC day's
+"""MiniBench burst days (frontier.py, architect 2 Nov): from $5 of the UTC day's
 Claude spend (running reservations included) MiniBench gets plain Opus only
 (no agent) + Flash; at $9 no Claude, as before; seasonal unchanged."""
 from __future__ import annotations
@@ -20,11 +20,11 @@ def _day(planner, dollars, running=0.0):  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.parametrize("day, running, agent", [
-    (0.00, 0.0, True), (5.99, 0.0, True),
-    (6.00, 0.0, False), (7.50, 0.0, False),
-    (5.00, 1.25, False),  # a running agent's reservation counts, as for the $9 limit
+    (0.00, 0.0, True), (4.99, 0.0, True),
+    (5.00, 0.0, False), (7.50, 0.0, False),
+    (4.00, 1.25, False),  # a running MiniBench agent's reservation counts, as for the $9 limit
 ])
-def test_minibench_agent_until_6_dollars(day, running, agent):
+def test_minibench_agent_until_5_dollars(day, running, agent):
     planner, _ = _two(5.0)
     _day(planner, day, running)
     models = _plan(planner, False, "51")
@@ -53,13 +53,13 @@ def test_seasonal_keeps_both_agents_on_a_burst_day():
 
 
 def test_the_limits():
-    assert frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT == 6.00 < frontier.CLAUDE_MINIBENCH_DAY_LIMIT == 9.00
+    assert frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT == 5.00 < frontier.CLAUDE_MINIBENCH_DAY_LIMIT == 9.00
 
 
 def test_a_running_seasonal_question_does_not_take_the_minibench_agent():
-    # Its two agents reserve $4.52: counted for the $9 limit, not for the $6 burst rule.
+    # Its two agents reserve $4.52: counted for the $9 limit, not for the $5 burst rule.
     planner, _ = _two(5.0)
-    _day(planner, 2.00)
+    _day(planner, 1.00)
     planner.claude.in_flight["seasonal-running"] = 4.52
     assert _plan(planner, False, "54")[:2] == [AGENT, OPUS_55]
     # A running MiniBench agent's reservation does count.

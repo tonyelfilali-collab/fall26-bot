@@ -106,7 +106,7 @@ CLAUDE_MINIBENCH_DAY_LIMIT = 9.00
 # Burst days (architect, 2 Nov): from this much of the same day spend, MiniBench
 # questions get plain Opus only (no agent) + Flash, so every MiniBench question
 # keeps a Claude forecast until the $9 limit. Seasonal unchanged.
-CLAUDE_MINIBENCH_AGENT_DAY_LIMIT = 6.00
+CLAUDE_MINIBENCH_AGENT_DAY_LIMIT = 5.00  # architect, 2 Nov: $5 (rehearsal V: 60/60 keep Claude; at $6, 58/60)
 CLAUDE_SEASONAL_QUESTION_CAP = 1.50
 CLAUDE_MINIBENCH_QUESTION_CAP = 0.60
 OPENROUTER_SEASONAL_QUESTION_CAP = 0.30
@@ -816,7 +816,7 @@ class FrontierPlanner(bot_config.GeminiPool):
 
     def _minibench_burst(self) -> bool:
         """The UTC day's Claude spend (as the $9 MiniBench limit counts it) has
-        reached $6. Running reservations count for MiniBench questions only: a
+        reached $5. Running reservations count for MiniBench questions only: a
         running seasonal question's agents ($4.52 reserved) don't take the
         MiniBench agent away on an ordinary day."""
         assert self.claude is not None
@@ -843,7 +843,7 @@ class FrontierPlanner(bot_config.GeminiPool):
         self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
         slots = list(MODE_SLOTS[self.mode][0 if seasonal else 1])
         # Pacing: paced-1 and paced-2 drop the MiniBench agent (plain Opus + Flash x2);
-        # so does a burst day from $6 of the MiniBench day limit.
+        # so does a burst day from $5 of the MiniBench day limit.
         if not seasonal:
             self.minibench_questions.add(question)
         burst = not seasonal and self._minibench_burst()
