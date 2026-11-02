@@ -94,3 +94,34 @@ def test_health_warns_not_red_when_minibench_is_quiet():
     ok = health_check.Report()
     health_check.check_minibench_activity(4, ok)
     assert ok.ok and not ok.warnings and not ok.red
+
+
+class DateOnlyApi:
+    """Fake Metaculus: like the real API, open_time_lt is cut to a date (open before 00:00 UTC that day)."""
+
+    def __init__(self, open_times):  # type: ignore[no-untyped-def]
+        self.open_times, self.filters = open_times, []
+
+    async def get_questions_matching_filter(self, api_filter, error_if_question_target_missed=True):  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        self.filters.append(api_filter)
+        cut = api_filter.open_time_lt
+        midnight = cut.replace(hour=0, minute=0, second=0, microsecond=0) if cut else None
+        return [SimpleNamespace(id_of_question=i, id_of_post=i) for i, opened in self.open_times.items()
+                if midnight is None or opened < midnight]
+
+
+def test_minibench_round_opened_today_counts_as_active():
+    # 2 Nov: round 33135 opened at 00:52 UTC; the 06:06 health run warned "no open questions for 3 days".
+    now = datetime(2026, 11, 2, 6, 6, tzinfo=timezone.utc)
+    api = DateOnlyApi({46368: datetime(2026, 11, 2, 0, 52, tzinfo=timezone.utc),
+                       46369: datetime(2026, 11, 2, 1, 12, tzinfo=timezone.utc)})
+    assert health_check.minibench_recently_open(33135, now, client=api) == 2
+    assert all(f.open_time_lt is None for f in api.filters)
+    report = health_check.Report()
+    health_check.check_minibench_activity(health_check.minibench_recently_open(33135, now, client=api), report)
+    assert report.ok == ["MiniBench had 2 open question(s) in the last 3 days"] and not report.warnings
+    quiet = health_check.Report()
+    health_check.check_minibench_activity(health_check.minibench_recently_open(33135, now, client=DateOnlyApi({})), quiet)
+    assert quiet.warnings and not quiet.ok
