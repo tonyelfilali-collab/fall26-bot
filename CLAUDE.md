@@ -15,7 +15,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
 - Anthropic (architect, 21 Oct): Claude models via `ANTHROPIC_API_KEY` (Console org, workspace
   "fall26-bot", no card, no auto-reload) are allowed, within the frontier caps (#140): `CLAUDE_BUDGET_PER_CYCLE`
   ($170, cycle 18 Oct - 17 Nov), $20 per UTC day (two seasonal agents; $15 with one), MiniBench Claude only while the day's Claude spend
-  (running calls included) is under $9, $1.50 per seasonal question, $0.60 per MiniBench question
+  (running calls included) is under $9 (plain Opus only, no agent, from $5: burst days, 2 Nov), $1.50 per seasonal question, $0.60 per MiniBench question
   ($3.60 / $1.60 while the agent runs, $5.30 seasonal with two agents; the agent is ON), step-downs at 25% / 10% left, pacing: over the line ($170 x share of the cycle gone) + $10
   MiniBench drops the agent, + $20 seasonal also drops agent2. The credits
   expire each billing cycle; when used up, calls fail with "credit balance is too low" and are never

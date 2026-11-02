@@ -48,6 +48,11 @@ S. Two seasonal agents (FRONTIER_SEASONAL_AGENTS = 2, set for the phase only):
    question cap $5.30, Claude day cap $20.
 S2. Both seasonal agents past their 7-minute cap: both cancelled at their
    worst case, each one's own Opus fallback answers inside the planned wait.
+V. A burst of 60 MiniBench questions from a $0 Claude day (architect, 2 Nov;
+   2 per live run, 30 runs, one ledger): the agent until the day reaches $5,
+   then plain Opus + Flash x2; every
+   MiniBench question keeps a Claude forecast and MiniBench stays under $9; a
+   seasonal question after the burst still gets both agents.
 U1. Pacing paced-1 (cycle spend $15 over the line): seasonal unchanged,
    MiniBench plain Opus + Flash x2. U2. paced-2 ($25 over): seasonal agent +
    plain Opus + Flash x2 (no agent2), MiniBench as U1; the day cap stays $20.
@@ -416,6 +421,17 @@ def run() -> dict:
         agent_phase("S", 90000, _budget(), RecordedAnthropic("full"), seasonal_agents=2)
         agent_phase("U1", 76000, _paced(15.0), RecordedAnthropic("full"), seasonal_agents=2)
         agent_phase("U2", 75000, _paced(25.0), RecordedAnthropic("full"), seasonal_agents=2)
+        # V (2 Nov): 60 MiniBench questions as they come on a burst day (2 per live run,
+        # 30 runs, one Claude ledger), then a run with one seasonal question.
+        claude, fake, infos_v = _budget(), RecordedAnthropic("full"), []
+        for run_no in range(30):
+            burst = [_question(74000 + 2 * run_no + i, SEASONAL_TYPES[(2 * run_no + i) % 4], minutes=60) for i in range(2)]
+            records, planner, _ = run_agent_phase([], burst, claude, fake, seasonal_agents=2)
+            infos_v += [_info(r, planner) for r in records]
+        records, planner, _ = run_agent_phase([_question(73999, "binary", minutes=600)], [], claude, fake, seasonal_agents=2)
+        infos_v += [_info(r, planner) for r in records]
+        out["V"] = {"infos": infos_v, "planner": planner, "calls": [], "fake": fake,
+                    "report": frontier.frontier_report(planner)}
         return out
     finally:
         for attr, value in times.items():
@@ -566,6 +582,9 @@ def report() -> tuple[bool, str]:
     r_day = out["R"]["planner"].claude.day_spent()
     r_mini_spent = 8.0 + sum(i["claude_spent"] for i in infos("R", False))
     r_mini_claude = sum(1 for i in infos("R", False) if i["claude"])
+    v_mini_spent = sum(i["claude_spent"] for i in infos("V", False))
+    v_agent = sum(i["agent"] for i in infos("V", False))
+    v_claude = sum(1 for i in infos("V", False) if i["claude"])
     checks = [
         ("A: seasonal, every type = Opus 5.5 x2 + Flash x2 (4 forecasts)",
          len(a_s) == 4 and all(i["forecasts"] == 4 and i["opus"] == 2 and i["flash"] == 2 for i in a_s)),
@@ -606,6 +625,14 @@ def report() -> tuple[bool, str]:
          and 0 < r_mini_claude < 40 and len(infos("R")) == 41 and all(i["submitted"] for i in infos("R"))),
         ("R: the seasonal question after the burst still gets both Opus slots",
          [i["opus"] for i in infos("R", True)] == [2]),
+        (f"V: 60-question MiniBench burst: every question gets Claude ({v_claude} of 60; {v_agent} with the agent, then plain Opus from "
+         f"${frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT:.2f}), MiniBench Claude ${v_mini_spent:.2f} < ${frontier.CLAUDE_MINIBENCH_DAY_LIMIT:.2f}",
+         len(infos("V", False)) == 60 and v_claude == 60 and all(i["submitted"] for i in infos("V", False))
+         and 0 < v_agent < 60 and v_mini_spent < frontier.CLAUDE_MINIBENCH_DAY_LIMIT),
+        (f"V: from ${frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT:.2f}, plain Opus only (no agent) on MiniBench: the last 20 questions have no agent",
+         all(i["agent"] == 0 for i in infos("V", False)[-20:])),
+        ("V: the seasonal question after the burst still gets both agents",
+         [(i["agent"], i["agent2"]) for i in infos("V", True)] == [(1, 1)]),
         ("Modes: A, B, E, F, H, I, J frontier; G off", all(mode(p) != "off" for p in frontier_phases) and mode("G") == "off"),
         *agent_checks(out, infos),
     ]
@@ -623,7 +650,8 @@ def report() -> tuple[bool, str]:
               "Q": "Q. Claude day at $14.00", "R": "R. MiniBench burst of 40 from a $8 Claude day",
               "S": "S. Two seasonal agents (test switch)", "T": "T. Free Flash quota at 0: paid Flash planned",
               "T2": "T2. Free Flash at 0, paid day at $0.98", "T3": "T3. Free Flash at 0, paid day at $0.48", "S2": "S2. Two seasonal agents both past their cap",
-              "U1": "U1. Pacing: paced-1 (line + $15)", "U2": "U2. Pacing: paced-2 (line + $25)"}
+              "U1": "U1. Pacing: paced-1 (line + $15)", "U2": "U2. Pacing: paced-2 (line + $25)",
+              "V": "V. MiniBench burst of 60 from a $0 Claude day"}
     for phase, title in titles.items():
         lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]

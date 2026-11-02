@@ -103,6 +103,10 @@ CLAUDE_DAILY_CAP = 15.00
 # Claude spend, running reservations included, stays under this: at least
 # $6 a day is always left for seasonal questions (architect, 21 Oct).
 CLAUDE_MINIBENCH_DAY_LIMIT = 9.00
+# Burst days (architect, 2 Nov): from this much of the same day spend, MiniBench
+# questions get plain Opus only (no agent) + Flash, so every MiniBench question
+# keeps a Claude forecast until the $9 limit. Seasonal unchanged.
+CLAUDE_MINIBENCH_AGENT_DAY_LIMIT = 5.00  # architect, 2 Nov: $5 (rehearsal V: 60/60 keep Claude; at $6, 58/60)
 CLAUDE_SEASONAL_QUESTION_CAP = 1.50
 CLAUDE_MINIBENCH_QUESTION_CAP = 0.60
 OPENROUTER_SEASONAL_QUESTION_CAP = 0.30
@@ -731,6 +735,7 @@ class FrontierPlanner(bot_config.GeminiPool):
     # Calls already in the ledgers when the run started (frontier_report counts the rest).
     calls_before: dict = field(default_factory=dict)
     pace: str = PACE_FULL  # this run's pacing mode (full Claude mode with the agent only)
+    minibench_questions: set = field(default_factory=set)  # this run's MiniBench question keys (burst-day rule)
 
     def start_run(self, key_left: float | None, api_key: bool | None = None) -> str:
         """Once per run, before forecasting: this run's mode and GPT."""
@@ -809,6 +814,15 @@ class FrontierPlanner(bot_config.GeminiPool):
             extra_body=bot_config.HIGH_REASONING, backup_on_any_error=True,
         )
 
+    def _minibench_burst(self) -> bool:
+        """The UTC day's Claude spend (as the $9 MiniBench limit counts it) has
+        reached $5. Running reservations count for MiniBench questions only: a
+        running seasonal question's agents ($4.52 reserved) don't take the
+        MiniBench agent away on an ordinary day."""
+        assert self.claude is not None
+        running = sum(v for q, v in self.claude.in_flight.items() if q in self.minibench_questions)
+        return self.claude.flash_day_spent() + running >= CLAUDE_MINIBENCH_AGENT_DAY_LIMIT - 1e-9
+
     def _claude_ok(self, model: str) -> bool:
         return self.claude is not None and self.claude.refusal(self.model_prefix + model) is None
 
@@ -828,8 +842,12 @@ class FrontierPlanner(bot_config.GeminiPool):
         assert self.claude is not None
         self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
         slots = list(MODE_SLOTS[self.mode][0 if seasonal else 1])
-        # Pacing: paced-1 and paced-2 drop the MiniBench agent (plain Opus + Flash x2).
-        agent = self._agent_on() and (seasonal or self.pace == PACE_FULL)
+        # Pacing: paced-1 and paced-2 drop the MiniBench agent (plain Opus + Flash x2);
+        # so does a burst day from $5 of the MiniBench day limit.
+        if not seasonal:
+            self.minibench_questions.add(question)
+        burst = not seasonal and self._minibench_burst()
+        agent = self._agent_on() and (seasonal or (self.pace == PACE_FULL and not burst))
         if agent:
             # The agent replaces one Opus slot; the question cap rises while it runs.
             # Its reservation follows the question kind (main.py sets the same value).
@@ -874,6 +892,8 @@ class FrontierPlanner(bot_config.GeminiPool):
         if self.agent_enabled:
             self.last_plan["agent"] = AGENT in claude_models
             self.last_plan["pace"] = self.pace
+            if burst:
+                self.last_plan["burst"] = True
         return chains
 
     def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:
