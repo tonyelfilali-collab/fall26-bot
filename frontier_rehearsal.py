@@ -55,9 +55,9 @@ V. A burst of 60 MiniBench questions from a $0 Claude day (architect, 2 Nov;
    MiniBench question keeps a Claude forecast and MiniBench stays under its
    limit; a seasonal question after the burst still gets both agents.
 W. A heavy seasonal day (architect, 3 Nov): the Claude day at $11.00 from
-   seasonal questions, then 40 MiniBench questions (2 per run, 20 runs): the
-   agent until MiniBench's OWN spend reaches $5, then plain Opus while the
-   whole day is under $17; every MiniBench question gets at least plain Opus;
+   seasonal questions, then 40 MiniBench questions (2 per run, 20 runs): no
+   MiniBench agent (the whole day is past $10), plain Opus while the whole day
+   leaves $4.60 under $20 ($15.40); every MiniBench question gets plain Opus;
    a seasonal question after the burst still gets both agents.
 U1. Pacing paced-1 (cycle spend $15 over the line): seasonal unchanged,
    MiniBench plain Opus + Flash x2. U2. paced-2 ($25 over): seasonal agent +
@@ -651,9 +651,9 @@ def report() -> tuple[bool, str]:
         ("R: the seasonal question after the burst still gets both Opus slots",
          [i["opus"] for i in infos("R", True)] == [2]),
         (f"V: 60-question MiniBench burst: every question gets Claude ({v_claude} of 60; {v_agent} with the agent, then plain Opus from "
-         f"${frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT:.2f}), MiniBench Claude ${v_mini_spent:.2f} < ${frontier.CLAUDE_MINIBENCH_DAY_LIMIT:.2f}",
+         f"${frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT:.2f}), MiniBench Claude ${v_mini_spent:.2f} < ${out['V']['planner'].claude.minibench_daily_cap:.2f}",
          len(infos("V", False)) == 60 and v_claude == 60 and all(i["submitted"] for i in infos("V", False))
-         and 0 < v_agent < 60 and v_mini_spent < frontier.CLAUDE_MINIBENCH_DAY_LIMIT),
+         and 0 < v_agent < 60 and v_mini_spent < out["V"]["planner"].claude.minibench_daily_cap),
         (f"V: from ${frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT:.2f}, plain Opus only (no agent) on MiniBench: the last 20 questions have no agent",
          all(i["agent"] == 0 for i in infos("V", False)[-20:])),
         ("V: the seasonal question after the burst still gets both agents",
@@ -661,15 +661,14 @@ def report() -> tuple[bool, str]:
         (f"W: $11 seasonal day + 40 MiniBench: every MiniBench question gets at least plain Opus ({w_opus} of 40; "
          f"{w_agent} with the agent), MiniBench's own Claude ${w_mini_spent:.2f} "
          f"(ledger ${w_claude_budget.minibench_day_spent():.2f})",
-         len(w_mini) == 40 and w_opus == 40 and all(i["submitted"] for i in w_mini) and 0 < w_agent < 40
+         len(w_mini) == 40 and w_opus == 40 and all(i["submitted"] for i in w_mini)
          and abs(w_claude_budget.minibench_day_spent() - w_mini_spent) < 1e-6),
-        (f"W: the agent only while MiniBench's own spend is under ${frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT:.2f} "
-         f"(the first {w_first_plain} had it, none after), so seasonal spend didn't take it",
-         w_agent == w_first_plain and all(i["agent"] == 0 for i in w_mini[w_first_plain:])
-         and sum(i["claude_spent"] for i in w_mini[:w_first_plain - 1]) < frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT),
+        (f"W: the day starts at $11, over the ${frontier.CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT:.2f} whole-day agent stop: "
+         f"no MiniBench agent ({w_agent} of 40), plain Opus + Flash x2",
+         w_agent == 0 and all(i["opus"] == 1 for i in w_mini)),
         (f"W: whole day before the seasonal question ${out['W']['before_seasonal']:.2f} <= "
-         f"${frontier.CLAUDE_MINIBENCH_DAY_LIMIT:.2f}; after it ${w_claude_budget.day_spent():.2f} <= ${frontier.CLAUDE_DAILY_CAP_TWO_AGENTS:.2f}",
-         out["W"]["before_seasonal"] <= frontier.CLAUDE_MINIBENCH_DAY_LIMIT + 1e-9
+         f"${w_claude_budget.minibench_daily_cap:.2f}; after it ${w_claude_budget.day_spent():.2f} <= ${frontier.CLAUDE_DAILY_CAP_TWO_AGENTS:.2f}",
+         w_claude_budget.minibench_daily_cap == 15.40 and out["W"]["before_seasonal"] <= w_claude_budget.minibench_daily_cap + 1e-9
          and w_claude_budget.day_spent() <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
         ("W: the seasonal question after the burst still gets both agents",
          [(i["agent"], i["agent2"]) for i in infos("W", True)] == [(1, 1)]),

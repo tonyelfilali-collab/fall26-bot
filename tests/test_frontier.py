@@ -144,7 +144,7 @@ def test_a_minibench_burst_leaves_seasonal_its_claude(flag):
             assert claude.refusal(OPUS_55) == "daily cap"
         finally:
             current_question_key.reset(tokens[0]), question_seasonal.reset(tokens[1])
-    assert claude.minibench_daily_cap == 12.00  # $15 day cap (one seasonal agent) - $3
+    assert claude.minibench_daily_cap == 11.70  # $15 day cap (one seasonal agent) - $3.30
     assert claude.minibench_daily_cap - 0.36 < claude.day_spent() <= claude.minibench_daily_cap + 1e-9
     tokens = current_question_key.set("s1"), question_seasonal.set(True)
     try:
@@ -153,7 +153,7 @@ def test_a_minibench_burst_leaves_seasonal_its_claude(flag):
             claude.start(OPUS_55)
     finally:
         current_question_key.reset(tokens[0]), question_seasonal.reset(tokens[1])
-    assert claude.daily_cap - claude.minibench_daily_cap >= frontier.CLAUDE_MINIBENCH_SEASONAL_RESERVE == 3.00
+    assert claude.daily_cap - claude.minibench_daily_cap == pytest.approx(frontier.seasonal_reserve(1)) == 3.30
 
 
 # ---------------------------------------------------------------- the Claude call

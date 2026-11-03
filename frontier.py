@@ -21,8 +21,9 @@ in price):
   (GPT + paid Flash); none when the OpenRouter key has under $2 left.
 - Budget (ClaudeBudget, fall26-data status/claude_spend.json): one setting,
   CLAUDE_BUDGET_PER_CYCLE, plus the cycle reset date; ledger caps $15 per UTC
-  day ($20 with two seasonal agents; MiniBench only under the day cap - $3, at most $17;
-  the MiniBench agent only under $5 of MiniBench's own day spend), $1.50 per seasonal question, $0.60 per MiniBench question. Each call
+  day ($20 with two seasonal agents; MiniBench only under the day cap - one seasonal question's
+  reservation, $15.40; the MiniBench agent only under $5 of MiniBench's own day spend and $10
+  of the whole day's), $1.50 per seasonal question, $0.60 per MiniBench question. Each call
   reserves its worst case (max_tokens of output), so a cap is never passed.
 - Step-down (claude_mode, once per run): under 25% of the cycle budget left ->
   seasonal Opus x1; under 10% -> seasonal Opus x1, no Claude on MiniBench; a
@@ -48,6 +49,7 @@ import asyncio
 import calendar
 import contextvars
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -101,14 +103,15 @@ CLAUDE_REQUESTS_PER_MINUTE = 50
 CLAUDE_SPEND_PATH = "status/claude_spend.json"
 CLAUDE_DAILY_CAP = 15.00
 # MiniBench (or an unknown tournament) may use Claude only while the UTC day's
-# WHOLE Claude spend, running reservations included, stays under this (architect,
-# 3 Nov: $17, was $9), and always $3 under the day cap: $3 left for seasonal.
-CLAUDE_MINIBENCH_DAY_LIMIT = 17.00
-CLAUDE_MINIBENCH_SEASONAL_RESERVE = 3.00
-# Burst days (architect, 2 Nov; 3 Nov: MiniBench's OWN spend): from this much of
-# the day's MiniBench Claude spend, running MiniBench reservations included,
-# MiniBench questions get plain Opus only (no agent) + Flash. Seasonal unchanged.
+# WHOLE Claude spend, running reservations included, leaves one seasonal
+# question's reservation under the day cap (architect, 3 Nov; was $9):
+# $20 - $4.60 (agent + agent2) = $15.40; one agent: $15 - $3.30 (agent + plain Opus) = $11.70.
+# Burst days (architect, 2 Nov; 3 Nov): MiniBench questions get plain Opus only
+# (no agent) + Flash from $5 of MiniBench's OWN Claude spend today, or once the
+# whole day reaches $10, whichever comes first (running MiniBench reservations
+# included in both; seasonal ones in neither). Seasonal unchanged.
 CLAUDE_MINIBENCH_AGENT_DAY_LIMIT = 5.00
+CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT = 10.00
 CLAUDE_SEASONAL_QUESTION_CAP = 1.50
 CLAUDE_MINIBENCH_QUESTION_CAP = 0.60
 OPENROUTER_SEASONAL_QUESTION_CAP = 0.30
@@ -226,6 +229,13 @@ def agent_reserve(seasonal: bool, name: str = AGENT) -> float:
     return (caps.input_tokens * prompt + caps.output_tokens * completion) / 1_000_000 + caps.searches * AGENT_SEARCH_PRICE
 
 
+def seasonal_reserve(agents: int) -> float:
+    """One seasonal question's Claude reservation, rounded up to 10 cents:
+    agent + agent2 = $4.60; agent + plain Opus = $3.30. MiniBench keeps it free."""
+    second = agent_reserve(True, AGENT2) if agents >= 2 else claude_reserve(OPUS_55)
+    return math.ceil(round((agent_reserve(True) + second) * 10, 6)) / 10
+
+
 def agent_seasonal() -> bool:
     """The question in this task is seasonal; unknown -> seasonal (the larger reserve: fail closed)."""
     return question_seasonal.get() is not False
@@ -322,7 +332,7 @@ class ClaudeBudget(SpendGuard):
         self.cycle = cycle_start(self.today, reset)
         self.cycles: dict[str, float] = {k: float(v) for k, v in (self.raw.get("cycles") or {}).items()}
         self.credit_errors: dict[str, str] = dict(self.raw.get("credit_errors") or {})  # cycle -> day
-        self.set_daily_cap(CLAUDE_DAILY_CAP)
+        self.set_daily_cap(CLAUDE_DAILY_CAP, seasonal_reserve(1))
         # The day's Claude spend on MiniBench (or unknown) questions, per UTC day (burst-day rule).
         self.minibench_days: dict[str, float] = {k: float(v) for k, v in (self.raw.get("minibench_days") or {}).items()}
         self.estimates = {m: claude_reserve(m) for m in CLAUDE_PRICES}
@@ -330,10 +340,10 @@ class ClaudeBudget(SpendGuard):
         self.agent_off: str | None = None  # set: no agent for the rest of this run
         self.agent_overruns = 0  # agent calls over their reservation this run
 
-    def set_daily_cap(self, dollars: float) -> None:
-        """The day cap, and MiniBench's limit: $17, at most the day cap - $3."""
+    def set_daily_cap(self, dollars: float, seasonal_reserve: float) -> None:
+        """The day cap, and MiniBench's limit: the day cap - one seasonal question's reservation."""
         self.daily_cap = dollars
-        self.minibench_daily_cap = min(CLAUDE_MINIBENCH_DAY_LIMIT, dollars - CLAUDE_MINIBENCH_SEASONAL_RESERVE)
+        self.minibench_daily_cap = round(dollars - seasonal_reserve, 2)
 
     def minibench_day_spent(self, day: str | None = None) -> float:
         return self.minibench_days.get(day or utc_day(), 0.0)
@@ -777,10 +787,10 @@ class FrontierPlanner(bot_config.GeminiPool):
                 self.pace = pacing[0]
                 line += f"; pacing {self.pace}"  # the mode name only (public log)
             if self.seasonal_agents >= 2 and self.claude is not None:
-                self.claude.set_daily_cap(CLAUDE_DAILY_CAP_TWO_AGENTS)  # $20: MiniBench limit $17
+                self.claude.set_daily_cap(CLAUDE_DAILY_CAP_TWO_AGENTS, seasonal_reserve(2))  # $20: MiniBench $15.40
                 line += "; 2 seasonal agents"
             elif self.claude is not None:
-                self.claude.set_daily_cap(CLAUDE_DAILY_CAP)  # $15: MiniBench limit $12
+                self.claude.set_daily_cap(CLAUDE_DAILY_CAP, seasonal_reserve(1))  # $15: MiniBench $11.70
         return line
 
     def _claude_chain(self, model: str, deadline_aware: bool = False) -> ThrottledLlm:
@@ -810,7 +820,7 @@ class FrontierPlanner(bot_config.GeminiPool):
 
     def referee_llm(self) -> ThrottledLlm | None:
         """The referee shadow (shadow.py): Opus 5.5, effort high, through the
-        Claude budget (day, MiniBench $17, question and cycle caps); one try, no
+        Claude budget (day, MiniBench $15.40, question and cycle caps); one try, no
         backups (a cap refusal = no referee). None while Claude is off or blocked."""
         if self.claude is None or not self._frontier_on():
             return None
@@ -831,12 +841,13 @@ class FrontierPlanner(bot_config.GeminiPool):
         )
 
     def _minibench_burst(self) -> bool:
-        """MiniBench's OWN Claude spend today, running MiniBench reservations
-        included, has reached $5 (architect, 3 Nov). Seasonal spend and running
-        seasonal reservations don't count."""
+        """MiniBench's OWN Claude spend today has reached $5, or the whole day's
+        has reached $10 (architect, 3 Nov). Both count running MiniBench
+        reservations; running seasonal ones don't take the MiniBench agent away."""
         assert self.claude is not None
         running = sum(v for q, v in self.claude.in_flight.items() if q in self.minibench_questions)
-        return self.claude.minibench_day_spent() + running >= CLAUDE_MINIBENCH_AGENT_DAY_LIMIT - 1e-9
+        return (self.claude.minibench_day_spent() + running >= CLAUDE_MINIBENCH_AGENT_DAY_LIMIT - 1e-9
+                or self.claude.day_spent() + running >= CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT - 1e-9)
 
     def _claude_ok(self, model: str) -> bool:
         return self.claude is not None and self.claude.refusal(self.model_prefix + model) is None

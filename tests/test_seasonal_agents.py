@@ -50,7 +50,7 @@ def test_agent2_reserve_and_the_caps():
 def test_two_agents_seasonal_and_minibench_unchanged():
     planner, line = _two()
     assert "2 seasonal agents" in line
-    assert planner.claude.daily_cap == 20.00 and planner.claude.minibench_daily_cap == 17.00
+    assert planner.claude.daily_cap == 20.00 and planner.claude.minibench_daily_cap == 15.40
     chains = _plan(planner, True, "32")
     assert [c.model for c in chains][:2] == [AGENT, AGENT2] and len(chains) == 4
     assert all("flash" in c.model for c in chains[2:])
