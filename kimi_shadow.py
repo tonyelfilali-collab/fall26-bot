@@ -18,9 +18,10 @@ One call per live question at the end of the run, to OpenRouter
 Money: its own share of the spend ledger (`kimi_shadow_days`, calls marked
 "shadow": "kimi"), the GPT shadow's caps ($0.25 per question, $1.50 per UTC
 day, MiniBench only under $1.00, seasonal first, none under $2 key left).
-Each call reserves its worst case first (RESERVATION): a server-tool request
-may bill the prompt once per search step, so up to 400k input tokens, 16k
-output tokens (reasoning included) and 3 searches.
+Each call reserves $0.06 first (RESERVATION, architect 3 Nov; measured max
+$0.036). Its worst case (WORST_CASE, $0.245: a server-tool request may bill the
+prompt once per search step, so up to 400k input tokens, 16k output tokens,
+reasoning included, and 3 searches) was the reservation until 3 Nov.
 Public log: "Question N: Kimi shadow <status>, $cost[, domains N, metaculus cited: yes/no]".
 """
 from __future__ import annotations
@@ -38,13 +39,16 @@ SEARCH_PRICE = 0.007  # dollars per Exa search (up to 10 results; we ask 5)
 MAX_SEARCHES = 3
 RESULTS_PER_SEARCH = 5
 CHARACTERS_PER_RESULT = 2_000
-# Reserved per call: the prompt billed once per step (up to 4 steps with 3
+# Worst case per call: the prompt billed once per step (up to 4 steps with 3
 # searches), ASSUMED at most 400k input tokens in all; output capped at 16k.
 RESERVE_INPUT_TOKENS = 400_000
 MAX_OUTPUT_TOKENS = 16_000
-RESERVATION = round(
+WORST_CASE = round(
     (RESERVE_INPUT_TOKENS * PRICE_INPUT + MAX_OUTPUT_TOKENS * PRICE_OUTPUT) / 1_000_000 + MAX_SEARCHES * SEARCH_PRICE, 6
-)  # 0.068 + 0.156 + 0.021 = $0.245
+)  # 0.068 + 0.156 + 0.021 = $0.245 (the reservation until 3 Nov)
+# Architect, 3 Nov: reserve $0.06 per call (76 real calls 28 Oct - 3 Nov: max $0.036,
+# mean $0.022). A call over it is still charged in full (off for the run + alert).
+RESERVATION = 0.06
 TIMEOUT_SECONDS = 240  # then cancelled and charged the reservation (also capped by the run's minute 47)
 REASONING = {"effort": "medium"}
 # Test Bot 40730415966: with "use the research given below first" Kimi made no
