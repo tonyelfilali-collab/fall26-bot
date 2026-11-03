@@ -690,7 +690,8 @@ GPT shadow's plumbing (`gpt_shadow.ShadowSpec`: one spec per paid shadow, the GP
   domains, count and metaculus yes/no as for the GPT shadow.
 - **Money:** its own share of the spend ledger (`kimi_shadow_days`; calls `"shadow": "kimi"`; question entries
   `kimi_shadow`); the GPT shadow's caps ($0.25/question, $1.50/UTC day, MiniBench only under $1.00, seasonal
-  first, none under $2 key left; the key check counts both shadows' running reservations). Reservation $0.245:
+  first, none under $2 key left; the key check counts both shadows' running reservations). Reservation $0.06
+  per call (architect, 3 Nov; 76 real calls: max $0.036); until 3 Nov it was the worst case, $0.245:
   400k input tokens (the prompt may be billed once per search step) x $0.17/M + 16k output x $9.75/M + 3 x $0.007.
   Over its reservation: charged in full, off for the run, alert `kimi-shadow-overrun` (once a day).
 - **Shadows file:** `kimi_shadow` entry (model, provider, status, seconds, cost, searches, tokens, reading,

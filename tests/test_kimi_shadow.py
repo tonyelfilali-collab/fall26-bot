@@ -29,7 +29,7 @@ class FakeKimi(kimi.KimiShadowLlm):
     """The OpenRouter call replaced: a recorded reply (binary: 91%, unlike live) and its usage."""
 
     mode = "ok"
-    cost = 0.09
+    cost = 0.04  # under the $0.06 reservation
     requests: list = []
     urls: list | None = None
 
@@ -55,7 +55,7 @@ class FakeKimi(kimi.KimiShadowLlm):
 
 @pytest.fixture(autouse=True)
 def fresh_fake():
-    FakeKimi.mode, FakeKimi.cost, FakeKimi.requests, FakeKimi.urls = "ok", 0.09, [], None
+    FakeKimi.mode, FakeKimi.cost, FakeKimi.requests, FakeKimi.urls = "ok", 0.04, [], None
     FakeGpt.mode, FakeGpt.cost, FakeGpt.requests, FakeGpt.urls = "ok", 0.07, [], None
     yield
 
@@ -91,7 +91,21 @@ def test_caps_are_the_gpt_shadows():
     assert bot_config.KIMI_SHADOW_DAILY_CAP == bot_config.GPT_SHADOW_DAILY_CAP == 1.50
     assert bot_config.KIMI_SHADOW_MINIBENCH_DAILY_CAP == 1.00 and bot_config.KIMI_SHADOW_MIN_KEY_LEFT == 2.00
     # 400k input x $0.17/M + 16k output x $9.75/M + 3 searches x $0.007 = 0.068 + 0.156 + 0.021
-    assert kimi.RESERVATION == pytest.approx(0.245) and kimi.RESERVATION <= bot_config.KIMI_SHADOW_QUESTION_CAP
+    assert kimi.WORST_CASE == pytest.approx(0.245)
+    # Architect, 3 Nov: $0.06 reserved per call (measured max $0.036); the caps stay.
+    assert kimi.RESERVATION == 0.06 and kimi.KIMI.reservation == 0.06
+
+
+def test_day_cap_counts_running_reservations_at_6_cents():
+    # 3 Nov run 41659662863: $0.40 spent + 4 running at $0.245 left no room for a 5th; at $0.06 it fits.
+    spend = _kimi_day(0.40)
+    shadow = _shadow(spend)
+    for key in "abcd":
+        assert not isinstance(shadow.reserve(key, True), str)
+    assert not isinstance(shadow.reserve("e", False), str)  # 0.40 + 5 x 0.06 = 0.70: MiniBench too
+    assert sum(spend.shadow_in_flight("kimi").values()) == pytest.approx(0.30)
+    # Near the cap the day still refuses: 1.45 + 0.06 > 1.50.
+    assert _shadow(_kimi_day(1.45)).reserve("f", True) == gpt.DAY_CAP
 
 
 def test_request_pins_one_provider_and_exa_search_without_metaculus():
@@ -134,7 +148,7 @@ def test_on_saves_every_type_privately_and_never_changes_the_submission(caplog):
         entry = files[kind]["kimi_shadow"]
         assert entry["status"] == gpt.SAVED and entry["model"] == "moonshotai/kimi-k3"
         assert entry["provider"] == "relace/fp4" and entry["searches"] == 3
-        assert entry["cost"] == pytest.approx(0.09) and entry["reserve"] == kimi.RESERVATION
+        assert entry["cost"] == pytest.approx(0.04) and entry["reserve"] == kimi.RESERVATION
         assert entry["reading"] == ["direct"] and "value" not in entry
         assert kimi.VARIANT in files[kind]["shadow"] and gpt.VARIANT not in files[kind]["shadow"]
         assert files[kind]["gpt_shadow"]["status"] == gpt.OFF  # GPT shadow off: its entry says so
@@ -149,16 +163,16 @@ def test_on_saves_every_type_privately_and_never_changes_the_submission(caplog):
     calls = [c for q in ("1", "2", "3", "4") for c in spend.questions[q]["calls"]]
     assert len(calls) == 4 and all(c["model"] == "moonshotai/kimi-k3" and c["shadow"] == "kimi"
                                    and c["provider"] == "relace/fp4" and c["searches"] == 3 for c in calls)
-    assert spend.day_spent() == pytest.approx(0.36) and spend.shadow_day_spent("kimi") == pytest.approx(0.36)
+    assert spend.day_spent() == pytest.approx(0.16) and spend.shadow_day_spent("kimi") == pytest.approx(0.16)
     assert spend.gpt_shadow_day_spent() == 0.0 and spend.flash_day_spent() == pytest.approx(0.0)
-    assert spend.questions["1"]["kimi_shadow"] == pytest.approx(0.09) and spend.questions["1"]["spent"] == 0.0
-    assert spend.snapshot()["kimi_shadow_days"] == {utc_day(): pytest.approx(0.36)}
+    assert spend.questions["1"]["kimi_shadow"] == pytest.approx(0.04) and spend.questions["1"]["spent"] == 0.0
+    assert spend.snapshot()["kimi_shadow_days"] == {utc_day(): pytest.approx(0.16)}
     assert "gpt_shadow_days" not in spend.snapshot()
     assert spend.kimi_shadow_in_flight == {"1": 0.0, "2": 0.0, "3": 0.0, "4": 0.0}
     public = [r.getMessage() for r in caplog.records if r.name == "fall26" and "Kimi shadow" in r.getMessage()]
-    assert "Question 1: Kimi shadow saved, $0.0900" in public and len(public) == 4
+    assert "Question 1: Kimi shadow saved, $0.0400" in public and len(public) == 4
     assert not any("91" in line for line in public)
-    assert shadow.summary().startswith("Kimi shadow (moonshotai/kimi-k3, never submitted): saved 4; $0.3600")
+    assert shadow.summary().startswith("Kimi shadow (moonshotai/kimi-k3, never submitted): saved 4; $0.1600")
 
 
 def test_messy_mc_reply_goes_to_the_parser_fallback_for_each_shadow_apart(monkeypatch):
@@ -197,11 +211,12 @@ def test_both_shadows_on_share_one_ledger_and_keep_their_own_caps():
     assert files["binary"]["gpt_shadow"]["status"] == gpt.SAVED and files["binary"]["kimi_shadow"]["status"] == gpt.SAVED
     assert files["binary"]["shadow"][gpt.VARIANT] == pytest.approx(0.97)
     assert files["binary"]["shadow"][kimi.VARIANT] == pytest.approx(0.91)
-    assert spend.gpt_shadow_day_spent() == pytest.approx(0.07) and spend.shadow_day_spent("kimi") == pytest.approx(0.09)
-    assert spend.day_spent() == pytest.approx(0.16) and spend.flash_day_spent() == pytest.approx(0.0)
-    # Each shadow's question cap is its own.
-    assert _shadow(spend).reserve("1", True) == gpt.QUESTION_CAP
+    assert spend.gpt_shadow_day_spent() == pytest.approx(0.07) and spend.shadow_day_spent("kimi") == pytest.approx(0.04)
+    assert spend.day_spent() == pytest.approx(0.11) and spend.flash_day_spent() == pytest.approx(0.0)
+    # Each shadow's question cap is its own: the GPT shadow's $0.07 doesn't count for Kimi.
+    assert spend.shadow_question_spent("kimi", "1") == pytest.approx(0.04)
     assert spend.shadow_question_spent("gpt", "1") == pytest.approx(0.07)
+    assert not isinstance(_shadow(spend).reserve("1", True), str)  # 0.04 + 0.06 <= 0.25
 
 
 # ---------------------------------------------------------------- caps
@@ -214,8 +229,8 @@ def _kimi_day(day: float) -> SpendGuard:
 
 
 @pytest.mark.parametrize("day, seasonal, expected", [
-    (1.25, True, None), (1.26, True, gpt.DAY_CAP), (1.30, False, gpt.DAY_CAP),
-    (0.755, False, None), (0.76, False, gpt.MINIBENCH_PRIORITY), (0.76, None, gpt.MINIBENCH_PRIORITY),
+    (1.44, True, None), (1.45, True, gpt.DAY_CAP), (1.45, False, gpt.DAY_CAP),
+    (0.94, False, None), (0.95, False, gpt.MINIBENCH_PRIORITY), (0.95, None, gpt.MINIBENCH_PRIORITY),
 ])
 def test_day_cap_and_minibench_under_one_dollar(day, seasonal, expected):
     result = _shadow(_kimi_day(day)).reserve("9", seasonal)
@@ -229,24 +244,28 @@ def test_gpt_shadow_days_do_not_count_against_kimi():
 
 
 def test_question_cap_and_key_low():
+    spend = _spend()
+    spend.questions["q"] = {"spent": 0.20, "kimi_shadow": 0.20}
+    assert _shadow(spend).reserve("q", True) == gpt.QUESTION_CAP  # 0.20 + 0.06 > 0.25
     shadow = _shadow()
-    assert not isinstance(shadow.reserve("q", True), str)
-    assert shadow.reserve("q", True) == gpt.QUESTION_CAP  # one reservation per question
-    assert _shadow(key_left=2.20).reserve("k", True) == gpt.KEY_LOW
+    for _ in range(4):
+        assert not isinstance(shadow.reserve("p", True), str)
+    assert shadow.reserve("p", True) == gpt.QUESTION_CAP  # 5 x 0.06 > 0.25
+    assert _shadow(key_left=2.05).reserve("k", True) == gpt.KEY_LOW  # 2.05 - 0.06 < 2
     assert _shadow(key_left=None).reserve("k", True) == gpt.KEY_UNKNOWN
     assert _shadow(SpendGuard(MemoryStore(None))).reserve("a", True) == gpt.LEDGER
 
 
 def test_key_check_counts_both_shadows_running():
     spend = _spend()
-    assert not isinstance(_shadow(_spend(), key_left=2.45).reserve("b", True), str)  # alone: 2.45 - 0.245 >= 2
-    gpt_shadow = _gpt_shadow(spend, key_left=2.45)
-    assert not isinstance(gpt_shadow.reserve("a", True), str)  # 2.45 - 0.25 = 2.20 left
-    assert _shadow(spend, key_left=2.45).reserve("b", True) == gpt.KEY_LOW  # 2.20 - 0.245 < 2
+    assert not isinstance(_shadow(_spend(), key_left=2.30).reserve("b", True), str)  # alone: 2.30 - 0.06 >= 2
+    gpt_shadow = _gpt_shadow(spend, key_left=2.30)
+    assert not isinstance(gpt_shadow.reserve("a", True), str)  # 2.30 - 0.25 = 2.05 left
+    assert _shadow(spend, key_left=2.30).reserve("b", True) == gpt.KEY_LOW  # 2.05 - 0.06 < 2
 
 
 def test_seasonal_first_in_the_run():
-    spend = _kimi_day(0.755)
+    spend = _kimi_day(0.93)  # seasonal first fits (0.99); then MiniBench would pass $1.00
     _, files = _run(_kimi_bot(_shadow(spend), seasonal_by_post={1: False, 4: True}), [QUESTIONS[0], QUESTIONS[3]])
     assert files["multiple_choice"]["kimi_shadow"]["status"] == gpt.SAVED
     assert files["binary"]["kimi_shadow"]["status"] == gpt.MINIBENCH_PRIORITY
@@ -275,7 +294,7 @@ def test_call_over_its_reservation_switches_it_off_and_alerts():
     assert shadow.off == "over its reservation" and shadow.overruns == 1
     alerts = []
     assert gpt.overrun_alert(shadow, lambda title, body: alerts.append((title, body)))
-    assert "Kimi shadow call over its reservation" in alerts[0][0] and "$0.24 reservation" in alerts[0][1]
+    assert "Kimi shadow call over its reservation" in alerts[0][0] and "$0.06 reservation" in alerts[0][1]
     assert spend.alerts.get("kimi-shadow-overrun") == utc_day()
 
 
@@ -290,7 +309,7 @@ def test_domains_in_the_private_file_count_and_flag_in_the_public_log(caplog, ur
     entry = files["binary"]["kimi_shadow"]
     assert entry["domains_count"] == 2 and entry["metaculus_cited"] is cited and "secret text" not in str(entry)
     [line] = [r.getMessage() for r in caplog.records if r.name == "fall26" and "Kimi shadow saved" in r.getMessage()]
-    assert line == f"Question 1: Kimi shadow saved, $0.0900, domains 2, metaculus cited: {'yes' if cited else 'no'}"
+    assert line == f"Question 1: Kimi shadow saved, $0.0400, domains 2, metaculus cited: {'yes' if cited else 'no'}"
 
 
 def test_one_call_per_llm():
