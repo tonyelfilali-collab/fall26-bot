@@ -81,7 +81,7 @@ def test_paid_slot_on_the_first_3_chains_only():
     assert all(_chain_models(c)[-1] == bot_config.PAID_FLASH_MODEL for c in quick)
     spend = pool.spend
     assert spend.caps["123"] == bot_config.PAID_FLASH_QUESTION_CAP == 0.10
-    assert spend.daily_cap == 1.00 and spend.minibench_daily_cap == 0.50 and spend.forecast_target == 3
+    assert spend.daily_cap == 1.00 and spend.minibench_daily_cap == 1.00 and spend.forecast_target == 3
     assert spend.estimate(bot_config.PAID_FLASH_MODEL) == 0.03
     # Flash-Lite (parser, emergency) never gets the paid slot.
     assert bot_config.PAID_FLASH_MODEL not in _chain_models(pool.parser())
@@ -113,14 +113,16 @@ def test_paid_stops_at_3_forecasts_and_minibench_daily_cap():
         current_question_key.reset(token)
         spend_mod.question_seasonal.reset(seasonal)
     day = spend_mod.utc_day()
-    for flag, expected in ((False, "daily cap"), (None, "daily cap"), (True, None)):
+    # Architect, 3 Nov: MiniBench's paid Flash limit is $1.00, the same as the day cap.
+    for flag, at, expected in ((False, 0.49, None), (None, 0.49, None), (True, 0.49, None),
+                               (False, 0.98, "daily cap"), (None, 0.98, "daily cap"), (True, 0.98, "daily cap")):
         fresh = SpendGuard(MemoryStore({}))
         bot_config.enable_paid_flash(bot_config._gemini_pool(MemoryStore()), fresh)
-        fresh.days[day] = 0.49  # 0.49 + 0.03 > 0.50: MiniBench refused; seasonal still allowed
+        fresh.days[day] = at  # 0.98 + 0.03 > 1.00
         token = current_question_key.set("7")
         seasonal = spend_mod.question_seasonal.set(flag)
         try:
-            assert fresh.refusal(model) == expected, flag
+            assert fresh.refusal(model) == expected, (flag, at)
         finally:
             current_question_key.reset(token)
             spend_mod.question_seasonal.reset(seasonal)

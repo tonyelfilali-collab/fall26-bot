@@ -279,14 +279,14 @@ def test_each_call_within_240_s_or_the_time_left_until_minute_47(monkeypatch, on
     assert timeout == pytest.approx(limit, abs=1.0) and saved["referee"]["status"] == "saved"
 
 
-def test_minibench_follows_the_9_dollar_rule_at_the_end_of_the_run(monkeypatch, on):
+def test_minibench_follows_its_day_limit_at_the_end_of_the_run(monkeypatch, on):
     # The end of the run happens in the seasonal context: the MiniBench question's own flag still applies.
     fake = Fake()
-    claude = _budget(day=8.80)  # + the $0.36 reservation is over $9
+    claude = _budget(day=16.80)  # + the referee's reservation is over MiniBench's $17 ($20 day cap - $3)
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), claude=claude, seasonal=False)
     assert fake.requests == [] and saved["referee"]["status"] == "refused (cap)" and "referee" not in saved["shadow"]
     assert saved["referee"]["reason"] == "skipped: Claude off/cap"
-    assert claude.day_spent() == pytest.approx(8.80)
+    assert claude.day_spent() == pytest.approx(16.80)
     # The same day, a seasonal question (ended in the MiniBench context) still gets its referee.
     fake = Fake()
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), claude=claude, seasonal=True)
@@ -295,7 +295,7 @@ def test_minibench_follows_the_9_dollar_rule_at_the_end_of_the_run(monkeypatch, 
 
 def test_unknown_tournament_fails_closed_to_minibench(monkeypatch, on):
     fake = Fake()
-    claude = _budget(day=8.80)
+    claude = _budget(day=16.80)
     _, _, saved = _direct(monkeypatch, fake, _record(0.3, 0.7), claude=claude, seasonal=None)
     assert fake.requests == [] and saved["referee"]["status"] == "refused (cap)"
 

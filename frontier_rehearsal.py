@@ -39,10 +39,11 @@ O. Credit error on the agent: never retried, no fallback, no more Claude.
 P. A question already near its cap: the agent is refused; seasonal plain Opus
    (or Haiku) within $1.50; MiniBench with no Claude room: today's setup.
 Q. The Claude day at $14.00: no seasonal agent ($2.88 would pass $15): plain
-   Opus; MiniBench no Claude (the day is over its $9 limit).
+   Opus; MiniBench no Claude (the day is over its $12 limit: $15 - $3).
 T. Free Flash quota at 0 with Claude on: the 2 Flash slots are paid Flash
    (within $0.10 a question). T2: a paid day at $0.98: the $1.00 cap refuses
-   them. T3: at $0.48: seasonal paid, MiniBench refused (under $0.50 only).
+   them. T3: at $0.48: seasonal and MiniBench paid (MiniBench limit $1.00
+   since 3 Nov; was $0.50).
 S. Two seasonal agents (FRONTIER_SEASONAL_AGENTS = 2, set for the phase only):
    seasonal = agent + agent2 + Flash x2 (caps 8/3 and 4/2), MiniBench as K;
    question cap $5.30, Claude day cap $20.
@@ -51,8 +52,13 @@ S2. Both seasonal agents past their 7-minute cap: both cancelled at their
 V. A burst of 60 MiniBench questions from a $0 Claude day (architect, 2 Nov;
    2 per live run, 30 runs, one ledger): the agent until the day reaches $5,
    then plain Opus + Flash x2; every
-   MiniBench question keeps a Claude forecast and MiniBench stays under $9; a
-   seasonal question after the burst still gets both agents.
+   MiniBench question keeps a Claude forecast and MiniBench stays under its
+   limit; a seasonal question after the burst still gets both agents.
+W. A heavy seasonal day (architect, 3 Nov): the Claude day at $11.00 from
+   seasonal questions, then 40 MiniBench questions (2 per run, 20 runs): the
+   agent until MiniBench's OWN spend reaches $5, then plain Opus while the
+   whole day is under $17; every MiniBench question gets at least plain Opus;
+   a seasonal question after the burst still gets both agents.
 U1. Pacing paced-1 (cycle spend $15 over the line): seasonal unchanged,
    MiniBench plain Opus + Flash x2. U2. paced-2 ($25 over): seasonal agent +
    plain Opus + Flash x2 (no agent2), MiniBench as U1; the day cap stays $20.
@@ -432,6 +438,18 @@ def run() -> dict:
         infos_v += [_info(r, planner) for r in records]
         out["V"] = {"infos": infos_v, "planner": planner, "calls": [], "fake": fake,
                     "report": frontier.frontier_report(planner)}
+        # W (3 Nov): $11 of seasonal Claude spend already today, then 40 MiniBench
+        # questions (2 per run, 20 runs, one ledger), then one seasonal question.
+        claude, fake, infos_w = _budget(day=11.0), RecordedAnthropic("full"), []
+        for run_no in range(20):
+            burst = [_question(72000 + 2 * run_no + i, SEASONAL_TYPES[(2 * run_no + i) % 4], minutes=60) for i in range(2)]
+            records, planner, _ = run_agent_phase([], burst, claude, fake, seasonal_agents=2)
+            infos_w += [_info(r, planner) for r in records]
+        w_before_seasonal = claude.day_spent()
+        records, planner, _ = run_agent_phase([_question(71999, "binary", minutes=600)], [], claude, fake, seasonal_agents=2)
+        infos_w += [_info(r, planner) for r in records]
+        out["W"] = {"infos": infos_w, "planner": planner, "calls": [], "fake": fake, "before_seasonal": w_before_seasonal,
+                    "report": frontier.frontier_report(planner)}
         return out
     finally:
         for attr, value in times.items():
@@ -553,8 +571,9 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
         ("T2: same, paid day at $0.98 -> the $1.00 day cap refuses paid Flash; Claude still forecasts every question",
          all(i["submitted"] and i["claude"] >= 1 and i["paid_flash"] == 0 for i in infos("T2"))
          and out["T2"]["planner"].spend.day_spent() <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
-        ("T3: same, paid day at $0.48 -> seasonal gets paid Flash; MiniBench refused (paid only under $0.50)",
-         all(i["paid_flash"] >= 1 for i in infos("T3", True)) and all(i["submitted"] and i["paid_flash"] == 0 for i in infos("T3", False))),
+        ("T3: same, paid day at $0.48 -> seasonal and MiniBench both get paid Flash (MiniBench limit $1.00 since 3 Nov)",
+         all(i["paid_flash"] >= 1 for i in infos("T3", True)) and all(i["submitted"] and i["paid_flash"] >= 1 for i in infos("T3", False))
+         and out["T3"]["planner"].spend.day_spent() <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
         ("Agent phases: 0 real calls (every Anthropic request went to the recorded client)",
          all(out[p]["fake"].agent_requests or out[p]["fake"].plain_requests for p in ("K", "L", "M", "N", "N2", "O", "P", "Q", "S", "S2", "U1", "U2"))),
     ]
@@ -585,6 +604,12 @@ def report() -> tuple[bool, str]:
     v_mini_spent = sum(i["claude_spent"] for i in infos("V", False))
     v_agent = sum(i["agent"] for i in infos("V", False))
     v_claude = sum(1 for i in infos("V", False) if i["claude"])
+    w_claude_budget = out["W"]["planner"].claude
+    w_mini = infos("W", False)
+    w_mini_spent = sum(i["claude_spent"] for i in w_mini)
+    w_agent = sum(i["agent"] for i in w_mini)
+    w_opus = sum(1 for i in w_mini if i["claude"])
+    w_first_plain = next((n for n, i in enumerate(w_mini) if i["agent"] == 0), len(w_mini))
     checks = [
         ("A: seasonal, every type = Opus 5.5 x2 + Flash x2 (4 forecasts)",
          len(a_s) == 4 and all(i["forecasts"] == 4 and i["opus"] == 2 and i["flash"] == 2 for i in a_s)),
@@ -619,9 +644,9 @@ def report() -> tuple[bool, str]:
          all(i["submitted"] and i["opus"] == 0 for i in infos("I"))),
         ("J: every free Flash 503 -> both Flash slots paid, with the Opus forecasts in",
          all(i["paid_flash"] == 2 and i["opus"] >= 1 for i in infos("J"))),
-        (f"R: 40-question MiniBench burst from $8: MiniBench Claude stopped by ${frontier.CLAUDE_MINIBENCH_DAY_LIMIT:.0f} "
+        (f"R: 40-question MiniBench burst from $8: MiniBench Claude stopped by ${out['R']['planner'].claude.minibench_daily_cap:.0f} "
          f"({r_mini_claude} with Claude), day ${r_day:.2f} <= ${frontier.CLAUDE_DAILY_CAP:.0f}",
-         r_mini_spent <= frontier.CLAUDE_MINIBENCH_DAY_LIMIT + 1e-9 and r_day <= frontier.CLAUDE_DAILY_CAP + 1e-9
+         r_mini_spent <= out["R"]["planner"].claude.minibench_daily_cap + 1e-9 and r_day <= frontier.CLAUDE_DAILY_CAP + 1e-9
          and 0 < r_mini_claude < 40 and len(infos("R")) == 41 and all(i["submitted"] for i in infos("R"))),
         ("R: the seasonal question after the burst still gets both Opus slots",
          [i["opus"] for i in infos("R", True)] == [2]),
@@ -633,6 +658,21 @@ def report() -> tuple[bool, str]:
          all(i["agent"] == 0 for i in infos("V", False)[-20:])),
         ("V: the seasonal question after the burst still gets both agents",
          [(i["agent"], i["agent2"]) for i in infos("V", True)] == [(1, 1)]),
+        (f"W: $11 seasonal day + 40 MiniBench: every MiniBench question gets at least plain Opus ({w_opus} of 40; "
+         f"{w_agent} with the agent), MiniBench's own Claude ${w_mini_spent:.2f} "
+         f"(ledger ${w_claude_budget.minibench_day_spent():.2f})",
+         len(w_mini) == 40 and w_opus == 40 and all(i["submitted"] for i in w_mini) and 0 < w_agent < 40
+         and abs(w_claude_budget.minibench_day_spent() - w_mini_spent) < 1e-6),
+        (f"W: the agent only while MiniBench's own spend is under ${frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT:.2f} "
+         f"(the first {w_first_plain} had it, none after), so seasonal spend didn't take it",
+         w_agent == w_first_plain and all(i["agent"] == 0 for i in w_mini[w_first_plain:])
+         and sum(i["claude_spent"] for i in w_mini[:w_first_plain - 1]) < frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT),
+        (f"W: whole day before the seasonal question ${out['W']['before_seasonal']:.2f} <= "
+         f"${frontier.CLAUDE_MINIBENCH_DAY_LIMIT:.2f}; after it ${w_claude_budget.day_spent():.2f} <= ${frontier.CLAUDE_DAILY_CAP_TWO_AGENTS:.2f}",
+         out["W"]["before_seasonal"] <= frontier.CLAUDE_MINIBENCH_DAY_LIMIT + 1e-9
+         and w_claude_budget.day_spent() <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
+        ("W: the seasonal question after the burst still gets both agents",
+         [(i["agent"], i["agent2"]) for i in infos("W", True)] == [(1, 1)]),
         ("Modes: A, B, E, F, H, I, J frontier; G off", all(mode(p) != "off" for p in frontier_phases) and mode("G") == "off"),
         *agent_checks(out, infos),
     ]
@@ -651,7 +691,8 @@ def report() -> tuple[bool, str]:
               "S": "S. Two seasonal agents (test switch)", "T": "T. Free Flash quota at 0: paid Flash planned",
               "T2": "T2. Free Flash at 0, paid day at $0.98", "T3": "T3. Free Flash at 0, paid day at $0.48", "S2": "S2. Two seasonal agents both past their cap",
               "U1": "U1. Pacing: paced-1 (line + $15)", "U2": "U2. Pacing: paced-2 (line + $25)",
-              "V": "V. MiniBench burst of 60 from a $0 Claude day"}
+              "V": "V. MiniBench burst of 60 from a $0 Claude day",
+              "W": "W. $11 seasonal day, then a MiniBench burst of 40"}
     for phase, title in titles.items():
         lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]
