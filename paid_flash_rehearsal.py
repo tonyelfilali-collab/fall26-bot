@@ -5,13 +5,13 @@ replies (0 model calls, nothing submitted, both ledgers in memory).
 
 Rules: paid Flash only fills a question up to 3 real forecasts (extra slots are
 free only); per-question cap $0.10 (3 x the measured $0.03 per call fit); daily cap
-$1.00, MiniBench only while the day's paid spend is under $0.50.
+$1.00, MiniBench too (architect, 3 Nov: was only under $0.50).
 
 A. Every free Flash call answers 503: exactly 3 forecasts per question, all paid.
 B. One free Flash forecast answers per question (the other free calls answer
    503 a moment later): 1 free + 2 paid = 3.
-C. The day's paid spend already $0.50: the MiniBench question gets no paid call
-   (left for the next run); the seasonal question still gets its 3.
+C. The day's paid spend already $0.50: since 3 Nov the MiniBench question gets
+   its 3 too (the MiniBench limit is $1.00), like the seasonal question.
 D. The day's paid spend already $0.98 of $1.00 (+ $0.03 would pass it): no paid call; the 2 questions
    closing within 45 minutes get the Nemotron backup; the later one waits.
 
@@ -154,8 +154,8 @@ def report() -> tuple[bool, str]:
          all(i["forecasts"] == 3 and i["paid"] == 3 and i["spent"] <= cap + 1e-9 for i in out["A"])),
         ("B: one free Flash forecast answers -> 1 free + 2 paid = 3",
          all(i["forecasts"] == 3 and i["free"] == 1 and i["paid"] == 2 for i in out["B"])),
-        ("C: day at $0.50 -> MiniBench refused paid (no forecast, next run); seasonal still gets 3 paid",
-         by[83002]["paid"] == 0 and not by[83002]["submitted"] and by[83001]["paid"] == 3 and by[83001]["forecasts"] == 3),
+        ("C: day at $0.50 -> MiniBench and seasonal both get 3 paid (MiniBench limit $1.00 since 3 Nov)",
+         all(by[p]["paid"] == 3 and by[p]["forecasts"] == 3 and by[p]["submitted"] for p in (83001, 83002))),
         (f"C: day spend after ${out['C_day']:.4f} <= $1.00", out["C_day"] <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
         (f"D: day at $0.98 -> 0 paid calls ({out['D_paid_calls']}), day spend ${out['D_day']:.2f} <= $1.00",
          out["D_paid_calls"] == 0 and out["D_day"] <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
@@ -173,7 +173,7 @@ def report() -> tuple[bool, str]:
         "",
     ]
     for phase, title in (("A", "A. Every free Flash call answers 503"), ("B", "B. One free Flash forecast answers per question"),
-                         ("C", "C. Day's paid spend already $0.50 (MiniBench limit)"), ("D", "D. Day's paid spend already $0.98 of $1.00")):
+                         ("C", "C. Day's paid spend already $0.50 (MiniBench limit until 3 Nov)"), ("D", "D. Day's paid spend already $0.98 of $1.00")):
         lines += [f"### {title}", "", *_rows(out[phase]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]
     return ok, "\n".join(lines)

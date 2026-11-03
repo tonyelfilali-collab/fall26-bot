@@ -15,13 +15,15 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
 - Anthropic (architect, 21 Oct): Claude models via `ANTHROPIC_API_KEY` (Console org, workspace
   "fall26-bot", no card, no auto-reload) are allowed, within the frontier caps (#140): `CLAUDE_BUDGET_PER_CYCLE`
   ($170, cycle 18 Oct - 17 Nov), $20 per UTC day (two seasonal agents; $15 with one), MiniBench Claude only while the day's Claude spend
-  (running calls included) is under $9 (plain Opus only, no agent, from $5: burst days, 2 Nov), $1.50 per seasonal question, $0.60 per MiniBench question
+  (running calls included) is under the day cap minus one seasonal question's reservation ($15.40; $11.70 with one
+  agent; 3 Nov, was $9); the MiniBench agent only under $5 of MiniBench's own day spend and $10 of the whole day's
+  (burst days, 2-3 Nov; plain Opus after), $1.50 per seasonal question, $0.60 per MiniBench question
   ($3.60 / $1.60 while the agent runs, $5.30 seasonal with two agents; the agent is ON), step-downs at 25% / 10% left, pacing: over the line ($170 x share of the cycle gone) + $10
   MiniBench drops the agent, + $20 seasonal also drops agent2. The credits
   expire each billing cycle; when used up, calls fail with "credit balance is too low" and are never
   charged. Never retry a credit error.
 - OpenRouter: paid models allowed only: google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its
-  caps ($0.10/question, $1.00/UTC day, MiniBench paid only while the day's paid spend is under $0.50,
+  caps ($0.10/question, $1.00/UTC day, MiniBench paid too (its limit $1.00 since 3 Nov, was $0.50),
   paid only until a question has 3 real forecasts); openai/gpt-6.1-sol as the GPT shadow only,
   $0.25/question, $1.50/UTC day (ON 22-28 Oct, OFF since 28 Oct; never submitted); moonshotai/kimi-k3 as the Kimi
   shadow only, the same caps (one pinned provider; ON since 28 Oct; never submitted). Every other paid model stays refused. The key

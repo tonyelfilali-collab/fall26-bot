@@ -1207,7 +1207,7 @@ class FallBot2026(ForecastBot):
             item = {
                 "question": question, "record": record, "started": started, "finished": finished,
                 "submitted": float(submitted), "key": current_question_key.get() or str(question.id_of_post),
-                # MiniBench (False) or unknown (None): the $9 rule (fail closed).
+                # MiniBench (False) or unknown (None): the MiniBench rules (fail closed).
                 "seasonal": spend_question_seasonal.get(), "flag": _question_seasonal.get(),
             }
         except Exception as e:

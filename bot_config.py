@@ -127,7 +127,7 @@ PAID_FLASH_FALLBACK = True  # ON: Tony, 30 Sep (key limit $8; $15 since 21 Oct; 
 PAID_FLASH_MODEL = ensemble.FLASH_36
 PAID_FLASH_QUESTION_CAP = 0.10  # dollars (architect, 2 Oct: 0.09, then 0.10 so a dearer call keeps the 3rd forecast)
 PAID_FLASH_DAILY_CAP = 1.00  # dollars, per UTC day (seasonal questions)
-PAID_FLASH_MINIBENCH_DAILY_CAP = 0.50  # MiniBench: paid only while the day's paid spend is under this
+PAID_FLASH_MINIBENCH_DAILY_CAP = 1.00  # MiniBench: paid only while the day's paid spend is under this (architect, 3 Nov: was $0.50)
 # Paid Flash only fills a question up to this many real forecasts (finished +
 # paid running); extra (spare-quota) slots beyond it are free Flash only.
 PAID_FLASH_TARGET_FORECASTS = 3
@@ -429,7 +429,7 @@ class GeminiPool:
         if limit is not None and self.paid_flash is not None and len(chains) < limit:
             # Frontier (Claude on): free Flash quota used up, so the rest of the
             # Flash slots are paid Flash straight away, within its caps ($0.10 a
-            # question, $1.00 a day, MiniBench under $0.50); a refusal ends the slot.
+            # question, $1.00 a day, MiniBench too since 3 Nov); a refusal ends the slot.
             paid = limit - len(chains)
             chains += [self.paid_flash() for _ in range(paid)]
             self.last_plan["paid_flash_planned"] = paid

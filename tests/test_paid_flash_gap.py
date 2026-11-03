@@ -45,7 +45,7 @@ def test_one_free_model_left_fills_the_other_slot_with_paid():
     assert _flash(planner) == [left, bot_config.PAID_FLASH_MODEL]
 
 
-@pytest.mark.parametrize("seasonal, day, refused", [(True, 0.98, "daily cap"), (False, 0.48, "daily cap"), (True, 0.48, None)])
+@pytest.mark.parametrize("seasonal, day, refused", [(True, 0.98, "daily cap"), (False, 0.98, "daily cap"), (False, 0.48, None), (True, 0.48, None)])
 def test_the_caps_still_refuse(seasonal, day, refused):
     planner = _planner(used_up=bot_config.GEMINI_FORECAST_MODELS, openrouter_day=day)
     token, kind = current_question_key.set("52"), question_seasonal.set(seasonal)
