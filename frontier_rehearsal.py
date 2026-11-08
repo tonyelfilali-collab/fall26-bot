@@ -19,6 +19,11 @@ I. Timing: Opus calls slower than the planned-forecast wait are cut; the
    question is still forecast with the Flash ones.
 J. Every free Flash call answers 503: paid Flash fills both Flash slots,
    although the Opus forecasts are in.
+X. Aggregation claude_first (aggregation.py; built OFF, set for the phase only):
+   seasonal 4 types = Opus x2 + Flash x2 -> only the 2 Opus combined (Flash saved,
+   not combined); MiniBench 1 Claude + Flash x2 -> every forecast, as now.
+Y. claude_first with two seasonal agents: seasonal agent + agent2 only; MiniBench
+   agent + plain Opus only. A (the live default, "all"): every forecast combined.
 R. A burst of 40 MiniBench questions on a Claude day at $8: MiniBench stops
    using Claude at $9 (reservations included); a seasonal question in the same
    run still gets both Opus slots; the day stays under $15.
@@ -137,7 +142,7 @@ def _paced(over: float) -> ClaudeBudget:
 def run_phase(seasonal: list, minibench: list, claude: ClaudeBudget, key_left: float = 5.0,
               fail: dict | None = None, slow: dict | None = None, gpt: bool = False,
               question_log: Any = None, free_used_up: bool = False,
-              openrouter_day: float = 0.0) -> tuple[list[dict], FrontierPlanner, list[str]]:
+              openrouter_day: float = 0.0, aggregation_mode: str | None = None) -> tuple[list[dict], FrontierPlanner, list[str]]:
     """One live-like run; returns (question records, planner, real model of each recorded call).
     free_used_up: every free Flash model's quota at 0; openrouter_day: paid spend already today."""
     fail, slow, calls = fail or {}, slow or {}, []
@@ -172,6 +177,7 @@ def run_phase(seasonal: list, minibench: list, claude: ClaudeBudget, key_left: f
             predictions_per_research_report=3, required_successful_predictions=0,
         )
         bot.planner = planner
+        bot.aggregation_mode = aggregation_mode
         bot.question_log = question_log  # None: no files (a test may pass a recorder)
         bot.keep_records = True
         bot.run_mode = "test_questions"
@@ -196,7 +202,40 @@ def _info(record: dict, planner: FrontierPlanner) -> dict:
         "claude_spent": planner.claude.question_spent(post) if planner.claude else 0.0,
         "openrouter_spent": planner.spend.question_spent(post) if planner.spend else 0.0,
         "failed": [f.get("planned_model", "").removeprefix("replay/") for f in record.get("forecasts", []) if f.get("status") == "failed"],
+        **_aggregation_info(record),
     }
+
+
+def _aggregation_info(record: dict) -> dict:
+    """Aggregation mode (aggregation.py): what was combined, and whether the
+    submitted forecast equals the combine of every forecast / of the Claude ones."""
+    import aggregation
+
+    pairs = aggregation.record_models_and_values(record)
+    final = record.get("final_forecast")
+
+    def matches(values: list) -> bool:
+        try:
+            return bool(values) and _close(final, aggregation.combine_saved(record["question"], values))
+        except Exception:
+            return False
+
+    claude = [v for m, v in pairs if aggregation.is_claude_forecast(m)]
+    return {"aggregation": (record.get("aggregation") or {}).get("used"),
+            "final_is_all": matches([v for _, v in pairs]), "final_is_claude": matches(claude),
+            "final_binary": final if isinstance(final, (int, float)) else None}
+
+
+def _close(a: Any, b: Any, tol: float = 1e-6) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(a - b) <= tol
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_close(a[k], b[k], tol) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_close(x, y, tol) for x, y in zip(a, b))
+    return a == b
 
 
 def _short(model: str) -> str:
@@ -315,7 +354,7 @@ class RecordedAnthropic:
 
 
 def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake: RecordedAnthropic,
-                    seasonal_agents: int = 1) -> tuple[list[dict], FrontierPlanner, list[str]]:
+                    seasonal_agents: int = 1, aggregation_mode: str | None = None) -> tuple[list[dict], FrontierPlanner, list[str]]:
     import anthropic
 
     original = anthropic.AsyncAnthropic
@@ -336,6 +375,7 @@ def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake:
             predictions_per_research_report=3, required_successful_predictions=0,
         )
         bot.planner = planner
+        bot.aggregation_mode = aggregation_mode
         bot.question_log = None
         bot.keep_records = True
         bot.run_mode = "test_questions"
@@ -365,6 +405,8 @@ def run() -> dict:
             out[name] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": calls}
 
         phase("A", 91000, _budget())
+        # X (8 Nov, built OFF): claude_first for this phase only; Opus 70% x2, Flash 20% x2.
+        phase("X", 69000, _budget(), aggregation_mode="claude_first")
         phase("B", 92000, _budget(spent=0.80 * BUDGET))
         phase("C", 93000, _budget(spent=0.95 * BUDGET))
         store = MemoryStore({"days": {}})
@@ -394,16 +436,18 @@ def run() -> dict:
             message="rehearsal: overloaded", llm_provider="gemini", model="gemini") for m in bot_config.GEMINI_FORECAST_MODELS})
 
         def agent_phase(name: str, base: int, claude: ClaudeBudget, fake: RecordedAnthropic, prespent: tuple = (),
-                        seasonal_agents: int = 1) -> None:
+                        seasonal_agents: int = 1, aggregation_mode: str | None = None) -> None:
             seasonal = [_question(base + i, kind) for i, kind in enumerate(SEASONAL_TYPES)]
             minibench = [_question(base + 9, "binary")]
             for post, dollars in prespent:
                 claude.questions[str(post)] = {"spent": dollars}
-            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake, seasonal_agents)
+            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake, seasonal_agents, aggregation_mode)
             out[name] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": [], "fake": fake,
                          "report": frontier.frontier_report(planner)}
 
         agent_phase("K", 81000, _budget(), RecordedAnthropic("full"))
+        # Y (8 Nov, built OFF): claude_first with two seasonal agents.
+        agent_phase("Y", 68000, _budget(), RecordedAnthropic("full"), seasonal_agents=2, aggregation_mode="claude_first")
         # The 7-minute cap on a 1:100 clock (4.2 s; planned wait 5.4 s, 1.2 s kept for the fallback).
         for attr in AGENT_TIMES:
             times[attr] = getattr(frontier, attr)
@@ -672,6 +716,20 @@ def report() -> tuple[bool, str]:
          and w_claude_budget.day_spent() <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
         ("W: the seasonal question after the burst still gets both agents",
          [(i["agent"], i["agent2"]) for i in infos("W", True)] == [(1, 1)]),
+        ("A (live default, mode all): every question combined from every forecast",
+         all(i["aggregation"] == "all" and i["final_is_all"] for i in infos("A"))),
+        ("X (claude_first): seasonal, every type, Opus x2 + Flash x2: submitted = the 2 Opus forecasts combined; "
+         "Flash still ran and is saved, not combined",
+         len(infos("X", True)) == 4 and all(i["aggregation"] == "claude" and i["final_is_claude"] and i["flash"] == 2
+                                              and i["opus"] == 2 and i["submitted"] for i in infos("X", True))),
+        ("X: on binary the Flash-free result differs from the all-forecast one (Opus 70%, Flash 20%)",
+         all(not i["final_is_all"] and i["final_binary"] is not None and i["final_binary"] > 0.6
+             for i in infos("X", True) if i["type"] == "binary")),
+        ("X: MiniBench (1 Claude + Flash x2): fewer than 2 Claude -> every forecast combined, as now",
+         all(i["aggregation"] == "all" and i["final_is_all"] and i["submitted"] for i in infos("X", False))),
+        ("Y (claude_first, two seasonal agents): seasonal agent + agent2 combined only; MiniBench agent + plain Opus only",
+         all(i["aggregation"] == "claude" and i["final_is_claude"] and i["flash"] == 2 and i["submitted"] for i in infos("Y"))
+         and all(i["agent"] == 1 and i["agent2"] == 1 for i in infos("Y", True))),
         ("Modes: A, B, E, F, H, I, J frontier; G off", all(mode(p) != "off" for p in frontier_phases) and mode("G") == "off"),
         *agent_checks(out, infos),
     ]
@@ -691,7 +749,9 @@ def report() -> tuple[bool, str]:
               "T2": "T2. Free Flash at 0, paid day at $0.98", "T3": "T3. Free Flash at 0, paid day at $0.48", "S2": "S2. Two seasonal agents both past their cap",
               "U1": "U1. Pacing: paced-1 (line + $15)", "U2": "U2. Pacing: paced-2 (line + $25)",
               "V": "V. MiniBench burst of 60 from a $0 Claude day",
-              "W": "W. $11 seasonal day, then a MiniBench burst of 40"}
+              "W": "W. $11 seasonal day, then a MiniBench burst of 40",
+              "X": "X. Aggregation claude_first (test switch): Opus x2 + Flash x2",
+              "Y": "Y. Aggregation claude_first (test switch): two seasonal agents"}
     for phase, title in titles.items():
         lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]

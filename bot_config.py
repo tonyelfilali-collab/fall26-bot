@@ -203,6 +203,13 @@ KIMI_SHADOW_DAILY_CAP = 1.50  # dollars per UTC day (Kimi shadow spend only)
 KIMI_SHADOW_MINIBENCH_DAILY_CAP = 1.00  # MiniBench: only while the day's Kimi shadow spend stays under this
 KIMI_SHADOW_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, no Kimi shadow
 
+# Aggregation mode (aggregation.py; architect, 8 Nov; Tier C, built OFF):
+# "all" = combine every finished forecast (live, as before);
+# "claude_first" = combine only the Claude Opus forecasts when 2+ were read
+# (else all). Switch-on only by the pre-registered rule (aggregation.py docstring).
+# Test Bot: --aggregation-mode sets it for that run only.
+AGGREGATION_MODE = "all"
+
 
 
 def is_free_model(model: str) -> bool:

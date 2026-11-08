@@ -108,6 +108,7 @@ from distributions import (
 )
 from free_news import collect_free_news, count_asknews_articles, format_articles
 from llm_throttle import answered_models
+import aggregation
 from shadow import (
     REFEREE_AGREE,
     REFEREE_CLAUDE,
@@ -584,6 +585,9 @@ class FallBot2026(ForecastBot):
     # Related-question consistency shadow: our latest submitted binary
     # forecasts (fall26-data index in tournament mode), or None.
     consistency_index: ForecastIndex | None = None
+    # Aggregation mode (aggregation.py): None = bot_config.AGGREGATION_MODE;
+    # Test Bot's --aggregation-mode sets it for one run.
+    aggregation_mode: str | None = None
 
     @property
     def forecasting_seasonal(self) -> bool:
@@ -606,12 +610,62 @@ class FallBot2026(ForecastBot):
         # Kept for the shadow forecaster's "live median with it added".
         if not _in_shadow.get():
             self.__dict__.setdefault("_live_predictions", {})[id(question)] = list(predictions)
+            # Aggregation mode (aggregation.py): claude_first combines only the
+            # Claude forecasts when 2+ were read; the shadows below still see all.
+            chosen = self._chosen_for_mode(question, predictions)
+            if chosen is not predictions:
+                try:
+                    return await self._combine(predictions, question, combine_only=chosen)
+                except NoValidForecast as e:
+                    logger.warning(
+                        f"Question {question.id_of_post}: Claude-only combine failed ({type(e).__name__}); "
+                        "combining every forecast"
+                    )
+                    self._record_for(question)["aggregation"]["used"] = "all (Claude-only combine failed)"
+        return await self._combine(predictions, question)
+
+    def _chosen_for_mode(self, question: MetaculusQuestion, predictions: list) -> list:  # type: ignore[type-arg]
+        """The forecasts to combine under the aggregation mode (the same list
+        object when it is every forecast). Notes the choice in the private log."""
+        mode = self.aggregation_mode or bot_config.AGGREGATION_MODE
+        models = [self._model_of(p) for p in predictions]
+        chosen, used = aggregation.choose(models, mode)
+        claude = sum(1 for m in models if aggregation.is_claude_forecast(m))
+        self._record_for(question)["aggregation"] = {
+            "mode": mode, "used": used, "claude_forecasts": claude, "forecasts": len(predictions),
+        }
+        if used == "all":
+            return predictions
+        logger.info(
+            f"Question {question.id_of_post}: aggregation {mode}: combining the {len(chosen)} Claude "
+            f"forecast(s) only ({len(predictions) - len(chosen)} other(s) saved, not combined)"
+        )
+        return [predictions[i] for i in chosen]
+
+    def _tag_model(self, value: Any, model: str | None) -> None:
+        """Which model a finished forecast's value came from (aggregation mode)."""
+        self.__dict__.setdefault("_model_tags", {}).setdefault(id(value), []).append((value, model))
+
+    def _model_of(self, value: Any) -> str | None:
+        tags = self.__dict__.get("_model_tags", {}).get(id(value)) or []
+        for i, (tagged, model) in enumerate(tags):
+            if tagged is value:
+                del tags[i]
+                return model
+        return None
+
+    async def _combine(
+        self, predictions: list[PredictionTypes], question: MetaculusQuestion, combine_only: list | None = None
+    ) -> PredictionTypes:
+        """The live combine and checks. combine_only: the forecasts to combine
+        (aggregation mode); the free shadow variants always use every forecast."""
+        combined = predictions if combine_only is None else combine_only
         # Safety checks on the final forecast (forecast_safety.py, PLAN.md Step 4).
         if isinstance(question, BinaryQuestion):
             # Step 10: free shadow variants, saved but never submitted.
             self._record_for(question)["shadow"] = zero_cost_shadows(predictions)  # type: ignore[arg-type]
             # Median, stretch (off), [market blend], extreme check, clip 2-98%.
-            return adjust_binary(predictions)  # type: ignore[arg-type]
+            return adjust_binary(combined)  # type: ignore[arg-type]
         if isinstance(question, MultipleChoiceQuestion):
             # Step 10: free shadow variants, saved but never submitted.
             record = self._record_for(question)
@@ -627,14 +681,22 @@ class FallBot2026(ForecastBot):
                 )
             )
             # Step 8: median per option, renormalise, 1% floor, renormalise.
-            return median_multiple_choice(predictions)  # type: ignore[arg-type]
+            return median_multiple_choice(combined)  # type: ignore[arg-type]
         if isinstance(question, NumericQuestion):
             # Unit check: drop models still over 10x away from the current
             # value, unless every model is (then the value is probably wrong).
-            predictions = self._drop_unit_flagged(question, predictions)  # type: ignore[arg-type]
+            # (once per question: a Claude-only attempt and its fallback see the same result)
+            memo = self.__dict__.setdefault("_unit_kept", {})
+            if id(question) not in memo or memo[id(question)][0] is not predictions:
+                memo[id(question)] = (predictions, self._drop_unit_flagged(question, predictions))  # type: ignore[arg-type]
+            kept = memo[id(question)][1]
+            combined = [p for p in combined if any(p is k for k in kept)] if combine_only is not None else kept
+            predictions = kept
+            if not combined:
+                raise NoValidForecast("every chosen forecast was dropped by the unit check")
             # Step 8: pointwise median of the models' CDFs, then 95% of it with
             # 5% uniform over the question's range; then the Step 4 checks.
-            aggregated = combine_numeric(predictions, question)  # type: ignore[arg-type]
+            aggregated = combine_numeric(combined, question)  # type: ignore[arg-type]
             # Step 10: free shadow variants, saved but never submitted.
             self._record_for(question)["shadow"] = to_jsonable(
                 numeric_shadows(predictions, question)
@@ -775,6 +837,8 @@ class FallBot2026(ForecastBot):
                 raw_output=prediction.reasoning,
                 parsed=to_jsonable(prediction.prediction_value),
             )
+            # Aggregation mode: the model this forecast came from (the one that answered).
+            self._tag_model(prediction.prediction_value, entry.get("forecast_model") or forecaster.model)
             self._count_ok(question)
             return prediction
 
@@ -1018,6 +1082,7 @@ class FallBot2026(ForecastBot):
                 "parsed": match.get("value"), "seconds": 0,
             })
             reused.append(prediction)
+            self._tag_model(prediction.prediction_value, next(iter(match.get("answered_models") or []), forecaster.model))
             self._count_ok(question)
         if reused:
             logger.info(f"Question {question.id_of_post}: {len(reused)} finished forecast(s) reused, not bought again")
@@ -2553,6 +2618,13 @@ if __name__ == "__main__":
         "never submitted; prints how the replies were read",
     )
     parser.add_argument(
+        "--aggregation-mode",
+        choices=list(aggregation.MODES),
+        default=None,
+        help="Test mode only: the aggregation mode for this run (aggregation.py; "
+        "bot_config.AGGREGATION_MODE stays as it is)",
+    )
+    parser.add_argument(
         "--one-binary",
         action="store_true",
         help="Test mode: forecast only one binary question",
@@ -2748,6 +2820,12 @@ if __name__ == "__main__":
         key_credit = ensemble.openrouter_credit()
         print(lineup.planner.start_run(key_credit[0] if key_credit else None))
     template_bot.only_model = args.only_model
+    if args.aggregation_mode is not None:
+        if run_mode != "test_questions":
+            raise SystemExit("--aggregation-mode only runs with --mode test_questions.")
+        template_bot.aggregation_mode = args.aggregation_mode
+    print(f"Aggregation mode: {template_bot.aggregation_mode or bot_config.AGGREGATION_MODE}"
+          f"{' (test switch)' if args.aggregation_mode else ''}")
     # Build 1b: the free shadow forecaster (never submitted) on the live and
     # the free test lineups; the replay model in replay (0 calls).
     if lineup.name in ("gemini-free", "free", "frontier"):

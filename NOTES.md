@@ -103,6 +103,19 @@ predictions (currently 1 × 5 = 5), then:
 - **Numeric / discrete / date:** each prediction becomes a CDF on the same x-axis; the
   **median at each point** of the CDF is taken.
 
+**Aggregation mode (8 Nov 2026, `aggregation.py`, built OFF: `bot_config.AGGREGATION_MODE = "all"`).**
+`"claude_first"` combines only the Claude Opus forecasts (agent1, agent2, plain Opus 5.5,
+Opus fallbacks; not Haiku) when 2+ were read, the same way as now; fewer than 2: everything.
+Flash still runs, is saved and scored; the free shadow variants still use every forecast; a
+Claude-only combine that fails falls back to everything. The private question log notes the
+choice (`aggregation`: mode, used, Claude forecasts, forecasts). Test Bot input
+`aggregation_mode` sets it for one run. Switch-on only by the pre-registered rule (architect,
+8 Nov): 25+ agent-era resolved questions, claude_first beats submitted by more than +0.10 log
+score per question (all types), and is not worse than -0.05 on binary. The Scoreboard checks
+it on every run (`status/claude_first.json` + its private report); the daily health check
+shows counts and yes/no only, and warns when all three hold (then the one-line PR is
+pre-approved; merge after a green live run, tell the architect).
+
 ## OpenRouter model IDs and "high reasoning"
 
 With LiteLLM, prefix each with `openrouter/`. Prices are per million tokens (input / output).
