@@ -50,8 +50,10 @@ from bot_config import (  # noqa: E402
     GEMINI_LEDGER_PATH,
     GEMINI_QUOTA_BUCKETS,
 )
+import bot_config  # noqa: E402
 import claude_health  # noqa: E402
 import standings  # noqa: E402
+from aggregation import STATUS_PATH as CLAUDE_FIRST_STATUS_PATH  # noqa: E402
 from gemini_budget import GitHubFileStore, quota_day  # noqa: E402
 from comment_post import COMMENT_FAILED_ANNOTATION  # noqa: E402
 from question_log import DATA_REPO, LOG_FAILURE_ANNOTATION  # noqa: E402
@@ -483,6 +485,15 @@ def asknews_status() -> int | None:
         return None
 
 
+def check_claude_first(status: dict | None, mode_now: str, report: Report) -> None:
+    """The pre-registered claude_first switch-on rule (aggregation.py), as the
+    last Scoreboard run saw it. Public line: counts and yes/no only."""
+    import aggregation
+
+    line, warn = aggregation.health_line(status, mode_now)
+    (report.warnings if warn else report.ok).append(line)
+
+
 def add_standings(now: datetime, minibench_id: int | str, report: Report, store=None, get=None) -> None:
     """Mondays: our Fall and MiniBench standing (standings.py). Fails soft:
     one line "standings: unavailable", never red."""
@@ -532,6 +543,9 @@ def run(simulate_miss: bool) -> Report:
         ("Kimi shadow", lambda: claude_health.check_kimi(
             claude_health.recent_shadow_files(os.environ["DATA_REPO_TOKEN"], now - timedelta(hours=24)), report)),
         ("OpenRouter account", lambda: check_account_balance(*openrouter_account(), report, now.date().isoformat())),
+        ("claude_first rule", lambda: check_claude_first(
+            GitHubFileStore(DATA_REPO, CLAUDE_FIRST_STATUS_PATH, os.environ["DATA_REPO_TOKEN"]).load(),
+            bot_config.AGGREGATION_MODE, report)),
     ]
     for name, check in checks:
         try:
