@@ -78,6 +78,11 @@ logger = logging.getLogger(PUBLIC_LOGGER_NAME)
 OPUS_55 = "anthropic/claude-opus-5-5"
 OPUS_5 = "anthropic/claude-opus-5"
 HAIKU = "anthropic/claude-haiku-5-5"
+# Plain Fable 5.2 (architect, 12 Nov; bot_config.FRONTIER_FABLE_ENABLED): an EXTRA
+# Claude voice, same prompt + dossier as plain Opus, effort high, no tools, no backup
+# (a failure or a refusal skips it: no retry). Thinking is adaptive and always on
+# (the request sends no thinking parameter and no tool_choice).
+FABLE = "anthropic/claude-fable-5-2"
 GPT_SOL = ensemble.GPT_SOL  # openrouter/openai/gpt-5.6-sol
 
 CLAUDE_BACKUPS: dict[str, list[str]] = {OPUS_55: [OPUS_5, HAIKU]}
@@ -88,12 +93,13 @@ CLAUDE_PRICES: dict[str, tuple[float, float]] = {
     OPUS_55: (4.00, 20.00),
     OPUS_5: (5.00, 25.00),
     HAIKU: (0.10, 0.50),
+    FABLE: (8.00, 40.00),  # Claude Fable 5.2 (released 9 Nov 2026), models overview
 }
 CLAUDE_EFFORT = "high"
 # Output cap per call (thinking included). Each call reserves its worst case:
 # CLAUDE_RESERVE_PROMPT_TOKENS in, CLAUDE_MAX_TOKENS out (Opus 5.5 $0.36,
-# Opus 5 $0.45, Haiku $0.01): 2 Opus 5.5 fit the $1.50 seasonal cap and 1 the
-# $0.60 MiniBench cap.
+# Opus 5 $0.45, Haiku $0.01, Fable 5.2 $0.72): 2 Opus 5.5 fit the $1.50 seasonal cap
+# and 1 the $0.60 MiniBench cap. A question's cap rises by Fable's $0.72 while it runs.
 CLAUDE_MAX_TOKENS = 16000
 CLAUDE_RESERVE_PROMPT_TOKENS = 10000
 # One call at most 6 minutes (the planned-forecast wait is 9): a backup still has time.
@@ -757,6 +763,7 @@ class FrontierPlanner(bot_config.GeminiPool):
     gpt_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_GPT_ENABLED)
     agent_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_AGENT_ENABLED)
     seasonal_agents: int = field(default_factory=lambda: bot_config.FRONTIER_SEASONAL_AGENTS)
+    fable_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_FABLE_ENABLED)
     # The class and model-name prefix of the Claude and GPT slots (the
     # rehearsal swaps in recorded replies: ReplayChainLlm, "replay/").
     claude_llm_class: type = ClaudeLlm
@@ -798,6 +805,8 @@ class FrontierPlanner(bot_config.GeminiPool):
                 line += "; 2 seasonal agents"
             elif self.claude is not None:
                 self.claude.set_daily_cap(CLAUDE_DAILY_CAP, seasonal_reserve(1))  # $15: MiniBench $11.70
+        if self.fable_enabled:
+            line += f"; Fable 5.2 {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
         return line
 
     def _claude_chain(self, model: str, deadline_aware: bool = False) -> ThrottledLlm:
@@ -820,6 +829,31 @@ class FrontierPlanner(bot_config.GeminiPool):
             spend=self.claude, temperature=None, timeout=AGENT_TIMEOUT_SECONDS, allowed_tries=1,
             spend_backups=True, backup_on_any_error=True,
         )
+
+    def _fable_chain(self) -> ThrottledLlm:
+        # No backup and one try: a failure, a refusal or a cap refusal skips Fable.
+        return self.claude_llm_class(
+            model=self.model_prefix + FABLE, pacer=self.claude_pacer, backup=None, spend=self.claude,
+            temperature=None, timeout=CLAUDE_TIMEOUT_SECONDS, allowed_tries=1,
+        )
+
+    def _add_fable(self, question: str | None, seasonal: bool, claude_models: list[str]) -> bool:
+        """Fable 5.2 as an extra Claude voice (full mode only): seasonal next to
+        the agents; MiniBench where plain Opus runs (the busy-day rules: Fable
+        follows the plain-Opus limits). The question cap rises by Fable's
+        reservation; refused (day or question cap): skipped, cap as before."""
+        if not (self.fable_enabled and self.mode == "full" and self.claude is not None):
+            return False
+        if not seasonal and OPUS_55 not in claude_models:
+            return False
+        before = self.claude.caps.get(question)
+        if before is None:
+            return False
+        self.claude.set_cap(question, round(before + claude_reserve(FABLE), 2))
+        if self._claude_ok(FABLE):
+            return True
+        self.claude.set_cap(question, before)
+        return False
 
     def _agent_on(self) -> bool:
         # Full mode only: in "low" / "minimal" the single Claude slot is plain Opus (the cheaper one).
@@ -900,6 +934,8 @@ class FrontierPlanner(bot_config.GeminiPool):
                 self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
         # A slot whose model a cap refuses now is left out (its backups may still fit).
         claude_models = [m for m in slots if self._claude_ok(m)]
+        if self._add_fable(question, seasonal, claude_models):
+            claude_models.append(FABLE)
         gpt = False
         if seasonal and self.gpt_allowed and self.spend is not None:
             self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
@@ -919,7 +955,8 @@ class FrontierPlanner(bot_config.GeminiPool):
             if gpt:
                 # After the pool set its $0.10: GPT + paid Flash share $0.30 per seasonal question.
                 self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
-        claude_chains = [self._agent_chain(m) if m in AGENTS else self._claude_chain(m) for m in claude_models]
+        claude_chains = [self._agent_chain(m) if m in AGENTS else self._fable_chain() if m == FABLE else self._claude_chain(m)
+                         for m in claude_models]
         chains = claude_chains + ([self._gpt_chain()] if gpt else []) + flash
         self.last_plan.update(frontier=self.mode, claude=claude_models, gpt=gpt, flash=len(flash), count=len(chains))
         if self.agent_enabled:
@@ -927,6 +964,8 @@ class FrontierPlanner(bot_config.GeminiPool):
             self.last_plan["pace"] = self.pace
             if burst:
                 self.last_plan["burst"] = True
+        if self.fable_enabled:
+            self.last_plan["fable"] = FABLE in claude_models
         return chains
 
     def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:

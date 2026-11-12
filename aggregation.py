@@ -9,6 +9,7 @@ are combined into the submitted one. bot_config.AGGREGATION_MODE.
   median + floor, numeric pointwise median + 5% uniform), then the same
   clipping and checks. Fewer than 2: everything, as now. Flash keeps running
   and is saved and scored (the question log keeps every forecast).
+  Fable 5.2 (12 Nov) counts as a Claude forecast.
   Haiku (the last Claude backup) does not count as a Claude forecast here.
 
 Pre-registered switch-on rule (architect, 8 Nov), checked by the Scoreboard on
@@ -41,9 +42,10 @@ STATUS_PATH = "status/claude_first.json"
 
 
 def is_claude_forecast(model: str | None) -> bool:
-    """A Claude Opus forecast: agent1, agent2, plain Opus 5.5, Opus 5 (a
-    fallback), on the Anthropic API or in a replay ("replay/" prefix)."""
-    return "claude-opus" in str(model or "").removeprefix("replay/")
+    """A Claude Opus or Fable forecast: agent1, agent2, plain Opus 5.5, Opus 5 (a
+    fallback), Fable 5.2 (12 Nov), on the Anthropic API or in a replay ("replay/" prefix)."""
+    name = str(model or "").removeprefix("replay/")
+    return "claude-opus" in name or "claude-fable" in name
 
 
 def choose(models: list[str | None], mode: str) -> tuple[list[int], str]:

@@ -174,6 +174,12 @@ FRONTIER_AGENT_ENABLED = True
 # agent's first clean real question): 2 = agent + agent2 (smaller caps) + Flash
 # x2, seasonal cap $4.70, Claude day cap $20. 1 = agent + plain Opus.
 FRONTIER_SEASONAL_AGENTS = 2
+# Plain Fable 5.2 (claude-fable-5-2, effort high, no tools; architect, 12 Nov, Tier C
+# pre-approved after its gates): an EXTRA Claude voice in full mode. Seasonal =
+# agent + agent2 + Fable + Flash x2; MiniBench = agent + plain Opus + Fable + Flash x2
+# (Fable follows the plain-Opus limits on busy days). Question caps rise by its $0.72
+# reservation; the $20 day cap and pacing unchanged. A failure or refusal: skipped.
+FRONTIER_FABLE_ENABLED = True
 
 # GPT shadow (architect, 22 Oct; gpt_shadow.py; built OFF): at the end of the
 # run, one OpenRouter GPT-6.1 Sol call per live question (OpenRouter native web

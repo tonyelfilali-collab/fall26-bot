@@ -67,6 +67,12 @@ W. A heavy seasonal day (architect, 3 Nov): the Claude day at $11.00 from
 U1. Pacing paced-1 (cycle spend $15 over the line): seasonal unchanged,
    MiniBench plain Opus + Flash x2. U2. paced-2 ($25 over): seasonal agent +
    plain Opus + Flash x2 (no agent2), MiniBench as U1; the day cap stays $20.
+Z. Plain Fable 5.2 (architect, 12 Nov; the live switch is pinned off for the
+   other phases): seasonal = agent + agent2 + Fable + Flash x2, MiniBench =
+   agent + plain Opus + Fable + Flash x2; Fable requests send no thinking and no
+   tool_choice; question caps raised by $0.72. Z2. Fable refuses every request:
+   skipped (one request, no retry, no backup), every question still submitted.
+   Z3. One MiniBench question on a $11 day: plain Opus + Fable (no agent).
 
 Prints a report; exits 1 if a check fails.
 
@@ -87,7 +93,7 @@ import litellm
 import bot_config
 import frontier
 import main
-from frontier import AGENT, AGENT2, GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget, FrontierPlanner
+from frontier import AGENT, AGENT2, FABLE, GPT_SOL, HAIKU, OPUS_5, OPUS_55, ClaudeBudget, FrontierPlanner
 from gemini_budget import MemoryStore
 from llm_throttle import RequestPacer
 from replay import ReplayChainLlm, _RecordedAnswer
@@ -197,6 +203,7 @@ def _info(record: dict, planner: FrontierPlanner) -> dict:
         "forecasts": len(ok), "models": models, "round2": record.get("round2"),
         "claude": sum(m.startswith("anthropic/") for m in models), "gpt": models.count(GPT_SOL),
         "opus": models.count(OPUS_55), "flash": sum("flash" in m for m in models), "agent": models.count(AGENT), "agent2": models.count(AGENT2),
+        "fable": models.count(FABLE),
         "agent_runs": [a for f in record.get("forecasts", []) for a in f.get("agent", [])],
         "paid_flash": models.count(bot_config.PAID_FLASH_MODEL), "submitted": record.get("final_forecast") is not None,
         "claude_spent": planner.claude.question_spent(post) if planner.claude else 0.0,
@@ -296,10 +303,12 @@ class RecordedAnthropic:
     reply in the question's answer format. Agent requests (with tools): by
     `script` (full, tool-errors, near-caps, caps-used, credit), `agent_delay` / `plain_delay` seconds first."""
 
-    def __init__(self, script: str, agent_delay: float = 0.0, plain_delay: float = 0.0) -> None:
+    def __init__(self, script: str, agent_delay: float = 0.0, plain_delay: float = 0.0, fable_refuses: bool = False) -> None:
         self.script, self.agent_delay, self.plain_delay = script, agent_delay, plain_delay
+        self.fable_refuses = fable_refuses  # Fable 5.2 requests: stop_reason "refusal", no text
         self.agent_requests: list[dict] = []
         self.plain_requests = 0
+        self.fable_requests: list[dict] = []
 
     def __call__(self, **kwargs: Any) -> Any:
         fake = self
@@ -329,6 +338,10 @@ class RecordedAnthropic:
             if self.plain_delay:
                 await asyncio.sleep(self.plain_delay)
             usage = _ns(input_tokens=7000, output_tokens=1500, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            if request.get("model") == FABLE.removeprefix("anthropic/"):
+                self.fable_requests.append(request)
+                if self.fable_refuses:
+                    return _ns(content=[], stop_reason="refusal", usage=usage)
             return _ns(content=[answer], stop_reason="end_turn", usage=usage)
         self.agent_requests.append(request)
         if self.agent_delay:
@@ -354,7 +367,8 @@ class RecordedAnthropic:
 
 
 def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake: RecordedAnthropic,
-                    seasonal_agents: int = 1, aggregation_mode: str | None = None) -> tuple[list[dict], FrontierPlanner, list[str]]:
+                    seasonal_agents: int = 1, aggregation_mode: str | None = None,
+                    fable: bool = False) -> tuple[list[dict], FrontierPlanner, list[str]]:
     import anthropic
 
     original = anthropic.AsyncAnthropic
@@ -365,6 +379,7 @@ def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake:
         planner.claude_llm_class, planner.agent_llm_class = frontier.ClaudeLlm, frontier.AgentLlm
         planner.agent_enabled = True
         planner.seasonal_agents = seasonal_agents
+        planner.fable_enabled = fable
         planner.pacers = {m: RequestPacer(60000) for m in planner.pacers}
         planner.claude_pacer = planner.gpt_pacer = RequestPacer(60000)
         planner.start_run(5.0, api_key=True)
@@ -436,16 +451,25 @@ def run() -> dict:
             message="rehearsal: overloaded", llm_provider="gemini", model="gemini") for m in bot_config.GEMINI_FORECAST_MODELS})
 
         def agent_phase(name: str, base: int, claude: ClaudeBudget, fake: RecordedAnthropic, prespent: tuple = (),
-                        seasonal_agents: int = 1, aggregation_mode: str | None = None) -> None:
+                        seasonal_agents: int = 1, aggregation_mode: str | None = None, fable: bool = False) -> None:
             seasonal = [_question(base + i, kind) for i, kind in enumerate(SEASONAL_TYPES)]
             minibench = [_question(base + 9, "binary")]
             for post, dollars in prespent:
                 claude.questions[str(post)] = {"spent": dollars}
-            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake, seasonal_agents, aggregation_mode)
+            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake, seasonal_agents, aggregation_mode, fable)
             out[name] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": [], "fake": fake,
                          "report": frontier.frontier_report(planner)}
 
         agent_phase("K", 81000, _budget(), RecordedAnthropic("full"))
+        # Z (12 Nov): plain Fable 5.2 as an extra Claude voice (switch set for the phase only);
+        # Z2: Fable refuses every request (stop_reason "refusal"): skipped, no retry, no backup.
+        agent_phase("Z", 67000, _budget(), RecordedAnthropic("full"), seasonal_agents=2, fable=True)
+        agent_phase("Z2", 66000, _budget(), RecordedAnthropic("full", fable_refuses=True), seasonal_agents=2, fable=True)
+        # Z3: one MiniBench question on a $11 Claude day (burst rule: no MiniBench agent): Fable follows plain Opus.
+        fake = RecordedAnthropic("full")
+        records, planner, _ = run_agent_phase([], [_question(65009, "binary")], _budget(day=11.0), fake, 2, None, True)
+        out["Z3"] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": [], "fake": fake,
+                     "report": frontier.frontier_report(planner)}
         # Y (8 Nov, built OFF): claude_first with two seasonal agents.
         agent_phase("Y", 68000, _budget(), RecordedAnthropic("full"), seasonal_agents=2, aggregation_mode="claude_first")
         # The 7-minute cap on a 1:100 clock (4.2 s; planned wait 5.4 s, 1.2 s kept for the fallback).
@@ -619,7 +643,45 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          all(i["paid_flash"] >= 1 for i in infos("T3", True)) and all(i["submitted"] and i["paid_flash"] >= 1 for i in infos("T3", False))
          and out["T3"]["planner"].spend.day_spent() <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
         ("Agent phases: 0 real calls (every Anthropic request went to the recorded client)",
-         all(out[p]["fake"].agent_requests or out[p]["fake"].plain_requests for p in ("K", "L", "M", "N", "N2", "O", "P", "Q", "S", "S2", "U1", "U2"))),
+         all(out[p]["fake"].agent_requests or out[p]["fake"].plain_requests
+             for p in ("K", "L", "M", "N", "N2", "O", "P", "Q", "S", "S2", "U1", "U2", "Z", "Z2", "Z3"))),
+        *fable_checks(out, infos),
+    ]
+
+
+def fable_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
+    """Plain Fable 5.2 (12 Nov): Z full lineup, Z2 every Fable request refused, Z3 a $11 day."""
+    def calls(phase: str, model: str) -> list[dict]:
+        claude = out[phase]["planner"].claude
+        return [c for e in claude.questions.values() for c in e.get("calls", []) if c["model"] == model]
+
+    def within_caps(phase: str) -> bool:
+        claude = out[phase]["planner"].claude
+        return all(claude.question_spent(q) <= claude.caps[q] + 1e-9 for q in claude.questions if q in claude.caps)
+
+    z_s, z_m = infos("Z", True), infos("Z", False)
+    z2, z3_m = infos("Z2"), infos("Z3", False)
+    fable_reqs = out["Z"]["fake"].fable_requests
+    return [
+        ("Z: seasonal, every type = agent + agent2 + Fable 5.2 + Flash x2 (5 forecasts), submitted",
+         len(z_s) == 4 and all(i["agent"] == 1 and i["agent2"] == 1 and i["fable"] == 1 and i["flash"] == 2
+                               and i["forecasts"] == 5 and i["submitted"] for i in z_s)),
+        ("Z: MiniBench = agent + plain Opus + Fable 5.2 + Flash x2, submitted",
+         len(z_m) == 1 and all(i["agent"] == 1 and i["opus"] == 1 and i["fable"] == 1 and i["flash"] == 2
+                               and i["submitted"] for i in z_m)),
+        ("Z: Fable requests: no thinking, no tool_choice, no tools, effort high, one per question",
+         len(fable_reqs) == 5 and all("thinking" not in r and "tool_choice" not in r and "tools" not in r
+                                      and r.get("output_config") == {"effort": "high"} for r in fable_reqs)),
+        ("Z: every question's Claude spend within its cap (raised by Fable's $0.72)", within_caps("Z")),
+        ("Z: claude_first would count Fable (2+ Claude forecasts on every question)",
+         all(i["claude"] >= 3 for i in infos("Z"))),
+        ("Z2: Fable refuses -> skipped (failed slot), no retry, no backup; every question still submitted",
+         len(z2) == 5 and all(i["fable"] == 0 and "anthropic/claude-fable-5-2" in i["failed"] and i["submitted"]
+                              and i["agent"] == 1 for i in z2)
+         and len(out["Z2"]["fake"].fable_requests) == 5 and len(calls("Z2", FABLE)) == 5
+         and all(c.get("stop_reason") == "refusal" for c in calls("Z2", FABLE))),
+        ("Z3: $11 day: MiniBench = plain Opus + Fable 5.2 + Flash x2 (no agent: Fable follows plain Opus)",
+         len(z3_m) == 1 and all(i["agent"] == 0 and i["opus"] == 1 and i["fable"] == 1 and i["submitted"] for i in z3_m)),
     ]
 
 
@@ -627,10 +689,13 @@ def report() -> tuple[bool, str]:
     # A-J check the plain lineup: the live agent switch is pinned off here;
     # the agent phases set the planner's switch themselves.
     agent_switch, bot_config.FRONTIER_AGENT_ENABLED = bot_config.FRONTIER_AGENT_ENABLED, False
+    # Fable 5.2 (live switch ON since 12 Nov) is pinned off too: phases Z-Z3 set it themselves.
+    fable_switch, bot_config.FRONTIER_FABLE_ENABLED = bot_config.FRONTIER_FABLE_ENABLED, False
     try:
         out = run()
     finally:
         bot_config.FRONTIER_AGENT_ENABLED = agent_switch
+        bot_config.FRONTIER_FABLE_ENABLED = fable_switch
 
     def infos(phase: str, seasonal: bool | None = None) -> list[dict]:
         return [i for i in out[phase]["infos"] if seasonal is None or bool(i["seasonal"]) == seasonal]
@@ -751,7 +816,9 @@ def report() -> tuple[bool, str]:
               "V": "V. MiniBench burst of 60 from a $0 Claude day",
               "W": "W. $11 seasonal day, then a MiniBench burst of 40",
               "X": "X. Aggregation claude_first (test switch): Opus x2 + Flash x2",
-              "Y": "Y. Aggregation claude_first (test switch): two seasonal agents"}
+              "Y": "Y. Aggregation claude_first (test switch): two seasonal agents",
+              "Z": "Z. Fable 5.2 extra voice (test switch): two seasonal agents",
+              "Z2": "Z2. Fable 5.2 refuses every request", "Z3": "Z3. Fable 5.2, one MiniBench question on a $11 Claude day (burst)"}
     for phase, title in titles.items():
         lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]

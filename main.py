@@ -2679,9 +2679,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--frontier-path",
-        choices=["seasonal", "minibench"],
+        choices=["seasonal", "minibench", "both"],
         default="seasonal",
-        help="Test mode, frontier lineup: forecast the test questions as seasonal or as MiniBench questions",
+        help="Test mode, frontier lineup: forecast the test questions as seasonal or as MiniBench questions; "
+        "'both': the 4 types seasonal, then one binary on the MiniBench path (its own question key)",
     )
     parser.add_argument(
         "--gpt-shadow",
@@ -3027,6 +3028,19 @@ if __name__ == "__main__":
         forecast_reports = asyncio.run(
             template_bot.forecast_questions(test_questions, return_exceptions=True)
         )
+        if args.frontier_path == "both":
+            # The MiniBench path: one binary again, under its own question key
+            # (its own caps; the seasonal pass's spend is not counted against it).
+            binary = [q for q in test_questions if q.question_type == "binary"][:1]
+            suffix = template_bot.question_key_suffix
+            template_bot.question_key_suffix = f"{suffix}-minibench"
+            template_bot.forecasting_seasonal = False
+            print("MiniBench path: " + ", ".join(f"{q.id_of_post} ({q.question_type})" for q in binary))
+            try:
+                forecast_reports += asyncio.run(template_bot.forecast_questions(binary, return_exceptions=True))
+            finally:
+                template_bot.question_key_suffix = suffix
+                template_bot.forecasting_seasonal = True
         if args.rehearsal == "retry-run":
             spend = lineup.planner.spend
             paid, replies = spend.paid_calls - first[0], ReplayLlm.calls - first[1]

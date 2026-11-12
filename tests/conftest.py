@@ -10,3 +10,13 @@ def no_market_lookups(monkeypatch):
     import main
 
     monkeypatch.setattr(main, "MARKET_MODE", "off")
+
+
+@pytest.fixture(autouse=True)
+def fable_off_by_default(monkeypatch):
+    """Fable 5.2 (bot_config.FRONTIER_FABLE_ENABLED, ON live since 12 Nov) is an
+    extra Claude slot; the older plan tests check the lineup without it.
+    tests/test_fable.py switches it on itself."""
+    import bot_config
+
+    monkeypatch.setattr(bot_config, "FRONTIER_FABLE_ENABLED", False)
