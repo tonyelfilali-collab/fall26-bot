@@ -40,9 +40,9 @@ on:
         options: [none, runaway, retry-run, unknown-cost, missing-ledger, key-mismatch]
         default: none
       frontier_path:
-        description: "frontier, frontier-agent and frontier-agents2 only: forecast the test questions on the seasonal or the MiniBench path"
+        description: "frontier, frontier-agent and frontier-agents2 only: forecast the test questions on the seasonal or the MiniBench path; 'both': the 4 types seasonal, then one binary on the MiniBench path"
         type: choice
-        options: [seasonal, minibench]
+        options: [seasonal, minibench, both]
         default: seasonal
       gpt_shadow:
         description: "free, gemini-free and frontier lineups only: switch the GPT shadow on for this test (OpenRouter openai/gpt-6.1-sol with native web search, never submitted; paid: at most $0.25 a question, $1.50 a UTC day, in the spend ledger). Runs in the live queue (it writes the spend ledger)."

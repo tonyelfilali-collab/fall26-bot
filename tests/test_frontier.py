@@ -120,7 +120,7 @@ def test_a_refusal_is_charged_its_real_cost():
 def test_worst_case_reservations_fit_the_question_caps():
     assert 2 * frontier.claude_reserve(OPUS_55) <= frontier.CLAUDE_SEASONAL_QUESTION_CAP
     assert frontier.claude_reserve(OPUS_55) <= frontier.CLAUDE_MINIBENCH_QUESTION_CAP
-    assert set(frontier.CLAUDE_PRICES) == {OPUS_55, OPUS_5, HAIKU}
+    assert set(frontier.CLAUDE_PRICES) == {OPUS_55, OPUS_5, HAIKU, frontier.FABLE}
 
 
 def test_claude_caps_refuse_before_passing():

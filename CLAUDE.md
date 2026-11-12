@@ -18,7 +18,8 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   (running calls included) is under the day cap minus one seasonal question's reservation ($15.40; $11.70 with one
   agent; 3 Nov, was $9); the MiniBench agent only under $5 of MiniBench's own day spend and $10 of the whole day's
   (burst days, 2-3 Nov; plain Opus after), $1.50 per seasonal question, $0.60 per MiniBench question
-  ($3.60 / $1.60 while the agent runs, $5.30 seasonal with two agents; the agent is ON), step-downs at $12 / $5 of the cycle left (12 Nov; were 25% / 10%), pacing: over the line ($170 x share of the cycle gone) + $10
+  ($3.60 / $1.60 while the agent runs, $5.30 seasonal with two agents; the agent is ON; each + $0.72 while plain
+  Fable 5.2 runs, 12 Nov: full mode only, an extra voice, no backup), step-downs at $12 / $5 of the cycle left (12 Nov; were 25% / 10%), pacing: over the line ($170 x share of the cycle gone) + $10
   MiniBench drops the agent, + $20 seasonal also drops agent2. The credits
   expire each billing cycle; when used up, calls fail with "credit balance is too low" and are never
   charged. Never retry a credit error.
