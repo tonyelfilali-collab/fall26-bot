@@ -73,6 +73,7 @@ Z. Plain Fable 5.2 (architect, 12 Nov; the live switch is pinned off for the
    tool_choice; question caps raised by $0.72. Z2. Fable refuses every request:
    skipped (one request, no retry, no backup), every question still submitted.
    Z3. One MiniBench question on a $11 day: plain Opus + Fable (no agent).
+   MiniBench day limit $14.70 with Fable (12 Nov; $15.40 without).
 
 Prints a report; exits 1 if a check fails.
 
@@ -673,6 +674,8 @@ def fable_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          len(fable_reqs) == 5 and all("thinking" not in r and "tool_choice" not in r and "tools" not in r
                                       and r.get("output_config") == {"effort": "high"} for r in fable_reqs)),
         ("Z: every question's Claude spend within its cap (raised by Fable's $0.72)", within_caps("Z")),
+        ("Z: MiniBench day limit $14.70 ($20 - agent + agent2 + Fable $5.24 -> $5.30)",
+         out["Z"]["planner"].claude.minibench_daily_cap == 14.70),
         ("Z: claude_first would count Fable (2+ Claude forecasts on every question)",
          all(i["claude"] >= 3 for i in infos("Z"))),
         ("Z2: Fable refuses -> skipped (failed slot), no retry, no backup; every question still submitted",

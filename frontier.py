@@ -22,7 +22,7 @@ in price):
 - Budget (ClaudeBudget, fall26-data status/claude_spend.json): one setting,
   CLAUDE_BUDGET_PER_CYCLE, plus the cycle reset date; ledger caps $15 per UTC
   day ($20 with two seasonal agents; MiniBench only under the day cap - one seasonal question's
-  reservation, $15.40; the MiniBench agent only under $5 of MiniBench's own day spend and $10
+  reservation, $15.40, $14.70 with Fable 5.2; the MiniBench agent only under $5 of MiniBench's own day spend and $10
   of the whole day's), $1.50 per seasonal question, $0.60 per MiniBench question. Each call
   reserves its worst case (max_tokens of output), so a cap is never passed.
 - Step-down (claude_mode, once per run; architect, 12 Nov: in dollars, was 25% /
@@ -113,6 +113,7 @@ CLAUDE_DAILY_CAP = 15.00
 # WHOLE Claude spend, running reservations included, leaves one seasonal
 # question's reservation under the day cap (architect, 3 Nov; was $9):
 # $20 - $4.60 (agent + agent2) = $15.40; one agent: $15 - $3.30 (agent + plain Opus) = $11.70.
+# With Fable 5.2 in full mode (architect, 12 Nov): $20 - $5.30 = $14.70; one agent: $15 - $4.00 = $11.00.
 # Burst days (architect, 2 Nov; 3 Nov): MiniBench questions get plain Opus only
 # (no agent) + Flash from $5 of MiniBench's OWN Claude spend today, or once the
 # whole day reaches $10, whichever comes first (running MiniBench reservations
@@ -238,11 +239,13 @@ def agent_reserve(seasonal: bool, name: str = AGENT) -> float:
     return (caps.input_tokens * prompt + caps.output_tokens * completion) / 1_000_000 + caps.searches * AGENT_SEARCH_PRICE
 
 
-def seasonal_reserve(agents: int) -> float:
+def seasonal_reserve(agents: int, fable: bool = False) -> float:
     """One seasonal question's Claude reservation, rounded up to 10 cents:
-    agent + agent2 = $4.60; agent + plain Opus = $3.30. MiniBench keeps it free."""
+    agent + agent2 = $4.60; agent + plain Opus = $3.30. With Fable 5.2 (architect,
+    12 Nov) + $0.72: $5.24 -> $5.30 (MiniBench $14.70); $3.96 -> $4.00. MiniBench keeps it free."""
     second = agent_reserve(True, AGENT2) if agents >= 2 else claude_reserve(OPUS_55)
-    return math.ceil(round((agent_reserve(True) + second) * 10, 6)) / 10
+    extra = claude_reserve(FABLE) if fable else 0.0
+    return math.ceil(round((agent_reserve(True) + second + extra) * 10, 6)) / 10
 
 
 def agent_seasonal() -> bool:
@@ -794,6 +797,7 @@ class FrontierPlanner(bot_config.GeminiPool):
         gpt = "on" if self.gpt_allowed else f"off ({why})"
         line = f"Frontier lineup: {self.mode} ({self.mode_reason}); GPT-5.6 Sol {gpt}"
         self.pace = PACE_FULL
+        fable = self.fable_enabled and self.mode == "full"  # its $0.72 joins the seasonal reservation
         if self.agent_enabled:
             line += f"; agent {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
             pacing = self.claude.pacing() if self.mode == "full" and self.claude is not None else None
@@ -801,10 +805,10 @@ class FrontierPlanner(bot_config.GeminiPool):
                 self.pace = pacing[0]
                 line += f"; pacing {self.pace}"  # the mode name only (public log)
             if self.seasonal_agents >= 2 and self.claude is not None:
-                self.claude.set_daily_cap(CLAUDE_DAILY_CAP_TWO_AGENTS, seasonal_reserve(2))  # $20: MiniBench $15.40
+                self.claude.set_daily_cap(CLAUDE_DAILY_CAP_TWO_AGENTS, seasonal_reserve(2, fable))  # $20: MiniBench $14.70 ($15.40 without Fable)
                 line += "; 2 seasonal agents"
             elif self.claude is not None:
-                self.claude.set_daily_cap(CLAUDE_DAILY_CAP, seasonal_reserve(1))  # $15: MiniBench $11.70
+                self.claude.set_daily_cap(CLAUDE_DAILY_CAP, seasonal_reserve(1, fable))  # $15: MiniBench $11.00 ($11.70 without Fable)
         if self.fable_enabled:
             line += f"; Fable 5.2 {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
         return line
@@ -861,7 +865,7 @@ class FrontierPlanner(bot_config.GeminiPool):
 
     def referee_llm(self) -> ThrottledLlm | None:
         """The referee shadow (shadow.py): Opus 5.5, effort high, through the
-        Claude budget (day, MiniBench $15.40, question and cycle caps); one try, no
+        Claude budget (day, MiniBench $14.70, question and cycle caps); one try, no
         backups (a cap refusal = no referee). None while Claude is off or blocked."""
         if self.claude is None or not self._frontier_on():
             return None
