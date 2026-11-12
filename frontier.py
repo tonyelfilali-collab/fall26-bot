@@ -25,8 +25,9 @@ in price):
   reservation, $15.40; the MiniBench agent only under $5 of MiniBench's own day spend and $10
   of the whole day's), $1.50 per seasonal question, $0.60 per MiniBench question. Each call
   reserves its worst case (max_tokens of output), so a cap is never passed.
-- Step-down (claude_mode, once per run): under 25% of the cycle budget left ->
-  seasonal Opus x1; under 10% -> seasonal Opus x1, no Claude on MiniBench; a
+- Step-down (claude_mode, once per run; architect, 12 Nov: in dollars, was 25% /
+  10% of the cycle budget): under $12 of the cycle budget left -> seasonal
+  Opus x1; under $5 -> seasonal Opus x1, no Claude on MiniBench; a
   credit error, an unreadable ledger or no reset date -> no Claude: today's setup.
 - Agent (PR 4, behind bot_config.FRONTIER_AGENT_ENABLED, ON): in full mode one
   Opus slot becomes an agent (Opus 5.5 with Anthropic's web_search + web_fetch
@@ -116,8 +117,10 @@ CLAUDE_SEASONAL_QUESTION_CAP = 1.50
 CLAUDE_MINIBENCH_QUESTION_CAP = 0.60
 OPENROUTER_SEASONAL_QUESTION_CAP = 0.30
 GPT_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, no GPT
-STEP_DOWN_LOW = 0.25
-STEP_DOWN_MINIMAL = 0.10
+# Step-downs (architect, 12 Nov; were 25% / 10% of the cycle budget): dollars
+# of the cycle budget left. Pacing handles overspend earlier in the cycle.
+STEP_DOWN_LOW = 12.00
+STEP_DOWN_MINIMAL = 5.00
 # Pacing (architect, 22 Oct): dollars of cycle spend over the line.
 PACE_STEP_1 = 10.00  # over it: "paced-1" (no MiniBench agent)
 PACE_STEP_2 = 20.00  # over it: "paced-2" (also no seasonal agent2)
@@ -374,6 +377,9 @@ class ClaudeBudget(SpendGuard):
     def fraction_left(self) -> float:
         return (self.budget - self.cycle_spent()) / self.budget if self.budget > 0 else 0.0
 
+    def dollars_left(self) -> float:
+        return self.budget - self.cycle_spent()
+
     def credit_error_this_cycle(self) -> bool:
         return self.cycle is not None and self.cycle.isoformat() in self.credit_errors
 
@@ -425,14 +431,15 @@ def claude_mode(budget: ClaudeBudget | None, api_key: bool = True) -> tuple[str,
         return "off", "billing cycle reset date not set"
     if budget.credit_error_this_cycle():
         return "off", "credit balance too low this cycle"
-    left = budget.fraction_left()
+    left = budget.dollars_left()
     if left <= 0:
         return "off", "cycle budget used up"
+    why = f"${left:.2f} of the cycle budget left"
     if left < STEP_DOWN_MINIMAL:
-        return "minimal", f"{left:.0%} of the cycle budget left"
+        return "minimal", why
     if left < STEP_DOWN_LOW:
-        return "low", f"{left:.0%} of the cycle budget left"
-    return "full", f"{left:.0%} of the cycle budget left"
+        return "low", why
+    return "full", why
 
 
 # ---------------------------------------------------------------- one Claude call

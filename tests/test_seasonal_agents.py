@@ -63,7 +63,7 @@ def test_two_agents_seasonal_and_minibench_unchanged():
     assert planner.claude.caps["33"] == frontier.AGENT_MINIBENCH_QUESTION_CAP
 
 
-@pytest.mark.parametrize("spent, mode", [(0.80 * 170, "low"), (0.95 * 170, "minimal")])
+@pytest.mark.parametrize("spent, mode", [(170 - 10.0, "low"), (170 - 4.0, "minimal")])
 def test_step_downs_plain_opus_only(spent, mode):
     claude = _budget()
     claude.cycles[claude.cycle.isoformat()] = spent

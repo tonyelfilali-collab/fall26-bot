@@ -112,7 +112,7 @@ def test_back_to_full_on_the_next_run():
 
 def test_step_downs_still_win():
     planner, line = _two(0.0)
-    planner.claude.cycles[planner.claude.cycle.isoformat()] = 0.80 * 170
+    planner.claude.cycles[planner.claude.cycle.isoformat()] = 170 - 10.0
     line = planner.start_run(5.0, api_key=True)
     assert planner.mode == "low" and planner.pace == "full" and "pacing" not in line
     assert AGENT not in _plan(planner, True, "48")
