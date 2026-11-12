@@ -366,7 +366,7 @@ def test_a_cap_refused_agent_hands_over_to_plain_opus(monkeypatch):
     assert claude.question_spent("11") <= frontier.AGENT2_SEASONAL_QUESTION_CAP
 
 
-@pytest.mark.parametrize("spent, mode", [(0.80 * 170, "low"), (0.95 * 170, "minimal")])
+@pytest.mark.parametrize("spent, mode", [(170 - 10.0, "low"), (170 - 4.0, "minimal")])
 def test_step_downs_use_plain_opus(spent, mode):
     claude = _budget()
     claude.cycles[claude.cycle.isoformat()] = spent

@@ -588,8 +588,9 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   uses Claude only while the day's Claude spend, running reservations included, is under $9, so at
   least $6 a day is left for seasonal (architect, 21 Oct). Charged: the real cost from token
   usage; $0 for HTTP 400-429 and 5xx/529; the worst case for a timeout or a cut connection.
-- **Step-downs** (once per run): under 25% of the cycle left -> seasonal Opus x1 (MiniBench Opus x1);
-  under 10% -> seasonal Opus x1, MiniBench no Claude; a credit error ("credit balance is too
+- **Step-downs** (once per run; architect, 12 Nov, in dollars: were 25% / 10%, which ignored the
+  time left): under $12 of the cycle budget left -> seasonal Opus x1 (MiniBench Opus x1);
+  under $5 -> seasonal Opus x1, MiniBench no Claude; a credit error ("credit balance is too
   low", never retried, recorded for the cycle), an unreadable/missing ledger, no reset date or no key
   -> no Claude and no GPT (today's setup). No Claude slot can run -> today's setup.
 - **Pacing** (architect, 22 Oct; once per run, full mode with the agent): line = $170 x the share

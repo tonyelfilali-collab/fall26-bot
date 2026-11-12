@@ -47,9 +47,16 @@ def test_cycle_start_in_short_months():
     assert frontier.cycle_start(date(2027, 2, 27), date(2026, 10, 31)) == date(2027, 1, 31)
 
 
-@pytest.mark.parametrize("spent, mode", [(0, "full"), (127.4, "full"), (128, "low"), (152.9, "low"), (153.1, "minimal"), (170, "off")])
+# Step-downs in dollars left (architect, 12 Nov): low under $12, minimal under $5.
+@pytest.mark.parametrize("spent, mode", [(0, "full"), (128.62, "full"), (158.0, "full"), (158.01, "low"),
+                                         (164.99, "low"), (165.01, "minimal"), (169.99, "minimal"), (170, "off")])
 def test_step_downs(spent, mode):
     assert frontier.claude_mode(_budget(spent))[0] == mode
+
+
+def test_step_down_reason_in_dollars():
+    assert frontier.claude_mode(_budget(128.62)) == ("full", "$41.38 of the cycle budget left")
+    assert frontier.claude_mode(_budget(160.0)) == ("low", "$10.00 of the cycle budget left")
 
 
 def test_fail_closed_modes():
@@ -256,7 +263,7 @@ def test_full_plan_seasonal_and_minibench():
         current_question_key.reset(token)
 
 
-@pytest.mark.parametrize("spent, seasonal_opus, minibench_opus", [(0.80 * 170, 1, 1), (0.95 * 170, 1, 0)])
+@pytest.mark.parametrize("spent, seasonal_opus, minibench_opus", [(170 - 10.0, 1, 1), (170 - 4.0, 1, 0)])
 def test_step_down_plans(spent, seasonal_opus, minibench_opus):
     planner = _planner(_budget(spent))
     for key, seasonal, opus in (("5", True, seasonal_opus), ("6", False, minibench_opus)):

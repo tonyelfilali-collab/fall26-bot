@@ -6,8 +6,8 @@ calls, $0, nothing submitted, every ledger in memory.
 A. Full mode: seasonal (4 types) = Opus 5.5 x2 + Flash x2; MiniBench = Opus 5.5
    + Flash x2; no round 2 even when they disagree; never more than 2 Flash;
    Claude <= $1.50 / $0.60 per question.
-B. Under 25% of the cycle budget left: seasonal Opus x1; MiniBench Opus x1.
-C. Under 10% left: seasonal Opus x1; MiniBench no Claude (today's setup).
+B. Under $12 of the cycle budget left: seasonal Opus x1; MiniBench Opus x1.
+C. Under $5 left: seasonal Opus x1; MiniBench no Claude (today's setup).
 D. "Credit balance too low": never retried, no Claude backup tried, no more
    Claude this run; every question still forecast; the next run: today's setup.
 E. GPT switched on and failing: its slot goes to the Flash chain, never retried.
@@ -407,8 +407,8 @@ def run() -> dict:
         phase("A", 91000, _budget())
         # X (8 Nov, built OFF): claude_first for this phase only; Opus 70% x2, Flash 20% x2.
         phase("X", 69000, _budget(), aggregation_mode="claude_first")
-        phase("B", 92000, _budget(spent=0.80 * BUDGET))
-        phase("C", 93000, _budget(spent=0.95 * BUDGET))
+        phase("B", 92000, _budget(spent=BUDGET - 10.0))
+        phase("C", 93000, _budget(spent=BUDGET - 4.0))
         store = MemoryStore({"days": {}})
         phase("D", 94000, _budget(store=store), fail={m: lambda: CreditError("Your credit balance is too low to access the Anthropic API.")
                                                    for m in frontier.CLAUDE_PRICES})
@@ -665,9 +665,9 @@ def report() -> tuple[bool, str]:
          and all(i["claude_spent"] <= frontier.CLAUDE_MINIBENCH_QUESTION_CAP + 1e-9 for i in a_m)),
         ("Never more than 2 Flash on a question with a Claude forecast (A, B, F, H, I, J)",
          all(i["flash"] <= 2 for p in ("A", "B", "F", "H", "I", "J") for i in infos(p) if i["claude"])),
-        ("B (20% left): seasonal Opus x1 + Flash x2; MiniBench Opus x1 + Flash x2",
+        ("B ($10 left): seasonal Opus x1 + Flash x2; MiniBench Opus x1 + Flash x2",
          mode("B") == "low" and all(i["opus"] == 1 and i["flash"] == 2 for i in infos("B"))),
-        ("C (5% left): seasonal Opus x1 + Flash x2; MiniBench no Claude (today's setup)",
+        ("C ($4 left): seasonal Opus x1 + Flash x2; MiniBench no Claude (today's setup)",
          mode("C") == "minimal" and all(i["opus"] == 1 and i["flash"] == 2 for i in infos("C", True))
          and all(i["claude"] == 0 and i["flash"] >= 3 for i in infos("C", False))),
         (f"D: credit error: {len(d_claude_calls)} Claude call(s), never retried, no Claude backup ({', '.join(_short(m) for m in d_claude_calls)})",
@@ -738,7 +738,7 @@ def report() -> tuple[bool, str]:
              f"Budget ${BUDGET:.0f} per cycle; caps ${frontier.CLAUDE_DAILY_CAP:.0f}/UTC day, "
              f"${frontier.CLAUDE_SEASONAL_QUESTION_CAP:.2f} seasonal / ${frontier.CLAUDE_MINIBENCH_QUESTION_CAP:.2f} MiniBench "
              f"per question (Claude); at most {frontier.FLASH_FORECASTS} Flash per question.", ""]
-    titles = {"A": "A. Full", "B": "B. Under 25% left", "C": "C. Under 10% left", "D": "D. Credit balance too low",
+    titles = {"A": "A. Full", "B": "B. Under $12 left", "C": "C. Under $5 left", "D": "D. Credit balance too low",
               "E": "E. GPT on and failing", "F": "F. Claude day at $14.50", "G": "G. Claude ledger unreadable",
               "H": "H. GPT on, OpenRouter key under $2", "I": "I. Opus slower than the planned wait",
               "J": "J. Every free Flash 503", "K": "K. Agent: full path", "L": "L. Agent past its 7-minute cap",
