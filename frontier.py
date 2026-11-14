@@ -108,6 +108,11 @@ GPT_TIMEOUT_SECONDS = 360
 CLAUDE_REQUESTS_PER_MINUTE = 50
 
 CLAUDE_SPEND_PATH = "status/claude_spend.json"
+# Replay lab Claude spend (architect, 14 Nov: pacing must see it). Written ONLY by
+# the lab (its own queue); the live bot reads it and adds its cycle spend to its
+# own. A separate file: a lab write to claude_spend.json during a live run would
+# make that run's save fail.
+CLAUDE_LAB_SPEND_PATH = "status/claude_lab_spend.json"
 CLAUDE_DAILY_CAP = 15.00
 # MiniBench (or an unknown tournament) may use Claude only while the UTC day's
 # WHOLE Claude spend, running reservations included, leaves one seasonal
@@ -341,13 +346,24 @@ class ClaudeBudget(SpendGuard):
     # Anthropic bills no request that ended in an API error (5xx, 529 overloaded).
     no_charge_statuses = (*SpendGuard.no_charge_statuses, 500, 502, 503, 504, 529)
 
-    def __init__(self, store: Any, budget: float, reset: date | None, today: date | None = None) -> None:
+    def __init__(self, store: Any, budget: float, reset: date | None, today: date | None = None,
+                 lab_store: Any = None) -> None:
         super().__init__(store)
         self.budget = budget
         self.today = today or datetime.now(timezone.utc).date()
         self.reset = reset
         self.cycle = cycle_start(self.today, reset)
         self.cycles: dict[str, float] = {k: float(v) for k, v in (self.raw.get("cycles") or {}).items()}
+        # The Replay lab's Claude spend per cycle (CLAUDE_LAB_SPEND_PATH; read only). Unreadable -> no Claude.
+        self.lab_cycles: dict[str, float] = {}
+        self.lab_load_failed = False
+        if lab_store is not None:
+            try:
+                lab = lab_store.load() or {}
+                self.lab_cycles = {k: float(v) for k, v in (lab.get("cycles") or {}).items()}
+            except Exception:
+                self.lab_load_failed = True
+                logger.warning("Claude lab spend could not be read")
         self.credit_errors: dict[str, str] = dict(self.raw.get("credit_errors") or {})  # cycle -> day (history)
         # While Claude is off after a credit error: {"since": time, "checked": last test call}.
         self.credit_off: dict[str, str] = dict(self.raw.get("credit_off") or {})
@@ -380,7 +396,14 @@ class ClaudeBudget(SpendGuard):
             self.agent_stats[(question, agent.removeprefix("replay/"))] = stats
 
     def cycle_spent(self) -> float:
-        return self.cycles.get(self.cycle.isoformat(), 0.0) if self.cycle else 0.0
+        """This cycle's Claude spend: the live ledger's + the Replay lab's (14 Nov)."""
+        if not self.cycle:
+            return 0.0
+        key = self.cycle.isoformat()
+        return self.cycles.get(key, 0.0) + self.lab_cycles.get(key, 0.0)
+
+    def lab_cycle_spent(self) -> float:
+        return self.lab_cycles.get(self.cycle.isoformat(), 0.0) if self.cycle else 0.0
 
     def pacing(self, now: datetime | None = None) -> tuple[str, float, float, float] | None:
         """(mode, cycle spent, line, gap = spent - line); None without a cycle."""
@@ -491,6 +514,8 @@ def claude_mode(budget: ClaudeBudget | None, api_key: bool = True) -> tuple[str,
         return "off", "ANTHROPIC_API_KEY not set"
     if budget.load_failed:
         return "off", "Claude spend ledger could not be read"
+    if budget.lab_load_failed:
+        return "off", "Claude lab spend could not be read"
     if budget.cycle is None:
         return "off", "billing cycle reset date not set"
     if budget.credit_error_this_cycle():

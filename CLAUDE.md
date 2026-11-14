@@ -22,7 +22,8 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   Fable 5.2 runs, 12 Nov: full mode only, an extra voice, no backup), step-downs at $12 / $5 of the cycle left (12 Nov; were 25% / 10%), pacing: over the line ($170 x share of the cycle gone) + $10
   MiniBench drops the agent, + $20 seasonal also drops agent2. The credits
   expire each billing cycle; when used up, calls fail with "credit balance is too low" and are never
-  charged. Never retry a credit error: after one, Claude is off for 1 hour, then ONE tiny
+  charged. Replay lab Claude spend (`status/claude_lab_spend.json`, written by the lab only)
+  counts in the cycle spend and pacing (14 Nov). Never retry a credit error: after one, Claude is off for 1 hour, then ONE tiny
   claude-haiku-5-5 test call (max_tokens 5) per hour; when it answers, Claude is back on (architect, 14 Nov).
 - OpenRouter: paid models allowed only: google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its
   caps ($0.10/question, $1.00/UTC day, MiniBench paid too (its limit $1.00 since 3 Nov, was $0.50),
