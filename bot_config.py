@@ -158,9 +158,9 @@ GEMINI_LEDGER_PATH = "quota/gemini_free.json"
 # (Console credits, no card) + today's Flash path (GPT-5.6 Sol behind its own
 # switch, OFF). ON since PR 3 (21 Oct, after #140 and a green live run).
 FRONTIER_ENABLED = True
-# Architect, 15 Nov: $200 for the current cycle (was $170): the Console shows ~$40
-# left in the old credit, which resets on the 16th. Running out = credit error,
-# handled by the 1-hour safety (no retry). #199 sets $190 from the 16th.
+# Architect, 15 Nov: $200 per cycle (was $170; $190 planned on 14 Nov). Tony's rule:
+# never leave Claude credit unused at cycle end. Running out = credit error,
+# handled by the 1-hour safety (no retry, never charged).
 CLAUDE_BUDGET_PER_CYCLE = 200.0  # dollars of Console credits per billing cycle (the one budget setting)
 # A day the monthly credits reset (any month, "YYYY-MM-DD"; None = no Claude).
 # Tony, 14 Nov: the credits renew on the 16th (was 18, Tony 21 Oct), so a new

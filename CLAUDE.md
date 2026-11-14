@@ -14,12 +14,12 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   never turn on auto-reload or top-up (Anthropic or OpenRouter). No Metaculus credits this season.
 - Anthropic (architect, 21 Oct): Claude models via `ANTHROPIC_API_KEY` (Console org, workspace
   "fall26-bot", no card, no auto-reload) are allowed, within the frontier caps (#140): `CLAUDE_BUDGET_PER_CYCLE`
-  ($200 per cycle, 15 Nov, was $170; credits renew on the 16th of each month, Tony 14 Nov, was the 18th), $20 per UTC day (two seasonal agents; $15 with one), MiniBench Claude only while the day's Claude spend
+  ($200 per cycle (architect, 15 Nov; was $170, then $190 planned); credits renew on the 16th of each month, Tony 14 Nov, was the 18th), $20 per UTC day (two seasonal agents; $15 with one), MiniBench Claude only while the day's Claude spend
   (running calls included) is under the day cap minus one seasonal question's reservation ($14.70 with Fable 5.2, 12 Nov; $15.40 without; $11.70 with one
   agent; 3 Nov, was $9); the MiniBench agent only under $5 of MiniBench's own day spend and $10 of the whole day's
   (burst days, 2-3 Nov; plain Opus after), $1.50 per seasonal question, $0.60 per MiniBench question
   ($3.60 / $1.60 while the agent runs, $5.30 seasonal with two agents; the agent is ON; each + $0.72 while plain
-  Fable 5.2 runs, 12 Nov: full mode only, an extra voice, no backup), step-downs at $12 / $5 of the cycle left (12 Nov; were 25% / 10%), pacing: over the line ($170 x share of the cycle gone) + $10
+  Fable 5.2 runs, 12 Nov: full mode only, an extra voice, no backup), step-downs at $12 / $5 of the cycle left (12 Nov; were 25% / 10%), pacing: over the line ($190 x share of the cycle gone) + $10
   MiniBench drops the agent, + $20 seasonal also drops agent2. The credits
   expire each billing cycle; when used up, calls fail with "credit balance is too low" and are never
   charged. Replay lab Claude spend (`status/claude_lab_spend.json`, written by the lab only)
