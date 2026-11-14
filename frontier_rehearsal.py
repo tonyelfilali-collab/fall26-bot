@@ -429,6 +429,22 @@ def run() -> dict:
         phase("D", 94000, _budget(store=store), fail={m: lambda: CreditError("Your credit balance is too low to access the Anthropic API.")
                                                    for m in frontier.CLAUDE_PRICES})
         out["D_next"] = frontier.claude_mode(ClaudeBudget(store, BUDGET, RESET))
+
+        def d_later_run(answers: bool, minutes_ago: int | None) -> tuple[str, int]:
+            """A later run after D (14 Nov): (mode, test calls made); the last error / test `minutes_ago`."""
+            claude = ClaudeBudget(store, BUDGET, RESET)
+            if claude.credit_off and minutes_ago is not None:
+                claude.credit_off["checked"] = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+            planner = frontier._frontier_pool(MemoryStore(), SpendGuard(MemoryStore({"days": {}})), claude)
+            tests: list[int] = []
+            planner.credit_test = lambda: tests.append(1) or answers
+            planner.start_run(5.0, api_key=True)
+            claude.save()
+            return planner.mode, len(tests)
+
+        # 30 min later; 61 min (test fails); 5 min after that; 60 min after it (test OK); then back on.
+        out["D_hourly"] = [d_later_run(True, 30), d_later_run(False, 61), d_later_run(True, 5),
+                           d_later_run(True, 60), d_later_run(True, None)]
         phase("E", 95000, _budget(), fail={GPT_SOL: lambda: _Broken("rehearsal: GPT down")}, gpt=True)
         phase("F", 96000, _budget(day=14.50))
 
@@ -742,6 +758,9 @@ def report() -> tuple[bool, str]:
          OPUS_5 not in d_claude_calls and HAIKU not in d_claude_calls and len(d_claude_calls) <= 2),
         ("D: every question still forecast (today's setup)", all(i["submitted"] for i in infos("D"))),
         (f"D: the next run: {out['D_next'][0]} ({out['D_next'][1]})", out["D_next"][0] == "off"),
+        ("D: then (14 Nov) off for 1 hour, ONE test call an hour: fails -> stays off, answers -> Claude back on "
+         f"({', '.join(f'{m}/{n}' for m, n in out['D_hourly'])})",
+         out["D_hourly"] == [("off", 0), ("off", 1), ("off", 0), ("full", 1), ("full", 0)]),
         ("E: GPT on and failing -> its slot answered by Flash, GPT called once per seasonal question",
          all(i["forecasts"] == 5 and i["gpt"] == 0 and i["flash"] == 3 for i in infos("E", True))
          and out["E"]["calls"].count(GPT_SOL) == len(infos("E", True))),

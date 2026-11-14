@@ -20,3 +20,14 @@ def fable_off_by_default(monkeypatch):
     import bot_config
 
     monkeypatch.setattr(bot_config, "FRONTIER_FABLE_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def no_real_credit_test_call(monkeypatch):
+    """The hourly credit test call (frontier.credit_test_call) never reaches Anthropic in tests."""
+    import frontier
+
+    def blocked() -> bool:
+        raise AssertionError("a real credit test call in a test")
+
+    monkeypatch.setattr(frontier, "credit_test_call", blocked)

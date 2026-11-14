@@ -54,7 +54,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, time as day_time, timezone
+from datetime import date, datetime, time as day_time, timedelta, timezone
 from typing import Any
 
 from forecasting_tools import GeneralLlm
@@ -143,6 +143,11 @@ MODE_SLOTS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "minimal": ((OPUS_55,), ()),
 }
 CREDIT_ERROR_TEXT = "credit balance is too low"
+# After a credit error (architect, 14 Nov; was: off for the whole cycle): Claude
+# is off for an hour, then ONE tiny Haiku test call per hour (max 5 tokens, about
+# $0.00001, not charged); when it answers, Claude is back on. A forecast is never retried.
+CREDIT_RECHECK = timedelta(hours=1)
+CREDIT_CHECK_MAX_TOKENS = 5
 
 # ---- the agent (PR 4, OFF): Opus 5.5 + web_search / web_fetch (server tools).
 AGENT = "anthropic/claude-opus-5-5-agent"  # ledger name; the call is Opus 5.5
@@ -343,7 +348,9 @@ class ClaudeBudget(SpendGuard):
         self.reset = reset
         self.cycle = cycle_start(self.today, reset)
         self.cycles: dict[str, float] = {k: float(v) for k, v in (self.raw.get("cycles") or {}).items()}
-        self.credit_errors: dict[str, str] = dict(self.raw.get("credit_errors") or {})  # cycle -> day
+        self.credit_errors: dict[str, str] = dict(self.raw.get("credit_errors") or {})  # cycle -> day (history)
+        # While Claude is off after a credit error: {"since": time, "checked": last test call}.
+        self.credit_off: dict[str, str] = dict(self.raw.get("credit_off") or {})
         self.set_daily_cap(CLAUDE_DAILY_CAP, seasonal_reserve(1))
         # The day's Claude spend on MiniBench (or unknown) questions, per UTC day (burst-day rule).
         self.minibench_days: dict[str, float] = {k: float(v) for k, v in (self.raw.get("minibench_days") or {}).items()}
@@ -390,7 +397,24 @@ class ClaudeBudget(SpendGuard):
         return self.budget - self.cycle_spent()
 
     def credit_error_this_cycle(self) -> bool:
-        return self.cycle is not None and self.cycle.isoformat() in self.credit_errors
+        """Claude is off after a credit error (until a test call answers)."""
+        return bool(self.credit_off)
+
+    def credit_check_due(self, now: datetime | None = None) -> bool:
+        """Off after a credit error, and the last error or test call is an hour old or more."""
+        if not self.credit_off:
+            return False
+        last = _parse_time(self.credit_off.get("checked") or self.credit_off.get("since"))
+        return last is None or (now or datetime.now(timezone.utc)) - last >= CREDIT_RECHECK
+
+    def credit_checked(self, answered: bool, now: datetime | None = None) -> None:
+        """The hourly test call's result: answered -> Claude back on; else off one more hour."""
+        if answered:
+            self.credit_off = {}
+            logger.info("Claude back on")
+        else:
+            self.credit_off["checked"] = (now or datetime.now(timezone.utc)).isoformat()
+            logger.info("Claude: credit error, test call failed, Claude stays off for 1 hour")
 
     def finish(self, model: str, succeeded: bool, cost: float | None = None, error: BaseException | None = None,
                timed_out: bool = False, **details: Any) -> None:
@@ -411,11 +435,15 @@ class ClaudeBudget(SpendGuard):
         if not succeeded and is_credit_error(error):
             self.mark_credit_error()
 
-    def mark_credit_error(self) -> None:
-        """No Claude call for the rest of this cycle (never retried)."""
+    def mark_credit_error(self, now: datetime | None = None) -> None:
+        """No Claude call for the rest of this run (never retried), then off for an
+        hour; a test call every hour after that brings Claude back."""
         if self.blocked is None:
-            logger.warning("Claude: credit balance too low, no more Claude calls this cycle")
+            logger.warning("Claude: credit error, Claude off for 1 hour")
         self.blocked = "credit balance too low"
+        stamp = (now or datetime.now(timezone.utc)).isoformat()
+        if not self.credit_off:
+            self.credit_off = {"since": stamp, "checked": stamp}
         if self.cycle is not None:
             self.credit_errors.setdefault(self.cycle.isoformat(), utc_day())
 
@@ -425,7 +453,34 @@ class ClaudeBudget(SpendGuard):
         data["cycles"] = {k: round(self.cycles[k], 6) for k in kept}
         data["minibench_days"] = {d: round(v, 6) for d, v in sorted(self.minibench_days.items()) if d in data["days"]}
         data["credit_errors"] = {k: v for k, v in self.credit_errors.items() if k in kept or k == (self.cycle and self.cycle.isoformat())}
+        data.pop("credit_off", None)
+        if self.credit_off:
+            data["credit_off"] = dict(self.credit_off)
         return data
+
+
+def _parse_time(text: str | None) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(text))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def credit_test_call() -> bool:
+    """ONE tiny Haiku call (max 5 tokens): True if it answered. Never raises,
+    never retried; the error text is never logged."""
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(max_retries=0, timeout=30)
+        client.messages.create(
+            model=HAIKU.removeprefix("anthropic/"), max_tokens=CREDIT_CHECK_MAX_TOKENS,
+            messages=[{"role": "user", "content": "Reply OK."}],
+        )
+        return True
+    except Exception:
+        return False
 
 
 def claude_mode(budget: ClaudeBudget | None, api_key: bool = True) -> tuple[str, str]:
@@ -439,7 +494,7 @@ def claude_mode(budget: ClaudeBudget | None, api_key: bool = True) -> tuple[str,
     if budget.cycle is None:
         return "off", "billing cycle reset date not set"
     if budget.credit_error_this_cycle():
-        return "off", "credit balance too low this cycle"
+        return "off", "credit error, a test call every hour"
     left = budget.dollars_left()
     if left <= 0:
         return "off", "cycle budget used up"
@@ -767,6 +822,8 @@ class FrontierPlanner(bot_config.GeminiPool):
     agent_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_AGENT_ENABLED)
     seasonal_agents: int = field(default_factory=lambda: bot_config.FRONTIER_SEASONAL_AGENTS)
     fable_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_FABLE_ENABLED)
+    # The hourly test call after a credit error (None: credit_test_call; tests and the rehearsal swap in a fake).
+    credit_test: Any = None
     # The class and model-name prefix of the Claude and GPT slots (the
     # rehearsal swaps in recorded replies: ReplayChainLlm, "replay/").
     claude_llm_class: type = ClaudeLlm
@@ -788,6 +845,8 @@ class FrontierPlanner(bot_config.GeminiPool):
             for q, e in guard.questions.items()
         }
         has_key = bool(os.getenv("ANTHROPIC_API_KEY")) if api_key is None else api_key
+        if has_key and self.claude is not None and not self.claude.load_failed and self.claude.credit_check_due():
+            self.claude.credit_checked(bool((self.credit_test or credit_test_call)()))  # ONE test call; answered -> back on
         self.mode, self.mode_reason = claude_mode(self.claude, has_key)
         self.gpt_allowed = (
             self.gpt_enabled and self.mode != "off" and self.spend is not None and self.spend.blocked is None

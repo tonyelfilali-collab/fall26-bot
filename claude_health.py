@@ -5,7 +5,7 @@ Health and daily report for the Claude parts of the frontier lineup
 Sources (all read-only):
 - the Claude ledger, fall26-data status/claude_spend.json (frontier.ClaudeBudget):
   per-question calls (model, ok, charged, http_status, agent searches /
-  fetches), days, credit_errors {cycle: day}, alerts {kind: day};
+  fetches), days, credit_errors {cycle: day}, credit_off {since, checked} while off, alerts {kind: day};
 - the run logs of the live tournament workflow: the public line "Frontier
   lineup: <mode> (<why>); ..." printed once per run, and the warning "agent
   over its reservation" (health_check.py downloads them);
@@ -87,11 +87,14 @@ def check_claude_ledger(ledger: dict | None, today: date, reset: date | None, re
         return False
     cycle = cycle_start(today, reset)
     errors = ledger.get("credit_errors") or {}
-    if cycle is not None and cycle.isoformat() in errors:
+    off = ledger.get("credit_off") or {}
+    if off:
         report.red.append(
-            f"Claude credit error (credit balance too low) on {errors[cycle.isoformat()]}: "
-            f"no Claude calls until the next cycle"
+            f"Claude off after a credit error (credit balance too low) since {str(off.get('since', '?'))[:16]} UTC: "
+            f"a test call every hour, Claude back on when it answers"
         )
+    elif cycle is not None and cycle.isoformat() in errors:
+        report.warnings.append(f"Claude credit error on {errors[cycle.isoformat()]} this cycle; Claude back on after a test call")
     elif cycle is None:
         report.warnings.append("Claude billing cycle reset date not set (Claude off)")
     else:
