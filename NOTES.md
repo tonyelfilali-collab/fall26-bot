@@ -592,7 +592,8 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   6-minute timeout. Server-side refusal `fallbacks` NOT used (the backups above are the architect's).
 - **Budget** (`status/claude_spend.json` in fall26-data; must exist, else no Claude): per UTC day,
   per question and per billing cycle (`CLAUDE_BUDGET_PER_CYCLE` 170 from `CLAUDE_CYCLE_RESET_DATE`
-  2026-11-18: credits are monthly; this cycle 18 Oct - 17 Nov 23:59 UTC).
+  2026-11-16: credits are monthly and renew on the 16th, Tony 14 Nov; was the 18th. The first
+  cycle ran 18 Oct - 15 Nov; then 16 Nov - 15 Dec, and so on).
   Each call reserves its worst case (10k in, 16k out: Opus 5.5 $0.36, Opus 5 $0.45, Haiku 5.5 $0.009), so
   $15/day, $1.50 seasonal and $0.60 MiniBench are never passed. MiniBench (or an unknown tournament)
   uses Claude only while the day's Claude spend, running reservations included, is under $9, so at
@@ -606,7 +607,7 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   `credit_errors` keeps the history; health red while off), an unreadable/missing ledger, no reset date or no key
   -> no Claude and no GPT (today's setup). No Claude slot can run -> today's setup.
 - **Pacing** (architect, 22 Oct; once per run, full mode with the agent): line = $170 x the share
-  of the cycle gone (18 Oct - 18 Nov, UTC midnights). Cycle spend over line + $10 -> `paced-1`:
+  of the cycle gone (from one 16th to the next, UTC midnights). Cycle spend over line + $10 -> `paced-1`:
   MiniBench drops the agent (plain Opus + Flash x2, $0.60 cap); over line + $20 -> `paced-2`: also
   seasonal drops agent2 (agent + plain Opus + Flash x2, $3.60 cap). Back to `full` at or under
   line + $10. Step-downs, the $20 day cap and the question caps stay as backstops; seasonal agent1

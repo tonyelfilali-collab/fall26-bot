@@ -35,11 +35,12 @@ def test_cycle_start(today, start):
     assert frontier.cycle_start(today, RESET) == start
 
 
-def test_this_cycle_ends_17_nov():
+def test_new_cycle_starts_16_nov():
+    # Tony, 14 Nov: the credits renew on the 16th (was the 18th).
     reset = frontier.reset_date(bot_config.CLAUDE_CYCLE_RESET_DATE)
-    assert frontier.cycle_start(date(2026, 10, 21), reset) == date(2026, 10, 18)
-    assert frontier.cycle_start(date(2026, 11, 17), reset) == date(2026, 10, 18)
-    assert frontier.cycle_start(date(2026, 11, 18), reset) == date(2026, 11, 18)
+    assert frontier.cycle_start(date(2026, 11, 16), reset) == date(2026, 11, 16)
+    assert frontier.cycle_start(date(2026, 12, 15), reset) == date(2026, 11, 16)
+    assert frontier.cycle_start(date(2026, 12, 16), reset) == date(2026, 12, 16)
 
 
 def test_cycle_start_in_short_months():
