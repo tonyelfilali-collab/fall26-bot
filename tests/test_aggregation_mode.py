@@ -98,8 +98,8 @@ def _same_cdf(a, b) -> bool:  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------- the switch
 
 
-def test_built_off():
-    assert bot_config.AGGREGATION_MODE == "all"
+def test_switched_on_14_nov():
+    assert bot_config.AGGREGATION_MODE == "claude_first"  # architect, 14 Nov
     assert aggregation.MODES == ("all", "claude_first")
 
 
@@ -138,7 +138,7 @@ def test_binary_one_claude_two_flash_uses_all():
 
 
 def test_binary_default_mode_all_uses_every_forecast():
-    result, record = _run(_bot(), _binary(), [(AGENT, 0.70), (FLASH, 0.10), (AGENT2, 0.60), (FLASH_FREE, 0.12)])
+    result, record = _run(_bot("all"), _binary(), [(AGENT, 0.70), (FLASH, 0.10), (AGENT2, 0.60), (FLASH_FREE, 0.12)])
     assert result == pytest.approx(adjust_binary([0.70, 0.10, 0.60, 0.12]))
     assert record["aggregation"] == {"mode": "all", "used": "all", "claude_forecasts": 2, "forecasts": 4}
 
