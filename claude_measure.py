@@ -474,3 +474,9 @@ if __name__ == "__main__":
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(text + "\n")
+    # 14 Nov: the first run saved everything at 20:11 UTC, then never exited (a
+    # library thread left running). Everything is saved by now: leave at once.
+    import sys
+
+    sys.stdout.flush()
+    os._exit(0)
