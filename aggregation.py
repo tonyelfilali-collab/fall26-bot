@@ -23,6 +23,13 @@ health check reports it):
 - and is not worse than RULE_MIN_GAIN_BINARY (-0.05) per question on binary.
 All three: the one-line PR setting AGGREGATION_MODE = "claude_first" is
 pre-approved (merge after a green live run, tell the architect).
+
+Switched on 14 Nov (architect). Since then "submitted" IS claude_first, so the
+Scoreboard also computes "all" (every live forecast combined) on each question,
+and the monitor compares claude_first with it: at MONITOR_MIN_QUESTIONS (25)+
+agent-era questions, claude_first worse than "all" by more than
+MONITOR_MAX_LOSS (0.05) per question, all types -> the health check warns
+(tell the architect at once).
 """
 from __future__ import annotations
 
@@ -39,6 +46,8 @@ RULE_MIN_QUESTIONS = 25
 RULE_MIN_GAIN_ALL = 0.10
 RULE_MIN_GAIN_BINARY = -0.05
 STATUS_PATH = "status/claude_first.json"
+MONITOR_MIN_QUESTIONS = 25
+MONITOR_MAX_LOSS = 0.05
 
 
 def is_claude_forecast(model: str | None) -> bool:
@@ -108,6 +117,13 @@ def rule_rows(records: Iterable[dict], resolution_of: Callable[[Any], str | None
             continue
         pairs = record_models_and_values(record)
         chosen, used = choose([m for m, _ in pairs], "claude_first")
+        # "all" (14 Nov): every live forecast combined, whatever was submitted.
+        all_score = None
+        if pairs:
+            try:
+                all_score = forecast_score(question.get("question_type"), combine(question, [v for _, v in pairs]), resolution)
+            except Exception:
+                all_score = None
         score = submitted
         if used == "claude":
             try:
@@ -118,6 +134,7 @@ def rule_rows(records: Iterable[dict], resolution_of: Callable[[Any], str | None
                 score, used = submitted, "all (Claude-only combine not scorable)"
         rows.append({"post": question.get("id_of_post"), "type": question.get("question_type"),
                      "submitted": submitted, "claude_first": score, "used": used,
+                     "all": submitted if all_score is None else all_score,
                      "claude": sum(1 for m, _ in pairs if is_claude_forecast(m))})
     return rows
 
@@ -136,7 +153,15 @@ def rule_result(rows: list[dict]) -> dict:
         "gain_all": gain_all is not None and gain_all > RULE_MIN_GAIN_ALL,
         "gain_binary": gain_binary is None or gain_binary >= RULE_MIN_GAIN_BINARY,
     }
+    vs_all = [r["claude_first"] - r.get("all", r["submitted"]) for r in rows]
+    gain_vs_all = statistics.fmean(vs_all) if vs_all else None
+    monitor = {
+        "questions": len(rows),
+        "gain_vs_all": gain_vs_all,
+        "alert": len(rows) >= MONITOR_MIN_QUESTIONS and gain_vs_all is not None and gain_vs_all < -MONITOR_MAX_LOSS,
+    }
     return {
+        "monitor": monitor,
         "questions": len(rows),
         "claude_only_questions": sum(1 for r in rows if r["used"] == "claude"),
         "binary_questions": len(binary),
@@ -162,11 +187,18 @@ def rule_markdown(result: dict, rows: list[dict]) -> str:
         f"(need >= {RULE_MIN_GAIN_BINARY:+.2f}): {'yes' if c['gain_binary'] else 'no'}",
         f"- Claude-only combine used on {result['claude_only_questions']} question(s) (2+ Claude forecasts); the rest = submitted",
         f"- **Rule {'MET' if result['met'] else 'not met'}**",
-        "", "| Post | Type | Claude forecasts | Used | Submitted | claude_first | Diff |", "|---|---|---|---|---|---|---|",
+        "", f"**Monitor (claude_first ON since 14 Nov):** claude_first minus \"all\" (every live forecast combined): "
+        f"{num((result.get('monitor') or {}).get('gain_vs_all'))} per question on {result['questions']} question(s); "
+        f"alert at {MONITOR_MIN_QUESTIONS}+ if worse than -{MONITOR_MAX_LOSS:.2f}: "
+        f"{'ALERT' if (result.get('monitor') or {}).get('alert') else 'no'}",
+        "", "| Post | Type | Claude forecasts | Used | Submitted | claude_first | All | Diff vs submitted | Diff vs all |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
+        everything = r.get("all", r["submitted"])
         lines.append(f"| {r['post']} | {r['type']} | {r['claude']} | {r['used']} | {r['submitted']:.4f} | "
-                     f"{r['claude_first']:.4f} | {r['claude_first'] - r['submitted']:+.4f} |")
+                     f"{r['claude_first']:.4f} | {everything:.4f} | {r['claude_first'] - r['submitted']:+.4f} | "
+                     f"{r['claude_first'] - everything:+.4f} |")
     return "\n".join(lines)
 
 
@@ -174,7 +206,15 @@ def health_line(status: dict | None, mode_now: str) -> tuple[str, bool]:
     """(the daily report's line, whether it is a warning). Public: counts and
     yes/no only, never scores (those stay in fall26-data)."""
     if mode_now == "claude_first":
-        return "Aggregation mode: claude_first (switched on)", False
+        monitor = (status or {}).get("monitor")
+        if not monitor:
+            return "Aggregation mode: claude_first (switched on); monitor: not checked yet (the Scoreboard writes it)", False
+        detail = (f"{monitor.get('questions', 0)} agent-era questions (alert from {MONITOR_MIN_QUESTIONS}); "
+                  f"claude_first worse than \"all\" by more than {MONITOR_MAX_LOSS:.2f}/q: "
+                  f"{'yes' if monitor.get('alert') else 'no'}; checked {str(status.get('checked_at', '?'))[:10]}")
+        if monitor.get("alert"):
+            return f"Aggregation mode: claude_first; monitor ALERT ({detail}): tell the architect at once", True
+        return f"Aggregation mode: claude_first (switched on); monitor ok ({detail})", False
     if not status:
         return "claude_first rule: not checked yet (the Scoreboard writes it)", False
     c = status.get("conditions") or {}
