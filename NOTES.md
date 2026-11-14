@@ -1041,3 +1041,18 @@ is in, run Credit check again: its limit should show the donated amount.
   off until someone enables them on the Actions tab.
 - Local development uses Python 3.11 (same as Actions). The old aiohttp in the lock file breaks
   on Python 3.14.
+
+## Claude measurement (architect, 14 Nov)
+
+`claude_measure.py`, started by hand: Replay lab with `claude_measure` = true (its own job, 120 minutes,
+`ANTHROPIC_API_KEY`). Plain Fable 5.2 and plain Opus 5.5 (effort high, no tools, no web) forecast every resolved
+tournament question that has a frozen dossier, using the bot's own prompt for the type, newest question first. Each
+is scored with the Scoreboard's log scores next to submitted, Flash (the live combine of the log's Flash forecasts) and
+claude_first (the live Claude forecasts when there were 2+, else the live ones plus both replays).
+- **Money:** lab cap $14 at real cost. Before each call, the worst case (Fable $0.72, Opus $0.36) is reserved, and
+  the cycle (live ledger, read fresh, + lab spend) must keep $9 left. No call after 16 Nov 00:00 UTC. A credit error
+  stops it.
+- **Ledger:** the live ledger is only read; the lab's own spend is in `lab/claude_measure.json`, so live's cycle
+  total does not include it (the Console shows both).
+- **Resume and output:** a rerun resumes and never repeats an answered replay. The table (binary / numeric + discrete
+  / multiple choice, counts) goes to `lab/claude_measure.md` (private); the public log shows counts and dollars only.

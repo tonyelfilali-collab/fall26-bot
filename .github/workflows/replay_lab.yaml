@@ -15,6 +15,10 @@ on:
         description: "End-to-end run on a synthetic resolved question (recorded replies, no real calls)"
         type: boolean
         default: false
+      claude_measure:
+        description: "Claude measurement (architect, 14 Nov): plain Fable 5.2 + plain Opus 5.5 on every resolved question's frozen dossier, no tools; REAL Claude calls on the expiring credit (lab cap $14, stops under $9 of cycle left; claude_measure.py)"
+        type: boolean
+        default: false
 
 # Its own queue: it never waits in, or holds up, the live "forecast-bot" queue.
 concurrency:
@@ -26,6 +30,7 @@ permissions:
 
 jobs:
   lab:
+    if: ${{ !inputs.claude_measure }}
     runs-on: ubuntu-24.04
     timeout-minutes: 9
     steps:
@@ -53,4 +58,31 @@ jobs:
           SYNTHETIC: ${{ inputs.synthetic }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+
+  claude-measure:
+    # Test-only, never submits; this queue only (never the live one). Real Claude
+    # calls (ANTHROPIC_API_KEY); the money limits are in claude_measure.py.
+    if: ${{ inputs.claude_measure }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Run the Claude measurement
+        run: poetry run python claude_measure.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
