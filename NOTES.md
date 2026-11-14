@@ -593,7 +593,9 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
 - **Step-downs** (once per run; architect, 12 Nov, in dollars: were 25% / 10%, which ignored the
   time left): under $12 of the cycle budget left -> seasonal Opus x1 (MiniBench Opus x1);
   under $5 -> seasonal Opus x1, MiniBench no Claude; a credit error ("credit balance is too
-  low", never retried, recorded for the cycle), an unreadable/missing ledger, no reset date or no key
+  low", never retried; 14 Nov: Claude off for 1 hour, then ONE claude-haiku-5-5 test call, max_tokens 5, per
+  hour, at the start of a run; it answers -> Claude back on; ledger `credit_off` {since, checked} while off,
+  `credit_errors` keeps the history; health red while off), an unreadable/missing ledger, no reset date or no key
   -> no Claude and no GPT (today's setup). No Claude slot can run -> today's setup.
 - **Pacing** (architect, 22 Oct; once per run, full mode with the agent): line = $170 x the share
   of the cycle gone (18 Oct - 18 Nov, UTC midnights). Cycle spend over line + $10 -> `paced-1`:

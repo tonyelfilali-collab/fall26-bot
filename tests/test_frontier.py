@@ -68,7 +68,7 @@ def test_fail_closed_modes():
     assert frontier.claude_mode(claude)[0] == "off" and claude.blocked
 
 
-def test_credit_error_is_recorded_and_ends_with_the_cycle():
+def test_credit_error_is_recorded_and_switches_claude_off():
     claude = _budget()
     error = RuntimeError("Your credit balance is too low to access the Anthropic API.")
     error.status_code = 400  # type: ignore[attr-defined]
@@ -79,11 +79,9 @@ def test_credit_error_is_recorded_and_ends_with_the_cycle():
         current_question_key.reset(token)
     assert claude.blocked and claude.question_spent("1") == 0.0  # a 400: never billed
     saved = claude.snapshot()
-    assert saved["credit_errors"] == {"2026-10-14": utc_day()}
+    assert saved["credit_errors"] == {"2026-10-14": utc_day()} and saved["credit_off"]["since"]
     later = _budget(data=saved, today=date(2026, 10, 30))
-    assert frontier.claude_mode(later)[0] == "off"
-    next_cycle = _budget(data=saved, today=date(2026, 11, 14))
-    assert frontier.claude_mode(next_cycle)[0] == "full"
+    assert frontier.claude_mode(later)[0] == "off"  # off until a test call answers (14 Nov: not the whole cycle)
 
 
 def test_cycle_spend_is_kept_and_saved():

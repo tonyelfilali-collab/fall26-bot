@@ -48,10 +48,18 @@ def test_unreadable_ledger_is_red():
     assert any("could not be read" in r for r in report.red)
 
 
-def test_credit_error_this_cycle_is_red():
+def test_claude_off_after_a_credit_error_is_red():
     report = health_check.Report()
-    claude_health.check_claude_ledger(ledger(credit_errors={"2026-10-18": "2026-10-20"}), NOW.date(), RESET, report)
-    assert any("credit balance too low" in r and "2026-10-20" in r for r in report.red)
+    off = {"since": "2026-10-20T03:02:00+00:00", "checked": "2026-10-20T04:02:00+00:00"}
+    claude_health.check_claude_ledger(ledger(credit_errors={"2026-10-18": "2026-10-20"}, credit_off=off), NOW.date(), RESET, report)
+    assert any("credit balance too low" in r and "2026-10-20T03:02" in r and "every hour" in r for r in report.red)
+
+
+def test_credit_error_this_cycle_then_back_on_is_a_warning():
+    # 14 Nov: a test call answered, so Claude is back on; the error stays in the history.
+    report = health_check.Report()
+    assert claude_health.check_claude_ledger(ledger(credit_errors={"2026-10-18": "2026-10-20"}), NOW.date(), RESET, report)
+    assert not report.red and any("2026-10-20" in w and "back on" in w for w in report.warnings)
 
 
 def test_credit_error_of_an_earlier_cycle_is_not_red():
