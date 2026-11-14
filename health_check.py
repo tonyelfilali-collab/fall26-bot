@@ -356,9 +356,12 @@ def check_claude(now: datetime, report: Report) -> None:
     if not claude_health.check_claude_ledger(ledger, now.date(), reset_date(CLAUDE_CYCLE_RESET_DATE), report):
         return
     assert ledger is not None
+    lab = claude_health.load_claude_lab_spend(token)
+    if lab is None:
+        report.red.append("Claude lab spend (status/claude_lab_spend.json) could not be read: the bot runs without Claude")
     report.claude_days += claude_health.claude_days_lines(
         ledger, now.date(), cycle_start(now.date(), reset_date(CLAUDE_CYCLE_RESET_DATE)), CLAUDE_BUDGET_PER_CYCLE,
-        reset=reset_date(CLAUDE_CYCLE_RESET_DATE), now=now,
+        reset=reset_date(CLAUDE_CYCLE_RESET_DATE), now=now, lab=lab,
     )
     days = claude_health.window_days(now)
     runs = frontier_runs(now - timedelta(hours=24))

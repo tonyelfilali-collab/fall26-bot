@@ -1056,7 +1056,10 @@ claude_first (the live Claude forecasts when there were 2+, else the live ones p
 - **Money:** lab cap $14 at real cost. Before each call, the worst case (Fable $0.72, Opus $0.36) is reserved, and
   the cycle (live ledger, read fresh, + lab spend) must keep $9 left. No call after 16 Nov 00:00 UTC. A credit error
   stops it.
-- **Ledger:** the live ledger is only read; the lab's own spend is in `lab/claude_measure.json`, so live's cycle
-  total does not include it (the Console shows both).
+- **Ledger:** the live ledger is only read. Since 14 Nov (architect) the lab's Claude spend also goes to
+  `status/claude_lab_spend.json` ({days, cycles}; written by the lab only), and the live bot adds that file's cycle
+  spend to its own (`ClaudeBudget.cycle_spent`): step-downs and pacing see it. A file the bot can't read -> no Claude
+  (fail closed); the health check shows the lab line and goes red if it can't read it. It's a separate file because
+  a lab write to `claude_spend.json` during a live run would make that run's ledger save fail.
 - **Resume and output:** a rerun resumes and never repeats an answered replay. The table (binary / numeric + discrete
   / multiple choice, counts) goes to `lab/claude_measure.md` (private); the public log shows counts and dollars only.

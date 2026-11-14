@@ -255,7 +255,8 @@ LEDGER_DAYS_SHOWN = 7
 
 
 def claude_days_lines(ledger: dict, today: date, cycle: date | None, budget: float,
-                      shown: int = LEDGER_DAYS_SHOWN, reset: date | None = None, now: datetime | None = None) -> list[str]:
+                      shown: int = LEDGER_DAYS_SHOWN, reset: date | None = None, now: datetime | None = None,
+                      lab: dict | None = None) -> list[str]:
     """The ledger's Claude $ per UTC day (the last `shown` days, today
     included) and the cycle total, to compare with the Anthropic Console,
     and (with `reset`) the pacing: mode, cycle spent, line, gap.
@@ -276,11 +277,15 @@ def claude_days_lines(ledger: dict, today: date, cycle: date | None, budget: flo
     if saved is not None and abs(float(saved) - total) > TOTALS_TOLERANCE:
         line += f" (ledger cycle field: ${float(saved):.4f})"
     lines.append(line)
+    # The Replay lab's Claude spend (status/claude_lab_spend.json, 14 Nov): the bot counts it too.
+    lab_spent = float(((lab or {}).get("cycles") or {}).get(cycle.isoformat(), 0.0))
+    if lab_spent:
+        lines.append(f"Replay lab Claude $ this cycle: ${lab_spent:.4f} (counted in the cycle spend and pacing)")
     if reset is not None:
         from frontier import cycle_end, pace_line, pace_mode
 
-        # The bot paces on the ledger's cycle field (frontier.ClaudeBudget.pacing).
-        spent = float(saved) if saved is not None else total
+        # The bot paces on the ledger's cycle field + the lab's (frontier.ClaudeBudget.pacing).
+        spent = (float(saved) if saved is not None else total) + lab_spent
         mark = pace_line(budget, cycle, cycle_end(cycle, reset), now or datetime.now(timezone.utc))
         lines.append(f"Pacing: {pace_mode(spent, mark)}; cycle spent ${spent:.2f}; line ${mark:.2f}; gap ${spent - mark:+.2f}")
     return lines
@@ -297,6 +302,17 @@ def _data(path: str, token: str) -> Any:
     )
     response.raise_for_status()
     return response.json()
+
+
+def load_claude_lab_spend(token: str) -> dict | None:
+    """The Replay lab's Claude spend ({} if none yet, None if it can't be read)."""
+    from frontier import CLAUDE_LAB_SPEND_PATH
+    from gemini_budget import GitHubFileStore
+
+    try:
+        return GitHubFileStore(DATA_REPO, CLAUDE_LAB_SPEND_PATH, token).load() or {}
+    except Exception:
+        return None
 
 
 def load_claude_ledger(token: str) -> dict | None:

@@ -627,7 +627,8 @@ def _frontier_lineup(name: str = "frontier", test_only: bool = True) -> Lineup:
     import frontier
 
     claude = frontier.ClaudeBudget(
-        make_store(frontier.CLAUDE_SPEND_PATH), CLAUDE_BUDGET_PER_CYCLE, frontier.reset_date(CLAUDE_CYCLE_RESET_DATE)
+        make_store(frontier.CLAUDE_SPEND_PATH), CLAUDE_BUDGET_PER_CYCLE, frontier.reset_date(CLAUDE_CYCLE_RESET_DATE),
+        lab_store=make_store(frontier.CLAUDE_LAB_SPEND_PATH),  # the Replay lab's Claude spend counts too (14 Nov)
     )
     pool = frontier._frontier_pool(
         make_store(GEMINI_LEDGER_PATH), SpendGuard(make_store(SPEND_PATH)) if PAID_FLASH_FALLBACK else None, claude

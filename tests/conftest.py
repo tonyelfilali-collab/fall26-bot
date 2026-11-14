@@ -31,3 +31,11 @@ def no_real_credit_test_call(monkeypatch):
         raise AssertionError("a real credit test call in a test")
 
     monkeypatch.setattr(frontier, "credit_test_call", blocked)
+
+
+@pytest.fixture(autouse=True)
+def no_lab_spend_lookup(monkeypatch):
+    """The health check reads status/claude_lab_spend.json: none in tests (a test may set its own)."""
+    import claude_health
+
+    monkeypatch.setattr(claude_health, "load_claude_lab_spend", lambda token: {})

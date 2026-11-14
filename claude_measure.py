@@ -61,15 +61,18 @@ class LabMoney:
     """The lab's spend and its two limits. Thread-safe: a call reserves its worst
     case first and is charged its real cost after."""
 
-    spent: float
+    spent: float  # the measurement's spend so far, all runs (the lab cap)
     live_cycle_spent: Callable[[], float]  # the live ledger's cycle spend, read fresh
     budget: float
+    cycle_base: float = 0.0  # the lab's Claude spend this cycle before this run (status/claude_lab_spend.json)
     cap: float = LAB_CAP
     floor: float = CYCLE_FLOOR
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     stopped: str | None = None
     in_flight: float = 0.0
     calls: int = 0
+    run_spent: float = 0.0
+    run_days: dict = field(default_factory=dict)  # UTC day -> this run's spend
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def reserve(self, amount: float) -> bool:
@@ -88,7 +91,8 @@ class LabMoney:
             except Exception:
                 self.stopped = "live ledger could not be read"
                 return False
-            if self.budget - live - committed < self.floor - 1e-9:
+            lab_cycle = self.cycle_base + self.run_spent + self.in_flight + amount
+            if self.budget - live - lab_cycle < self.floor - 1e-9:
                 self.stopped = f"the cycle would have under ${self.floor:.2f} left"
                 return False
             self.in_flight += amount
@@ -99,6 +103,20 @@ class LabMoney:
         with self._lock:
             self.in_flight = max(0.0, self.in_flight - reserved)
             self.spent += cost
+            self.run_spent += cost
+            day = self.now().date().isoformat()
+            self.run_days[day] = self.run_days.get(day, 0.0) + cost
+
+    def lab_ledger(self, before: dict, cycle: str) -> dict:
+        """status/claude_lab_spend.json after this run's charges (14 Nov: the live bot's pacing reads it)."""
+        with self._lock:
+            days = {k: float(v) for k, v in (before.get("days") or {}).items()}
+            for day, cost in self.run_days.items():
+                days[day] = days.get(day, 0.0) + cost
+            cycles = {k: float(v) for k, v in (before.get("cycles") or {}).items()}
+            cycles[cycle] = self.cycle_base + self.run_spent
+            return {"days": {k: round(v, 6) for k, v in sorted(days.items())[-31:]},
+                    "cycles": {k: round(v, 6) for k, v in sorted(cycles.items())[-3:]}}
 
     def stop(self, why: str) -> None:
         with self._lock:
@@ -409,7 +427,18 @@ def main_run() -> str:
         cycle = frontier.cycle_start(datetime.now(timezone.utc).date(), reset)
         return float((ledger.get("cycles") or {}).get(cycle.isoformat(), 0.0)) if cycle else float("inf")
 
-    money = LabMoney(float(saved.get("spent", 0.0)), live_cycle_spent, bot_config.CLAUDE_BUDGET_PER_CYCLE)
+    # The lab's own Claude spend (14 Nov): read first (unreadable -> nothing run), written with every save.
+    lab_store = GitHubFileStore(DATA_REPO, frontier.CLAUDE_LAB_SPEND_PATH, token)
+    try:
+        lab_before = lab_store.load() or {}
+    except Exception:
+        return "Claude measurement: the lab spend ledger could not be read, nothing run."
+    cycle_day = frontier.cycle_start(datetime.now(timezone.utc).date(), reset)
+    if cycle_day is None:
+        return "Claude measurement: no billing cycle, nothing run."
+    cycle_key = cycle_day.isoformat()
+    money = LabMoney(float(saved.get("spent", 0.0)), live_cycle_spent, bot_config.CLAUDE_BUDGET_PER_CYCLE,
+                     cycle_base=float((lab_before.get("cycles") or {}).get(cycle_key, 0.0)))
     client = MetaculusClient()
 
     def resolution_of(post: Any) -> str | None:
@@ -431,6 +460,11 @@ def main_run() -> str:
     paths = [t["path"] for t in scoreboard._github("git/trees/HEAD?recursive=1", token)["tree"]]
 
     def save(data: dict) -> None:
+        try:
+            lab_store.save(money.lab_ledger(lab_before, cycle_key), message="Replay lab Claude spend")
+        except Exception:
+            money.stop("lab spend could not be saved")  # fail closed: no more calls
+            print("::warning::Claude lab spend could not be saved")
         try:
             results_store.save(data, message="Claude measurement")
         except Exception:
