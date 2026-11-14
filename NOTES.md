@@ -119,7 +119,11 @@ pre-approved; merge after a green live run, tell the architect).
 **Switched on 14 Nov** by the architect (Tier C, pre-approved), ahead of the 25-question rule: live 13 agent-era
 questions (+0.111/q all types, binary -0.030) and the replay on 67 (claude_first +0.069/q, Flash -0.052/q;
 `lab/claude_measure.md`). The rule check stays in the Scoreboard as a monitor: at 25+ agent-era questions, if
-claude_first is worse than "all" by more than 0.05/q on all types, tell the architect at once.
+claude_first is worse than "all" by more than 0.05/q on all types, tell the architect at once. Since the switch
+"submitted" is claude_first, so the Scoreboard also scores "all" (every live forecast combined) on each question
+(architect, 14 Nov; Tier A): `status/claude_first.json` `monitor` {questions, gain_vs_all, alert}; the private
+report has an "All" column; the daily health line says "monitor ok" or warns "monitor ALERT ... tell the architect
+at once" (counts and yes/no only).
 
 ## OpenRouter model IDs and "high reasoning"
 

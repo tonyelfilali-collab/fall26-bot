@@ -271,7 +271,8 @@ def test_health_line_is_public_safe():
     met = {**aggregation.rule_result(_rows(25, 0.15, 0.0)), "checked_at": "2026-11-20"}
     line, warn = aggregation.health_line(met, "all")
     assert warn and "MET" in line and "pre-approved" in line
-    assert aggregation.health_line(met, "claude_first") == ("Aggregation mode: claude_first (switched on)", False)
+    line, warn = aggregation.health_line(met, "claude_first")
+    assert not warn and line.startswith("Aggregation mode: claude_first (switched on); monitor ok (25 agent-era questions")
     assert aggregation.health_line(None, "all")[1] is False
 
 
@@ -284,3 +285,40 @@ def test_health_check_reports_the_rule():
     health_check.check_claude_first(met, "all", report)
     assert report.ok == ["claude_first rule: not checked yet (the Scoreboard writes it)"]
     assert len(report.warnings) == 1 and "MET" in report.warnings[0]
+
+
+# ---------------------------------------------------------------- the monitor (claude_first ON, 14 Nov)
+
+
+def test_rule_rows_score_all_separately():
+    records = [
+        _record(1, "binary", 0.70, [(AGENT, 0.8), (OPUS, 0.6), (FLASH, 0.1), (FLASH, 0.1)]),  # submitted = claude_first
+        _record(2, "binary", 0.10, [(AGENT, 0.8), (FLASH, 0.1), (FLASH, 0.1)]),  # 1 Claude: all
+    ]
+    rows = aggregation.rule_rows(records, {1: "yes", 2: "no"}.get, SWITCH_ON, combine=_median_combine)
+    import math
+
+    # "all" = the median of every live forecast (0.35 on post 1), not the submitted 0.70.
+    assert rows[0]["all"] == pytest.approx(math.log(0.35)) and rows[0]["claude_first"] == pytest.approx(math.log(0.7))
+    assert rows[1]["all"] == pytest.approx(math.log(0.9))  # median 0.1, resolved no
+
+
+def _monitor_rows(n: int, loss: float) -> list[dict]:
+    return [{"post": 1, "claude": 2, "type": "numeric", "submitted": -3.0, "claude_first": -3.0 - loss, "all": -3.0, "used": "claude"}] * n
+
+
+def test_monitor_alerts_only_at_25_and_worse_than_005():
+    assert aggregation.rule_result(_monitor_rows(25, 0.051))["monitor"]["alert"]
+    assert not aggregation.rule_result(_monitor_rows(24, 0.2))["monitor"]["alert"]  # too few questions
+    assert not aggregation.rule_result(_monitor_rows(25, 0.05))["monitor"]["alert"]  # must be MORE than 0.05
+    assert not aggregation.rule_result(_monitor_rows(30, -0.1))["monitor"]["alert"]  # claude_first better
+
+
+def test_monitor_health_line_public_safe_and_warns():
+    status = {**aggregation.rule_result(_monitor_rows(26, 0.08)), "checked_at": "2026-11-30T12:00:00+00:00"}
+    line, warn = aggregation.health_line(status, "claude_first")
+    assert warn and "ALERT" in line and "tell the architect" in line and "26 agent-era questions" in line
+    assert "0.08" not in line  # scores stay in fall26-data
+    assert aggregation.health_line(None, "claude_first")[0].endswith("monitor: not checked yet (the Scoreboard writes it)")
+    text = aggregation.rule_markdown(aggregation.rule_result(_monitor_rows(3, 0.1)), _monitor_rows(3, 0.1))
+    assert "| All |" in text and "-0.1000" in text and "Monitor" in text
