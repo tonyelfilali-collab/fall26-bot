@@ -212,9 +212,11 @@ KIMI_SHADOW_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it,
 # Aggregation mode (aggregation.py; architect, 8 Nov; Tier C, built OFF):
 # "all" = combine every finished forecast (live, as before);
 # "claude_first" = combine only the Claude Opus forecasts when 2+ were read
-# (else all). Switch-on only by the pre-registered rule (aggregation.py docstring).
+# (else all). Switched ON 14 Nov by the architect (Tier C, pre-approved), ahead of
+# the 25-question rule: live 13 agent-era questions (+0.111/q) and the replay on 67
+# (claude_first +0.069/q, Flash -0.052/q). The rule stays in the Scoreboard as a monitor.
 # Test Bot: --aggregation-mode sets it for that run only.
-AGGREGATION_MODE = "all"
+AGGREGATION_MODE = "claude_first"
 
 
 

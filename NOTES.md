@@ -104,7 +104,7 @@ predictions (currently 1 × 5 = 5), then:
 - **Numeric / discrete / date:** each prediction becomes a CDF on the same x-axis; the
   **median at each point** of the CDF is taken.
 
-**Aggregation mode (8 Nov 2026, `aggregation.py`, built OFF: `bot_config.AGGREGATION_MODE = "all"`).**
+**Aggregation mode (8 Nov 2026, `aggregation.py`; ON since 14 Nov: `bot_config.AGGREGATION_MODE = "claude_first"`).**
 `"claude_first"` combines only the Claude Opus forecasts (agent1, agent2, plain Opus 5.5,
 Opus fallbacks; not Haiku) when 2+ were read, the same way as now; fewer than 2: everything.
 Flash still runs, is saved and scored; the free shadow variants still use every forecast; a
@@ -116,6 +116,10 @@ score per question (all types), and is not worse than -0.05 on binary. The Score
 it on every run (`status/claude_first.json` + its private report); the daily health check
 shows counts and yes/no only, and warns when all three hold (then the one-line PR is
 pre-approved; merge after a green live run, tell the architect).
+**Switched on 14 Nov** by the architect (Tier C, pre-approved), ahead of the 25-question rule: live 13 agent-era
+questions (+0.111/q all types, binary -0.030) and the replay on 67 (claude_first +0.069/q, Flash -0.052/q;
+`lab/claude_measure.md`). The rule check stays in the Scoreboard as a monitor: at 25+ agent-era questions, if
+claude_first is worse than "all" by more than 0.05/q on all types, tell the architect at once.
 
 ## OpenRouter model IDs and "high reasoning"
 

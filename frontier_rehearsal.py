@@ -420,7 +420,7 @@ def run() -> dict:
             records, planner, calls = run_phase(seasonal, [_question(base + 9, "binary")], claude, **kw)
             out[name] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": calls}
 
-        phase("A", 91000, _budget())
+        phase("A", 91000, _budget(), aggregation_mode="all")  # 14 Nov: the live default is claude_first
         # X (8 Nov, built OFF): claude_first for this phase only; Opus 70% x2, Flash 20% x2.
         phase("X", 69000, _budget(), aggregation_mode="claude_first")
         phase("B", 92000, _budget(spent=BUDGET - 10.0))
@@ -803,8 +803,10 @@ def report() -> tuple[bool, str]:
          and w_claude_budget.day_spent() <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
         ("W: the seasonal question after the burst still gets both agents",
          [(i["agent"], i["agent2"]) for i in infos("W", True)] == [(1, 1)]),
-        ("A (live default, mode all): every question combined from every forecast",
+        ("A (mode all, test switch): every question combined from every forecast",
          all(i["aggregation"] == "all" and i["final_is_all"] for i in infos("A"))),
+        (f"Live default aggregation (architect, 14 Nov): {bot_config.AGGREGATION_MODE}",
+         bot_config.AGGREGATION_MODE == "claude_first"),
         ("X (claude_first): seasonal, every type, Opus x2 + Flash x2: submitted = the 2 Opus forecasts combined; "
          "Flash still ran and is saved, not combined",
          len(infos("X", True)) == 4 and all(i["aggregation"] == "claude" and i["final_is_claude"] and i["flash"] == 2
