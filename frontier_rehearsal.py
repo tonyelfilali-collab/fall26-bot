@@ -100,7 +100,11 @@ from llm_throttle import RequestPacer
 from replay import ReplayChainLlm, _RecordedAnswer
 from spend import SpendGuard, utc_day
 
-RESET = date.today().replace(day=1)  # any reset day: the cycle started on the 1st
+# Any reset day: the cycle started 2 days ago, so 26+ days are left and the
+# step-downs apply (15 Nov: none in the last 48 hours of a cycle).
+RESET = date.today() - timedelta(days=2)
+# A cycle that ends at the next UTC midnight: inside its last 48 hours.
+RESET_ENDING = date.today() + timedelta(days=1)
 BUDGET = 170.0
 
 
@@ -425,6 +429,11 @@ def run() -> dict:
         phase("X", 69000, _budget(), aggregation_mode="claude_first")
         phase("B", 92000, _budget(spent=BUDGET - 10.0))
         phase("C", 93000, _budget(spent=BUDGET - 4.0))
+        # Last 48 hours of the cycle (architect, 15 Nov): no step-down, full until a credit error.
+        for name, base, spent in (("C48", 64000, BUDGET - 4.0), ("C48u", 63000, BUDGET + 1.0)):
+            ending = ClaudeBudget(MemoryStore({"days": {}}), BUDGET, RESET_ENDING)
+            ending.cycles[ending.cycle.isoformat()] = spent
+            phase(name, base, ending, aggregation_mode="all")
         store = MemoryStore({"days": {}})
         phase("D", 94000, _budget(store=store), fail={m: lambda: CreditError("Your credit balance is too low to access the Anthropic API.")
                                                    for m in frontier.CLAUDE_PRICES})
@@ -754,6 +763,12 @@ def report() -> tuple[bool, str]:
         ("C ($4 left): seasonal Opus x1 + Flash x2; MiniBench no Claude (today's setup)",
          mode("C") == "minimal" and all(i["opus"] == 1 and i["flash"] == 2 for i in infos("C", True))
          and all(i["claude"] == 0 and i["flash"] >= 3 for i in infos("C", False))),
+        ("C48: last 48 hours, $4 left: full (no step-down): seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus + Flash x2",
+         mode("C48") == "full" and all(i["opus"] == 2 and i["flash"] == 2 for i in infos("C48", True))
+         and all(i["opus"] == 1 and i["flash"] == 2 for i in infos("C48", False))),
+        ("C48u: last 48 hours, cycle budget used up: still full (until a credit error)",
+         mode("C48u") == "full" and all(i["opus"] == 2 for i in infos("C48u", True))),
+        ("B / C (more than 48 hours left): the floors still apply", mode("B") == "low" and mode("C") == "minimal"),
         (f"D: credit error: {len(d_claude_calls)} Claude call(s), never retried, no Claude backup ({', '.join(_short(m) for m in d_claude_calls)})",
          OPUS_5 not in d_claude_calls and HAIKU not in d_claude_calls and len(d_claude_calls) <= 2),
         ("D: every question still forecast (today's setup)", all(i["submitted"] for i in infos("D"))),

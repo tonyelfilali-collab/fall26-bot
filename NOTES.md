@@ -9,7 +9,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 |---|---|---|---|---|
 | `BOT_ENABLED` | repo variable | `true` | Master switch: real-question workflows exit at once unless `true` | #15 |
 | Spend rules (21 Oct) | CLAUDE.md | Claude via `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan; no card, no auto-reload) allowed within the frontier caps ($15/UTC day, MiniBench under $9, $1.50 / $0.60 per question); OpenRouter paid: Gemini 3.6 Flash (as now); GPT-5.6 Sol OFF | OpenRouter daily stop rule $3.50 (22 Oct; was $2.00); spend check = key usage at the start of the day + today's spend; never buy credits | PR 1 |
-| `FRONTIER_ENABLED` | `bot_config.py` (#140; switch PR 3, 21 Oct) | **ON** (live: seasonal Opus 5.5 x2 + Flash x2, MiniBench Opus 5.5 + Flash x2; GPT not allowed while its switch is off) | `frontier.py`: seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus 5.5 + Flash x2 (GPT behind `FRONTIER_GPT_ENABLED`, OFF); `CLAUDE_BUDGET_PER_CYCLE` 190 (14 Nov; was 170) + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $15/UTC day (MiniBench Claude only while the day is under $9), $1.50 seasonal / $0.60 MiniBench per question; step-downs at $12 / $5 left (12 Nov; were 25% / 10%) | #140 |
+| `FRONTIER_ENABLED` | `bot_config.py` (#140; switch PR 3, 21 Oct) | **ON** (live: seasonal Opus 5.5 x2 + Flash x2, MiniBench Opus 5.5 + Flash x2; GPT not allowed while its switch is off) | `frontier.py`: seasonal Opus 5.5 x2 + Flash x2; MiniBench Opus 5.5 + Flash x2 (GPT behind `FRONTIER_GPT_ENABLED`, OFF); `CLAUDE_BUDGET_PER_CYCLE` 200 (15 Nov; was 170) + `CLAUDE_CYCLE_RESET_DATE` (None = no Claude); caps $15/UTC day (MiniBench Claude only while the day is under $9), $1.50 seasonal / $0.60 MiniBench per question; step-downs at $12 / $5 left (12 Nov; were 25% / 10%), none in the last 48 hours of the cycle (15 Nov) | #140 |
 | `FRONTIER_AGENT_ENABLED` | `bot_config.py` (#146; switch-on PR) | ON | One Opus slot becomes an agent (Opus 5.5 + Anthropic web_search / web_fetch, metaculus.com blocked; question caps $3.00 seasonal / $1.60 MiniBench while it runs; MiniBench = agent + plain Opus + Flash x2); merges after PR 3 is live; switch-on waits for the architect's "go" | #146 |
 | `FRONTIER_FABLE_ENABLED` | `bot_config.py` (architect, 12 Nov) | **ON** | Plain Fable 5.2 (`claude-fable-5-2`, $8 / $40 per M, effort high, no tools, no thinking parameter, no tool_choice) as an EXTRA Claude voice in full mode: seasonal = agent + agent2 + Fable + Flash x2, MiniBench = agent + plain Opus + Fable + Flash x2 (only where plain Opus runs: the busy-day rules). Question caps + $0.72 (its reservation: 10k in, 16k out); $20 day cap and pacing unchanged; MiniBench day limit $14.70 (12 Nov; was $15.40: $20 - agent + agent2 + Fable $5.24 -> $5.30). No backup, one try: a failure, refusal (`stop_reason` "refusal") or cap refusal skips it. Not in low / minimal mode. Counts as a Claude forecast for claude_first; scored per model in the Scoreboard. Test Bot `frontier_path=both` = 4 seasonal types + 1 MiniBench binary | 12 Nov |
 | `FRONTIER_SEASONAL_AGENTS` | `bot_config.py` (item C, #155) | **2** (ON) | 2: seasonal = agent + agent2 (4 searches / 2 fetches, 300k input, $1.64 reserve) + Flash x2, each agent with its own plain Opus fallback; seasonal cap $4.70, Claude day cap $20 (MiniBench limit $9). Test Bot lineup `frontier-agents2`. Switch-on: the architect (about Sat 24 Oct) | item C |
@@ -591,7 +591,7 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   (`output_config`), adaptive thinking (the models' default), no temperature, max 16,000 output tokens,
   6-minute timeout. Server-side refusal `fallbacks` NOT used (the backups above are the architect's).
 - **Budget** (`status/claude_spend.json` in fall26-data; must exist, else no Claude): per UTC day,
-  per question and per billing cycle (`CLAUDE_BUDGET_PER_CYCLE` 190 from 16 Nov, was 170, from `CLAUDE_CYCLE_RESET_DATE`
+  per question and per billing cycle (`CLAUDE_BUDGET_PER_CYCLE` 200 (15 Nov; was 170), from `CLAUDE_CYCLE_RESET_DATE`
   2026-11-16: credits are monthly and renew on the 16th, Tony 14 Nov; was the 18th. The first
   cycle ran 18 Oct - 15 Nov; then 16 Nov - 15 Dec, and so on).
   Each call reserves its worst case (10k in, 16k out: Opus 5.5 $0.36, Opus 5 $0.45, Haiku 5.5 $0.009), so
@@ -601,7 +601,9 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   usage; $0 for HTTP 400-429 and 5xx/529; the worst case for a timeout or a cut connection.
 - **Step-downs** (once per run; architect, 12 Nov, in dollars: were 25% / 10%, which ignored the
   time left): under $12 of the cycle budget left -> seasonal Opus x1 (MiniBench Opus x1);
-  under $5 -> seasonal Opus x1, MiniBench no Claude; a credit error ("credit balance is too
+  under $5 -> seasonal Opus x1, MiniBench no Claude. Only while MORE than 48 hours of the cycle remain
+  (architect, 15 Nov; Tony's rule: never leave Claude credit unused): in the last 48 hours no step-down and
+  no "used up" stop, full until a credit error (`frontier.FINAL_HOURS`). A credit error ("credit balance is too
   low", never retried; 14 Nov: Claude off for 1 hour, then ONE claude-haiku-5-5 test call, max_tokens 5, per
   hour, at the start of a run; it answers -> Claude back on; ledger `credit_off` {since, checked} while off,
   `credit_errors` keeps the history; health red while off), an unreadable/missing ledger, no reset date or no key
