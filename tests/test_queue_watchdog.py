@@ -137,3 +137,38 @@ def test_health_skips_the_log_of_a_run_cancelled_before_it_started(monkeypatch):
     monkeypatch.setattr(health_check.claude_health, "run_from_log", lambda text: {"mode": "full"})
     assert health_check.frontier_runs(NOW) == [{"mode": "full"}]
     assert read == [22]
+
+
+def _refusing_post(gh, refuse):  # type: ignore[no-untyped-def]
+    """gh.post, but URLs ending in one of `refuse` answer HTTP 409."""
+    import requests
+
+    def post(url, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
+        gh.posts.append((url, json))
+        if url.endswith(refuse):
+            error = requests.HTTPError("409")
+            error.response = SimpleNamespace(status_code=409)
+
+            def boom():
+                raise error
+            return SimpleNamespace(raise_for_status=boom)
+        return SimpleNamespace(raise_for_status=lambda: None)
+    return post
+
+
+def test_plain_cancel_refused_then_force_cancel(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    gh = FakeGitHub([{"id": 7, "status": "queued", "created_at": _at(18)}], {7: []})
+    lines = qw.main(NOW, gh.get, _refusing_post(gh, ("/cancel",)))
+    assert lines[0] == "run 7: waited 18 min with no job started; cancelled with force-cancel (plain cancel: HTTP 409)"
+    assert [u for u, _ in gh.posts][:2] == ["https://api.github.com/repos/o/r/actions/runs/7/cancel",
+                                            "https://api.github.com/repos/o/r/actions/runs/7/force-cancel"]
+
+
+def test_both_refused_says_cancel_failed_with_codes(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    gh = FakeGitHub([{"id": 7, "status": "queued", "created_at": _at(18)}], {7: []})
+    lines = qw.main(NOW, gh.get, _refusing_post(gh, ("/cancel", "/force-cancel")))
+    assert lines[0] == "run 7: waited 18 min with no job started; cancel failed (HTTP 409; force-cancel: HTTP 409)"
