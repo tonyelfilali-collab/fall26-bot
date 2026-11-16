@@ -18,7 +18,7 @@ Every on/off switch and key setting, its current value, what it does, and the PR
 | Gemini daily limits | `bot_config.GEMINI_DAILY_LIMITS` | Flash 20, Flash-Lite 400 (3.1-preview shares 3.1) | Per-model quota ledger; every attempt counts | #60, #69 |
 | Reserve | `GEMINI_FREE_RESERVE` | 20% | Held back for a question's first forecast, emergencies, research | #9 |
 | `EXTRA_FORECASTS_ENABLED` | `bot_config.py` | ON | Up to 5 (binary) / 6 (numeric, MC) forecasts when non-reserve quota is spare; 25 questions/day expected while MiniBench is active | #85, #89 |
-| `PAID_FLASH_FALLBACK` | `bot_config.py` | **ON** (Tony, 30 Sep; key limit $8, $15 since 21 Oct, $25 since 22 Oct) | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call, only until the question has 3 real forecasts (extra slots free only); caps $0.10/question, $1.00/UTC day (MiniBench too since 3 Nov; was only under $0.50); fail closed | #104, #108, #120, #122 |
+| `PAID_FLASH_FALLBACK` | `bot_config.py` | **ON** (Tony, 30 Sep; key limit $8, $15 since 21 Oct, $25 since 22 Oct; new key, $10, since 15 Nov 23:31 UTC) | gemini-free: a Flash chain that can't answer ends with one paid OpenRouter Gemini 3.6 Flash call, only until the question has 3 real forecasts (extra slots free only); caps $0.10/question, $1.00/UTC day (MiniBench too since 3 Nov; was only under $0.50); fail closed | #104, #108, #120, #122 |
 | Backup chain | `BACKUP_FORECASTS`, `BACKUP_FORECAST_MODEL` | 2 x Nemotron Ultra `:free` | No Flash answer and (closing within 45 min or all Flash out of quota): Nemotron x2 first, Flash-Lite only if Nemotron gives nothing | #67 |
 | Emergency window | `main.EMERGENCY_WINDOW` | 45 min | When the backup chain may use the Flash-Lite reserve | #59, #67 |
 | `STRETCH_K` | `forecast_safety.py` | 1.0 (off) | Log-odds stretch of the binary median (shadows 1.2 / 1.5 are logged) | #16, #44 |
@@ -524,6 +524,10 @@ Flash-Lite (parser, research, emergency) never gets it. Spend guards (#81, `spen
   MISSING -> no paid call this run; key usage unreadable -> none this run; key spent more than our
   ledger (max(20%, $0.50)) -> none for the rest of the UTC day; each with an alert issue.
 - The lineup is marked billed (`free_only` False) only when ON. The OpenRouter key limit is the ceiling.
+- **OpenRouter key changed** (architect, 15 Nov): `OPENROUTER_API_KEY` is a new key on Tony's other
+  account ($10 of credit, $10 limit) since 15 Nov 23:31:40 UTC (the old key ended at $10.8337 used of
+  $25). Spend check from that point: `key_day_start` for 16 Nov = $0.00 (the new key's usage at the
+  day's first run) and `key_changes` in `status/spend.json` records the change. Caps unchanged.
 - Rehearsal: `paid_flash_rehearsal.py` (Test Bot `paid-flash-rehearsal`; unit test).
 - **Rules of 2 Oct (architect):** paid Flash only fills a question up to 3 real forecasts in total
   (`PAID_FLASH_TARGET_FORECASTS`: forecasts finished this run + paid calls running; refusal "enough
