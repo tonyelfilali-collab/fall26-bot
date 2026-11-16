@@ -8,6 +8,9 @@ concurrency group), lists the tournament workflow's runs that are "queued"
 or "waiting" and cancels each one that has waited more than 10 minutes with
 NO job started (no runner, no step).
 
+If GitHub refuses the plain cancel (16 Nov: HTTPError on every try for 30
+minutes), it force-cancels; the log gives the HTTP codes.
+
 Standing rule (pre-approved): it may cancel only never-started runs of the
 live tournament workflow. A started run, or a run "pending" behind another
 run in the queue (normal), is never touched. When it cancels anything it
@@ -59,6 +62,27 @@ def stuck_runs(runs: list[dict], jobs_of: Callable[[int], list[dict]], now: date
     return stuck
 
 
+def _failure(e: Exception) -> str:
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    return f"HTTP {status}" if status else type(e).__name__
+
+
+def cancel_run(run_id: int, post: Callable[..., Any], headers: dict, repo: str) -> str:
+    """Cancel, and if GitHub refuses (16 Nov: a run with no job never took the
+    plain cancel, 4 tries over 30 min), force-cancel. Returns the log text;
+    "cancel failed" only when both were refused."""
+    try:
+        post(f"{API}/repos/{repo}/actions/runs/{run_id}/cancel", headers=headers, timeout=30).raise_for_status()
+        return "cancelled"
+    except Exception as e:
+        plain = _failure(e)
+    try:
+        post(f"{API}/repos/{repo}/actions/runs/{run_id}/force-cancel", headers=headers, timeout=30).raise_for_status()
+        return f"cancelled with force-cancel (plain cancel: {plain})"
+    except Exception as e:
+        return f"cancel failed ({plain}; force-cancel: {_failure(e)})"
+
+
 def open_alert_issue(title: str, body: str, get: Callable[..., Any], post: Callable[..., Any],
                      headers: dict, repo: str) -> bool:
     """ensemble.open_alert_issue without its imports (this workflow installs
@@ -91,11 +115,7 @@ def main(now: datetime | None = None, get: Callable[..., Any] = requests.get,
     stuck = stuck_runs(runs, lambda run_id: api(f"actions/runs/{run_id}/jobs")["jobs"], now)
     lines = []
     for run_id, minutes in stuck:
-        try:
-            post(f"{API}/repos/{repo}/actions/runs/{run_id}/cancel", headers=headers, timeout=30).raise_for_status()
-            lines.append(f"run {run_id}: waited {minutes} min with no job started; cancelled")
-        except Exception as e:
-            lines.append(f"run {run_id}: waited {minutes} min with no job started; cancel failed ({type(e).__name__})")
+        lines.append(f"run {run_id}: waited {minutes} min with no job started; " + cancel_run(run_id, post, headers, repo))
     if not stuck:
         lines.append(f"No stuck tournament run ({len(runs)} queued/waiting, none over 10 min with no job started)")
     else:
