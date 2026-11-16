@@ -4,7 +4,9 @@ reads only, never on the forecast path). For the Fall tournament (project
 33121) and the current MiniBench round: rank, score, 95% range (when the
 leaderboard gives one), the prize the leaderboard shows us, the scores at
 rank 1, 10, 50 and the last paid rank, the number of resolved questions
-(architect, 28 Oct) and the change since the last stored Monday.
+(architect, 28 Oct) and the change since the last stored Monday. Architect,
+16 Nov: our rank / score / prize against the top-50 line (the #50 entry's score
+and prize, our gap to it, and the gap's change since last Monday).
 
 The values are public on Metaculus (leaderboards/project/<id>/). Each
 Monday's values are kept in fall26-data status/standings.json, keyed by UTC
@@ -112,6 +114,36 @@ def field_line(board: dict, size: int) -> str:
     return f"  - field ({size} entries): " + ", ".join(parts)
 
 
+TARGET_RANK = 50  # architect, 16 Nov: the top-50 line
+
+
+def top50(board: dict) -> dict | None:
+    """{"rank", "score", "prize"} of the entry at the top-50 line (the first ranked
+    TARGET_RANK or lower), or None when the board is shorter."""
+    entry = next((e for e in ranked(board) if e["rank"] >= TARGET_RANK), None)
+    if entry is None or not _is_number(entry.get("score")):
+        return None
+    return {"rank": entry["rank"], "score": entry["score"],
+            "prize": entry.get("prize") if _is_number(entry.get("prize")) else None}
+
+
+def top50_line(ours: dict, line: dict | None, before: dict | None) -> str:
+    """Our rank / score / prize against the top-50 line. Public leaderboard values only."""
+    if line is None or not _is_number(ours.get("score")):
+        return f"  - vs the top-{TARGET_RANK} line: n/a"
+    gap = ours["score"] - line["score"]
+    prize = f"${line['prize']:,.0f}" if line["prize"] is not None else "n/a"
+    ours_prize = f"${ours['prize']:,.0f}" if ours.get("prize") is not None else "n/a"
+    rank = ours.get("rank")
+    where = "inside it" if isinstance(rank, int) and rank <= TARGET_RANK else f"{gap:+.2f} points to it"
+    text = (f"  - vs the top-{TARGET_RANK} line: #{line['rank']} score {_number(line['score'])}, prize shown {prize}; "
+            f"us rank {rank if rank is not None else '?'}, score {_number(ours['score'])}, prize shown {ours_prize}: {where}")
+    was = (before or {}).get("top50_gap")
+    if _is_number(was) and (before or {}).get("tid") == ours.get("tid"):
+        text += f" (gap {gap - was:+.2f} since last Monday, was {was:+.2f})"
+    return text
+
+
 def resolved_count(number: int, board: dict | None, get: Get) -> str:
     """Resolved questions in the tournament: the posts count, else the most
     questions any leaderboard entry was scored on."""
@@ -196,6 +228,11 @@ def _standings_lines(today: date, tournaments: list[tuple[str, int | str]], stor
                      f"score {_number(entry['score'])}, 95% range {span}, prize shown {prize}; "
                      f"{change_text(entry, before, before_day)}")
         lines.append(field_line(board, len(board.get("entries") or [])))
+        line50 = top50(board)
+        lines.append(top50_line(entry, line50, before))
+        if line50 is not None and _is_number(entry.get("score")):
+            entry["top50_gap"] = round(entry["score"] - line50["score"], 4)
+            entry["top50"] = line50
         lines.append(f"  - resolved questions: {resolved_count(number, board, get)}")
     if not found:
         return [UNAVAILABLE + " (" + "; ".join(line[2:] for line in lines) + ")"]

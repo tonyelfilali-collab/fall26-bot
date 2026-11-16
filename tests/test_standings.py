@@ -51,8 +51,9 @@ def test_monday_lines_with_change_since_last_monday():
     assert lines[0] == ("- Fall (33121): rank 12, score 12.50, 95% range 3.10 to 20.40, prize shown n/a; "
                         "change since 2026-10-19: rank up 3 (was 15), score +2.50 (was 10.00)")
     assert lines[1] == "  - field (2 entries): #1 99.00, #10 12.50, #50 ?, last paid rank n/a (no prizes shown)"
-    assert lines[2] == "  - resolved questions: n/a"
-    assert "95% range n/a" in lines[3] and "rank down 1 (was 3), score -1.00 (was 5.00)" in lines[3]
+    assert lines[2] == "  - vs the top-50 line: n/a"  # a 2-entry board has no #50
+    assert lines[3] == "  - resolved questions: n/a"
+    assert "95% range n/a" in lines[4] and "rank down 1 (was 3), score -1.00 (was 5.00)" in lines[4]
     assert store.data["2026-10-26"]["Fall"] == {"rank": 12, "score": 12.5, "low": 3.1, "high": 20.4, "prize": None,
                                                 "tid": 33121}
     assert store.saved == ["Standings 2026-10-26"]
@@ -90,11 +91,13 @@ def test_prize_field_scores_and_resolved_count():
     lines = standings.standings_lines(MONDAY.date(), [("Fall", 33121)], FakeStore({}), get)
     assert lines[0].startswith("- Fall (33121): rank 112, score 20.36, 95% range 17.90 to 22.80, prize shown $95; ")
     assert lines[1] == "  - field (199 entries): #1 99.00, #10 90.00, #50 50.00, last paid #136 -36.00"
-    assert lines[2] == "  - resolved questions: 61"
+    assert lines[2] == ("  - vs the top-50 line: #50 score 50.00, prize shown $10; "
+                        "us rank 112, score 20.36, prize shown $95: -29.64 points to it")
+    assert lines[3] == "  - resolved questions: 61"
     # No posts count: the most questions any entry was scored on.
     get = fake_get({"leaderboards/project/33121/": {"entries": entries}})
     lines = standings.standings_lines(MONDAY.date(), [("Fall", 33121)], FakeStore({}), get)
-    assert lines[2] == "  - resolved questions: 40 (most questions scored on the leaderboard)"
+    assert lines[3] == "  - resolved questions: 40 (most questions scored on the leaderboard)"
 
 
 def test_score_at_skips_missing_ranks():
@@ -154,3 +157,25 @@ def test_claude_days_lines_pacing():
     ledger["cycles"]["2026-10-18"] = 20.0
     lines = claude_health.claude_days_lines(ledger, now.date(), date(2026, 10, 18), 170.0, reset=date(2026, 11, 18), now=now)
     assert lines[-1].startswith("Pacing: full; cycle spent $20.00") and lines[-1].endswith("gap $-4.68")
+
+
+def test_top50_gap_is_stored_and_its_change_shown():
+    # Architect, 16 Nov: rank / score / prize vs the top-50 line, and the gap's change since last Monday.
+    entries = [{"user": {"id": 100 + r, "username": f"b{r}"}, "rank": r, "score": 300.0 - r, "prize": 1000.0 / r}
+               for r in range(1, 130)]
+    entries[111] = {"user": dict(ME), "rank": 112, "score": 212.28, "prize": 102.0}
+    store = FakeStore({"2026-11-09": {"Fall": {"rank": 112, "score": 199.99, "tid": 33121, "top50_gap": -50.0}}})
+    get = fake_get({"leaderboards/project/33121/": {"entries": entries}})
+    lines = standings.standings_lines(date(2026, 11, 16), [("Fall", 33121)], store, get)
+    assert lines[2] == ("  - vs the top-50 line: #50 score 250.00, prize shown $20; us rank 112, score 212.28, "
+                        "prize shown $102: -37.72 points to it (gap +12.28 since last Monday, was -50.00)")
+    saved = store.data["2026-11-16"]["Fall"]
+    assert saved["top50_gap"] == -37.72 and saved["top50"] == {"rank": 50, "score": 250.0, "prize": 20.0}
+
+
+def test_inside_the_top50():
+    entries = [{"user": {"id": 100 + r, "username": f"b{r}"}, "rank": r, "score": 100.0 - r} for r in range(1, 60)]
+    entries[29] = {"user": dict(ME), "rank": 30, "score": 70.0}
+    lines = standings.standings_lines(MONDAY.date(), [("Fall", 33121)], FakeStore({}),
+                                      fake_get({"leaderboards/project/33121/": {"entries": entries}}))
+    assert lines[2].endswith("prize shown n/a: inside it")
