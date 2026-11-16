@@ -609,7 +609,10 @@ bot-testing-area only; `frontier_path` = seasonal or minibench), `frontier-rehea
   time left): under $12 of the cycle budget left -> seasonal Opus x1 (MiniBench Opus x1);
   under $5 -> seasonal Opus x1, MiniBench no Claude. Only while MORE than 48 hours of the cycle remain
   (architect, 15 Nov; Tony's rule: never leave Claude credit unused): in the last 48 hours no step-down and
-  no "used up" stop, full until a credit error (`frontier.FINAL_HOURS`). A credit error ("credit balance is too
+  no "used up" stop, full until a credit error (`frontier.FINAL_HOURS`). 16 Nov (architect): in the last 48 hours the
+  MiniBench agent's burst-day sub-limits ($5 of MiniBench's own day spend / $10 of the whole day's)
+  are lifted too: MiniBench keeps agent + Opus + Fable until the $14.70 MiniBench day limit; the $20
+  day cap stays. A credit error ("credit balance is too
   low", never retried; 14 Nov: Claude off for 1 hour, then ONE claude-haiku-5-5 test call, max_tokens 5, per
   hour, at the start of a run; it answers -> Claude back on; ledger `credit_off` {since, checked} while off,
   `credit_errors` keeps the history; health red while off), an unreadable/missing ledger, no reset date or no key

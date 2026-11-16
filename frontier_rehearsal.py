@@ -546,6 +546,19 @@ def run() -> dict:
         infos_w += [_info(r, planner) for r in records]
         out["W"] = {"infos": infos_w, "planner": planner, "calls": [], "fake": fake, "before_seasonal": w_before_seasonal,
                     "report": frontier.frontier_report(planner)}
+        # W48 (architect, 16 Nov): V's burst (60 MiniBench, 2 per run) in the last 48 hours of
+        # a cycle: no $5 / $10 agent sub-limits; the MiniBench day limit and the day cap stay.
+        claude, fake, infos_w48 = ClaudeBudget(MemoryStore({"days": {}}), BUDGET, RESET_ENDING), RecordedAnthropic("full"), []
+        claude.cycles[claude.cycle.isoformat()] = BUDGET - 30.0
+        for run_no in range(30):
+            burst = [_question(62000 + 2 * run_no + i, SEASONAL_TYPES[(2 * run_no + i) % 4], minutes=60) for i in range(2)]
+            records, planner, _ = run_agent_phase([], burst, claude, fake, seasonal_agents=2)
+            infos_w48 += [_info(r, planner) for r in records]
+        w48_before_seasonal = claude.day_spent()
+        records, planner, _ = run_agent_phase([_question(61999, "binary", minutes=600)], [], claude, fake, seasonal_agents=2)
+        infos_w48 += [_info(r, planner) for r in records]
+        out["W48"] = {"infos": infos_w48, "planner": planner, "calls": [], "fake": fake,
+                      "before_seasonal": w48_before_seasonal, "report": frontier.frontier_report(planner)}
         return out
     finally:
         for attr, value in times.items():
@@ -748,6 +761,10 @@ def report() -> tuple[bool, str]:
     w_mini_spent = sum(i["claude_spent"] for i in w_mini)
     w_agent = sum(i["agent"] for i in w_mini)
     w_opus = sum(1 for i in w_mini if i["claude"])
+    w48_budget = out["W48"]["planner"].claude
+    w48_mini = infos("W48", False)
+    w48_agent_spent = sum(i["claude_spent"] for i in w48_mini if i["agent"])
+    w48_agent = sum(i["agent"] for i in w48_mini)
     w_first_plain = next((n for n, i in enumerate(w_mini) if i["agent"] == 0), len(w_mini))
     checks = [
         ("A: seasonal, every type = Opus 5.5 x2 + Flash x2 (4 forecasts)",
@@ -818,6 +835,16 @@ def report() -> tuple[bool, str]:
          f"${w_claude_budget.minibench_daily_cap:.2f}; after it ${w_claude_budget.day_spent():.2f} <= ${frontier.CLAUDE_DAILY_CAP_TWO_AGENTS:.2f}",
          w_claude_budget.minibench_daily_cap == 15.40 and out["W"]["before_seasonal"] <= w_claude_budget.minibench_daily_cap + 1e-9
          and w_claude_budget.day_spent() <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
+        (f"W48: last 48 hours, 60 MiniBench: the agent keeps going past the $5 / $10 sub-limits ({w48_agent} of 60 with "
+         f"the agent, ${w48_agent_spent:.2f} on them; V without the rule: {v_agent})",
+         w48_budget.in_final_hours() and w48_agent > v_agent
+         and w48_agent_spent > frontier.CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT and all(i["submitted"] for i in w48_mini)),
+        (f"W48: MiniBench stops at its day limit: day before the seasonal question ${out['W48']['before_seasonal']:.2f} <= "
+         f"${w48_budget.minibench_daily_cap:.2f}; after it ${w48_budget.day_spent():.2f} <= ${frontier.CLAUDE_DAILY_CAP_TWO_AGENTS:.2f}",
+         out["W48"]["before_seasonal"] <= w48_budget.minibench_daily_cap + 1e-9
+         and w48_budget.day_spent() <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
+        ("W48: the seasonal question after the burst still gets both agents",
+         [(i["agent"], i["agent2"]) for i in infos("W48", True)] == [(1, 1)]),
         ("W: the seasonal question after the burst still gets both agents",
          [(i["agent"], i["agent2"]) for i in infos("W", True)] == [(1, 1)]),
         ("A (mode all, test switch): every question combined from every forecast",
@@ -856,6 +883,7 @@ def report() -> tuple[bool, str]:
               "U1": "U1. Pacing: paced-1 (line + $15)", "U2": "U2. Pacing: paced-2 (line + $25)",
               "V": "V. MiniBench burst of 60 from a $0 Claude day",
               "W": "W. $11 seasonal day, then a MiniBench burst of 40",
+              "W48": "W48. MiniBench burst of 60 in the last 48 hours of a cycle",
               "X": "X. Aggregation claude_first (test switch): Opus x2 + Flash x2",
               "Y": "Y. Aggregation claude_first (test switch): two seasonal agents",
               "Z": "Z. Fable 5.2 extra voice (test switch): two seasonal agents",

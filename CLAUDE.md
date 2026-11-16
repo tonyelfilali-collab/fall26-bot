@@ -17,7 +17,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   ($200 per cycle (architect, 15 Nov; was $170); cycles run 18th 00:00 UTC -> 18th (architect, 16 Nov: old credit $39.58 left, expires 18 Nov 00:00 UTC; new $200 granted 15 Nov, expires 18 Dec 00:00 UTC; auto-reload stays OFF)), $20 per UTC day (two seasonal agents; $15 with one), MiniBench Claude only while the day's Claude spend
   (running calls included) is under the day cap minus one seasonal question's reservation ($14.70 with Fable 5.2, 12 Nov; $15.40 without; $11.70 with one
   agent; 3 Nov, was $9); the MiniBench agent only under $5 of MiniBench's own day spend and $10 of the whole day's
-  (burst days, 2-3 Nov; plain Opus after), $1.50 per seasonal question, $0.60 per MiniBench question
+  (burst days, 2-3 Nov; plain Opus after; 16 Nov: not in the last 48 hours of a cycle, where the agent + Opus + Fable run until the $14.70 MiniBench day limit), $1.50 per seasonal question, $0.60 per MiniBench question
   ($3.60 / $1.60 while the agent runs, $5.30 seasonal with two agents; the agent is ON; each + $0.72 while plain
   Fable 5.2 runs, 12 Nov: full mode only, an extra voice, no backup), step-downs at $12 / $5 of the cycle left (12 Nov; were 25% / 10%) only while more than 48 hours of the cycle remain (15 Nov: in the last 48 hours full until the credit runs out), pacing: over the line ($200 x share of the cycle gone) + $10
   MiniBench drops the agent, + $20 seasonal also drops agent2. The credits

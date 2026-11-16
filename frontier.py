@@ -30,7 +30,9 @@ in price):
   Opus x1; under $5 -> seasonal Opus x1, no Claude on MiniBench; a
   credit error, an unreadable ledger or no reset date -> no Claude: today's setup.
   Architect, 15 Nov: in the last 48 hours of the cycle there is no step-down
-  (nor the "used up" stop): full until a credit error (FINAL_HOURS).
+  (nor the "used up" stop): full until a credit error (FINAL_HOURS). 16 Nov: nor
+  the MiniBench agent's $5 / $10 burst-day sub-limits (the $14.70 MiniBench day
+  limit and the $20 day cap stay).
 - Agent (PR 4, behind bot_config.FRONTIER_AGENT_ENABLED, ON): in full mode one
   Opus slot becomes an agent (Opus 5.5 with Anthropic's web_search + web_fetch
   server tools, same prompt and answer format, the dossier as its start).
@@ -125,6 +127,9 @@ CLAUDE_DAILY_CAP = 15.00
 # (no agent) + Flash from $5 of MiniBench's OWN Claude spend today, or once the
 # whole day reaches $10, whichever comes first (running MiniBench reservations
 # included in both; seasonal ones in neither). Seasonal unchanged.
+# Architect, 16 Nov: NOT in the last 48 hours of a cycle (FINAL_HOURS): there
+# MiniBench keeps agent + Opus + Fable until the $14.70 MiniBench day limit; the
+# $20 day cap stays.
 CLAUDE_MINIBENCH_AGENT_DAY_LIMIT = 5.00
 CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT = 10.00
 CLAUDE_SEASONAL_QUESTION_CAP = 1.50
@@ -995,8 +1000,12 @@ class FrontierPlanner(bot_config.GeminiPool):
     def _minibench_burst(self) -> bool:
         """MiniBench's OWN Claude spend today has reached $5, or the whole day's
         has reached $10 (architect, 3 Nov). Both count running MiniBench
-        reservations; running seasonal ones don't take the MiniBench agent away."""
+        reservations; running seasonal ones don't take the MiniBench agent away.
+        Never in the last 48 hours of a cycle (architect, 16 Nov): there the
+        $14.70 MiniBench day limit and the $20 day cap decide."""
         assert self.claude is not None
+        if self.claude.in_final_hours():
+            return False
         running = sum(v for q, v in self.claude.in_flight.items() if q in self.minibench_questions)
         return (self.claude.minibench_day_spent() + running >= CLAUDE_MINIBENCH_AGENT_DAY_LIMIT - 1e-9
                 or self.claude.day_spent() + running >= CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT - 1e-9)
