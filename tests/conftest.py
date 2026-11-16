@@ -23,6 +23,16 @@ def fable_off_by_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def seasonal_opus_off_by_default(monkeypatch):
+    """The seasonal plain Opus (bot_config.FRONTIER_SEASONAL_OPUS_ENABLED, ON live
+    since 16 Nov) is an extra Claude slot; the older plan tests check the lineup
+    without it. tests/test_seasonal_opus.py switches it on itself."""
+    import bot_config
+
+    monkeypatch.setattr(bot_config, "FRONTIER_SEASONAL_OPUS_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
 def no_real_credit_test_call(monkeypatch):
     """The hourly credit test call (frontier.credit_test_call) never reaches Anthropic in tests."""
     import frontier

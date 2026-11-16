@@ -375,7 +375,7 @@ class RecordedAnthropic:
 
 def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake: RecordedAnthropic,
                     seasonal_agents: int = 1, aggregation_mode: str | None = None,
-                    fable: bool = False) -> tuple[list[dict], FrontierPlanner, list[str]]:
+                    fable: bool = False, opus: bool = False) -> tuple[list[dict], FrontierPlanner, list[str]]:
     import anthropic
 
     original = anthropic.AsyncAnthropic
@@ -387,6 +387,7 @@ def run_agent_phase(seasonal: list, minibench: list, claude: ClaudeBudget, fake:
         planner.agent_enabled = True
         planner.seasonal_agents = seasonal_agents
         planner.fable_enabled = fable
+        planner.seasonal_opus_enabled = opus
         planner.pacers = {m: RequestPacer(60000) for m in planner.pacers}
         planner.claude_pacer = planner.gpt_pacer = RequestPacer(60000)
         planner.start_run(5.0, api_key=True)
@@ -479,12 +480,13 @@ def run() -> dict:
             message="rehearsal: overloaded", llm_provider="gemini", model="gemini") for m in bot_config.GEMINI_FORECAST_MODELS})
 
         def agent_phase(name: str, base: int, claude: ClaudeBudget, fake: RecordedAnthropic, prespent: tuple = (),
-                        seasonal_agents: int = 1, aggregation_mode: str | None = None, fable: bool = False) -> None:
+                        seasonal_agents: int = 1, aggregation_mode: str | None = None, fable: bool = False,
+                        opus: bool = False) -> None:
             seasonal = [_question(base + i, kind) for i, kind in enumerate(SEASONAL_TYPES)]
             minibench = [_question(base + 9, "binary")]
             for post, dollars in prespent:
                 claude.questions[str(post)] = {"spent": dollars}
-            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake, seasonal_agents, aggregation_mode, fable)
+            records, planner, _ = run_agent_phase(seasonal, minibench, claude, fake, seasonal_agents, aggregation_mode, fable, opus)
             out[name] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": [], "fake": fake,
                          "report": frontier.frontier_report(planner)}
 
@@ -492,6 +494,8 @@ def run() -> dict:
         # Z (12 Nov): plain Fable 5.2 as an extra Claude voice (switch set for the phase only);
         # Z2: Fable refuses every request (stop_reason "refusal"): skipped, no retry, no backup.
         agent_phase("Z", 67000, _budget(), RecordedAnthropic("full"), seasonal_agents=2, fable=True)
+        # Z4 (architect, 16 Nov): seasonal plain Opus next to the two agents and Fable.
+        agent_phase("Z4", 65000, _budget(), RecordedAnthropic("full"), seasonal_agents=2, fable=True, opus=True)
         agent_phase("Z2", 66000, _budget(), RecordedAnthropic("full", fable_refuses=True), seasonal_agents=2, fable=True)
         # Z3: one MiniBench question on a $11 Claude day (burst rule: no MiniBench agent): Fable follows plain Opus.
         fake = RecordedAnthropic("full")
@@ -702,6 +706,7 @@ def fable_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
 
     z_s, z_m = infos("Z", True), infos("Z", False)
     z2, z3_m = infos("Z2"), infos("Z3", False)
+    z4_s, z4_m = infos("Z4", True), infos("Z4", False)
     fable_reqs = out["Z"]["fake"].fable_requests
     return [
         ("Z: seasonal, every type = agent + agent2 + Fable 5.2 + Flash x2 (5 forecasts), submitted",
@@ -723,6 +728,20 @@ def fable_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
                               and i["agent"] == 1 for i in z2)
          and len(out["Z2"]["fake"].fable_requests) == 5 and len(calls("Z2", FABLE)) == 5
          and all(c.get("stop_reason") == "refusal" for c in calls("Z2", FABLE))),
+        ("Z4: seasonal, every type = agent + agent2 + plain Opus + Fable 5.2 + Flash x2 (6 forecasts), submitted (16 Nov)",
+         len(z4_s) == 4 and all(i["agent"] == 1 and i["agent2"] == 1 and i["opus"] == 1 and i["fable"] == 1
+                                and i["flash"] == 2 and i["forecasts"] == 6 and i["submitted"] for i in z4_s)),
+        ("Z4: MiniBench unchanged = agent + plain Opus + Fable 5.2 + Flash x2",
+         len(z4_m) == 1 and all(i["agent"] == 1 and i["opus"] == 1 and i["fable"] == 1 and i["flash"] == 2
+                                and i["submitted"] for i in z4_m)),
+        (f"Z4: seasonal cap ${frontier.AGENT2_SEASONAL_QUESTION_CAP + 0.36 + 0.72:.2f} (+ plain Opus $0.36 + Fable $0.72); "
+         "every question's Claude spend within its cap",
+         within_caps("Z4") and all(abs(out["Z4"]["planner"].claude.caps[str(i["post"])]
+                                       - (frontier.AGENT2_SEASONAL_QUESTION_CAP + 0.36 + 0.72)) < 1e-9 for i in z4_s)),
+        ("Z4: day cap $20; MiniBench day limit $14.40 ($20 - agent + agent2 + Fable + plain Opus $5.60)",
+         out["Z4"]["planner"].claude.daily_cap == 20.0 and abs(out["Z4"]["planner"].claude.minibench_daily_cap - 14.40) < 1e-9),
+        ("Z4: claude_first combines the 4 Claude forecasts on seasonal (Flash saved, not combined)",
+         all(i["claude"] == 4 and i["aggregation"] == "claude" and i["final_is_claude"] for i in z4_s)),
         ("Z3: $11 day: MiniBench = plain Opus + Fable 5.2 + Flash x2 (no agent: Fable follows plain Opus)",
          len(z3_m) == 1 and all(i["agent"] == 0 and i["opus"] == 1 and i["fable"] == 1 and i["submitted"] for i in z3_m)),
     ]
@@ -734,11 +753,14 @@ def report() -> tuple[bool, str]:
     agent_switch, bot_config.FRONTIER_AGENT_ENABLED = bot_config.FRONTIER_AGENT_ENABLED, False
     # Fable 5.2 (live switch ON since 12 Nov) is pinned off too: phases Z-Z3 set it themselves.
     fable_switch, bot_config.FRONTIER_FABLE_ENABLED = bot_config.FRONTIER_FABLE_ENABLED, False
+    # The seasonal plain Opus (live since 16 Nov) too: phase Z4 sets it itself.
+    opus_switch, bot_config.FRONTIER_SEASONAL_OPUS_ENABLED = bot_config.FRONTIER_SEASONAL_OPUS_ENABLED, False
     try:
         out = run()
     finally:
         bot_config.FRONTIER_AGENT_ENABLED = agent_switch
         bot_config.FRONTIER_FABLE_ENABLED = fable_switch
+        bot_config.FRONTIER_SEASONAL_OPUS_ENABLED = opus_switch
 
     def infos(phase: str, seasonal: bool | None = None) -> list[dict]:
         return [i for i in out[phase]["infos"] if seasonal is None or bool(i["seasonal"]) == seasonal]
@@ -890,7 +912,8 @@ def report() -> tuple[bool, str]:
               "X": "X. Aggregation claude_first (test switch): Opus x2 + Flash x2",
               "Y": "Y. Aggregation claude_first (test switch): two seasonal agents",
               "Z": "Z. Fable 5.2 extra voice (test switch): two seasonal agents",
-              "Z2": "Z2. Fable 5.2 refuses every request", "Z3": "Z3. Fable 5.2, one MiniBench question on a $11 Claude day (burst)"}
+              "Z2": "Z2. Fable 5.2 refuses every request",
+              "Z4": "Z4. Seasonal plain Opus (test switch): two agents + plain Opus + Fable 5.2", "Z3": "Z3. Fable 5.2, one MiniBench question on a $11 Claude day (burst)"}
     for phase, title in titles.items():
         lines += [f"### {title} (mode {mode(phase)})", "", *_rows(out[phase]["infos"]), ""]
     lines += [f"- {text}: **{'yes' if good else 'NO'}**" for text, good in checks]
