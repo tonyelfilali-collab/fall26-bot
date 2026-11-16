@@ -44,7 +44,10 @@ def nemotron(monkeypatch):
     return Switch()
 
 
-def _run(dummy, monkeypatch, nemotron, minutes_to_close, used=None, flash="overloaded"):  # noqa: F811
+def _run(dummy, monkeypatch, nemotron, minutes_to_close, used=None, flash="overloaded", hold=False):  # noqa: F811
+    if not hold:
+        # The Nemotron-only hold (architect, 16 Nov) has its own tests below.
+        monkeypatch.setattr(main, "holds_nemotron_only", lambda close, now: False)
     for m in FLASH:
         dummy.behaviour[m] = flash
     monkeypatch.setattr(main.asyncio, "sleep", _no_wait)
@@ -212,6 +215,7 @@ def test_real_limits_flash_lite_at_reserve_nemotron_only(dummy, monkeypatch, nem
     used = {**{f"gemini/{m}": 20 for m in FLASH}, "gemini/gemini-3.5-flash-lite": 320, "gemini/gemini-3.1-flash-lite": 320}
     pool = bot_config._gemini_pool(MemoryStore({"day": gemini_budget.quota_day(), "used": used}))
     pool.nemotron = nemotron.factory
+    monkeypatch.setattr(main, "holds_nemotron_only", lambda close, now: False)
     monkeypatch.setattr(main.asyncio, "sleep", _no_wait)
     monkeypatch.setattr(main.FallBot2026, "_binary_prompt_to_forecast", lambda self, q, p: _answer(self, 0.3))
     bot = _bot(pool, None)
@@ -222,3 +226,50 @@ def test_real_limits_flash_lite_at_reserve_nemotron_only(dummy, monkeypatch, nem
     assert record["emergency"] == "flash-exhausted: nemotron"
     assert pool.ledger.used == used  # no Gemini request at all
     assert dummy.calls == []
+
+
+# ---------------------------------------------------------------- Nemotron-only hold (architect, 16 Nov)
+
+UTC = timezone.utc
+
+
+@pytest.mark.parametrize("now, close, held", [
+    (datetime(2026, 11, 16, 20, 0, tzinfo=UTC), datetime(2026, 11, 17, 0, 31, tzinfo=UTC), True),
+    (datetime(2026, 11, 16, 20, 0, tzinfo=UTC), datetime(2026, 11, 17, 0, 30, tzinfo=UTC), False),
+    (datetime(2026, 11, 16, 20, 0, tzinfo=UTC), datetime(2026, 11, 16, 23, 0, tzinfo=UTC), False),
+    (datetime(2026, 11, 17, 0, 10, tzinfo=UTC), datetime(2026, 11, 17, 0, 40, tzinfo=UTC), True),
+    (datetime(2026, 11, 17, 0, 30, tzinfo=UTC), datetime(2026, 11, 17, 23, 0, tzinfo=UTC), False),
+    (datetime(2026, 11, 17, 0, 30, tzinfo=UTC), datetime(2026, 11, 18, 1, 0, tzinfo=UTC), True),
+    (datetime(2026, 11, 16, 20, 0, tzinfo=UTC), datetime(2026, 11, 17, 0, 31), True),  # naive = UTC
+    (datetime(2026, 11, 16, 20, 0, tzinfo=UTC), None, False),  # unknown close: never held
+])
+def test_holds_nemotron_only_after_the_next_0030(now, close, held):
+    assert main.holds_nemotron_only(close, now) is held
+
+
+def test_nemotron_only_is_held_when_a_later_run_can_retry(dummy, monkeypatch, nemotron):  # noqa: F811
+    monkeypatch.setattr(main, "holds_nemotron_only", lambda close, now: True)
+    report, record, pool = _run(dummy, monkeypatch, nemotron, 120, used=FLASH_LITE_AT_RESERVE, flash="daily_quota", hold=True)
+    assert isinstance(report, BaseException)  # nothing submitted; the next run retries
+    assert record["emergency"] == "flash-exhausted: nemotron only, held (closes after the next 00:30 UTC)"
+    assert record["nemotron_held"] is True and record["submitted"] is False
+    assert _answered(record, "backup") == [BACKUP_FORECAST_MODEL] * 2  # Nemotron did answer
+    assert _flash_lite_calls(dummy) == []  # and Flash-Lite is not tried instead
+
+
+def test_nemotron_only_submits_when_no_run_after_0030_can_retry(dummy, monkeypatch, nemotron):  # noqa: F811
+    seen = []
+    monkeypatch.setattr(main, "holds_nemotron_only", lambda close, now: seen.append(close) or False)
+    report, record, _ = _run(dummy, monkeypatch, nemotron, 120, used=FLASH_LITE_AT_RESERVE, flash="daily_quota", hold=True)
+    assert not isinstance(report, BaseException), report
+    assert report.prediction == pytest.approx(0.3)
+    assert record["emergency"] == "flash-exhausted: nemotron" and "nemotron_held" not in record
+    assert len(seen) == 1
+
+
+def test_last_chance_window_never_holds(dummy, monkeypatch, nemotron):  # noqa: F811
+    # Closing within 45 min: every run tries, and whatever we have is submitted.
+    monkeypatch.setattr(main, "holds_nemotron_only", lambda close, now: True)
+    report, record, _ = _run(dummy, monkeypatch, nemotron, 30, hold=True)
+    assert not isinstance(report, BaseException), report
+    assert record["emergency"] == "window: nemotron"
