@@ -54,7 +54,8 @@ class FakeGitHub:
 
     def get(self, url, headers=None, params=None, timeout=None):  # type: ignore[no-untyped-def]
         if url.endswith(f"/actions/workflows/{qw.TOURNAMENT_WORKFLOW}/runs"):
-            body = {"workflow_runs": [r for r in self.runs if r["status"] == params["status"]]}
+            # With a status filter: the stuck-run listing; without: the newest runs (any status).
+            body = {"workflow_runs": [r for r in self.runs if "status" not in params or r["status"] == params["status"]]}
         elif url.endswith("/jobs"):
             body = {"jobs": self.jobs[int(url.split("/")[-2])]}
         else:
@@ -172,3 +173,71 @@ def test_both_refused_says_cancel_failed_with_codes(monkeypatch):
     gh = FakeGitHub([{"id": 7, "status": "queued", "created_at": _at(18)}], {7: []})
     lines = qw.main(NOW, gh.get, _refusing_post(gh, ("/cancel", "/force-cancel")))
     assert lines[0] == "run 7: waited 18 min with no job started; cancel failed (HTTP 409; force-cancel: HTTP 409)"
+
+
+# 16 Nov ghost runs: GitHub refused both cancels (409) while newer live runs kept finishing.
+def _done(minutes_ago: int) -> dict:
+    return dict(STARTED, status="completed", started_at=_at(minutes_ago))
+
+
+def _ghost_case(newer_runs, jobs, refuse=("/cancel", "/force-cancel"), monkeypatch=None):  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    runs = [{"id": 7, "status": "queued", "created_at": _at(40)}] + newer_runs
+    gh = FakeGitHub(runs, {7: [], **jobs})
+    if refuse == "403":
+        import requests
+
+        def post(url, headers=None, json=None, timeout=None):  # type: ignore[no-untyped-def]
+            gh.posts.append((url, json))
+            if "/actions/runs/" in url:
+                error = requests.HTTPError("403")
+                error.response = SimpleNamespace(status_code=403)
+
+                def boom():
+                    raise error
+                return SimpleNamespace(raise_for_status=boom)
+            return SimpleNamespace(raise_for_status=lambda: None)
+        return qw.main(NOW, gh.get, post)
+    return qw.main(NOW, gh.get, _refusing_post(gh, refuse))
+
+
+def _red(lines) -> bool:  # type: ignore[no-untyped-def]
+    return any("cancel failed" in line for line in lines)  # the __main__ rule
+
+
+def test_both_409_but_queue_moving_is_a_warning_not_red(monkeypatch):
+    newer = [{"id": 8, "status": "completed", "created_at": _at(30)},
+             {"id": 9, "status": "completed", "created_at": _at(10)}]
+    lines = _ghost_case(newer, {8: [_done(29)], 9: [_done(9)]}, monkeypatch=monkeypatch)
+    assert lines[0] == ("run 7: waited 40 min with no job started; cancel refused (HTTP 409; force-cancel: HTTP 409); "
+                        "WARNING: the queue is moving (a newer live run started and finished; last live start 9 min ago)")
+    assert not _red(lines)
+    assert lines[-1] == "Alert issue opened"  # the once-a-day issue is kept
+
+
+def test_both_409_no_newer_run_finished_stays_red(monkeypatch):
+    # The newer run is still running (not finished): not proof the queue moves.
+    newer = [{"id": 8, "status": "in_progress", "created_at": _at(10)}]
+    lines = _ghost_case(newer, {8: [dict(STARTED, started_at=_at(9))]}, monkeypatch=monkeypatch)
+    assert lines[0].endswith(qw.REFUSED_409) and _red(lines)
+
+
+def test_both_409_no_live_start_in_30_min_stays_red(monkeypatch):
+    # A newer run finished, but the last live start was 35 min ago.
+    newer = [{"id": 8, "status": "completed", "created_at": _at(36)}]
+    lines = _ghost_case(newer, {8: [_done(35)]}, monkeypatch=monkeypatch)
+    assert lines[0].endswith(qw.REFUSED_409) and _red(lines)
+
+
+def test_other_error_code_stays_red_even_when_queue_moving(monkeypatch):
+    newer = [{"id": 8, "status": "completed", "created_at": _at(10)}]
+    lines = _ghost_case(newer, {8: [_done(9)]}, refuse="403", monkeypatch=monkeypatch)
+    assert lines[0].endswith("cancel failed (HTTP 403; force-cancel: HTTP 403)") and _red(lines)
+
+
+def test_older_finished_run_does_not_count_as_newer(monkeypatch):
+    # Finished, started recently, but created BEFORE the stuck run (e.g. the 16:52 run that ran at 18:00).
+    older = [{"id": 6, "status": "completed", "created_at": _at(50)}]
+    lines = _ghost_case(older, {6: [_done(5)]}, monkeypatch=monkeypatch)
+    assert _red(lines)
