@@ -130,3 +130,39 @@ def test_a_running_seasonal_question_does_not_take_the_minibench_agent():
     planner.minibench_questions.add("mini-running")
     planner.claude.in_flight["mini-running"] = 4.00
     assert AGENT not in _plan(planner, False, "55")
+
+
+# Architect, 16 Nov: in the last 48 hours of a cycle the $5 / $10 sub-limits are lifted:
+# MiniBench keeps agent + Opus (+ Fable) until the $14.70 MiniBench day limit; the $20 day cap stays.
+def _final_hours(planner, monkeypatch):  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(planner.claude, "in_final_hours", lambda now=None: True)
+
+
+@pytest.mark.parametrize("own, seasonal", [(5.00, 0.0), (7.50, 0.0), (0.50, 9.50), (6.00, 5.00), (10.00, 4.00)])
+def test_last_48_hours_keep_the_minibench_agent(own, seasonal, monkeypatch):
+    planner, _ = _two(5.0)
+    _day(planner, own, seasonal=seasonal)
+    assert AGENT not in _plan(planner, False, "61")  # outside the last 48 hours: burst day, no agent
+    _final_hours(planner, monkeypatch)
+    models = _plan(planner, False, "62")
+    assert models[:2] == [AGENT, OPUS_55] and planner.claude.caps["62"] == frontier.AGENT_MINIBENCH_QUESTION_CAP
+    assert "burst" not in planner.last_plan or planner.last_plan["burst"] is False
+
+
+@pytest.mark.parametrize("whole_day", [14.70, 15.40, 19.00])
+def test_last_48_hours_still_stop_at_the_minibench_day_limit(whole_day, monkeypatch):
+    planner, _ = _two(5.0)
+    _final_hours(planner, monkeypatch)
+    _day(planner, 8.00, seasonal=whole_day - 8.00)
+    models = _plan(planner, False, "63")
+    assert AGENT not in models  # the agent's reservation no longer fits under the MiniBench day limit
+
+
+def test_last_48_hours_seasonal_unchanged_and_day_cap_stays(monkeypatch):
+    planner, _ = _two(5.0)
+    _final_hours(planner, monkeypatch)
+    _day(planner, 0.0, seasonal=19.90)
+    assert not any(m.startswith("anthropic/") for m in _plan(planner, True, "64"))  # $20 day cap
+    assert planner.claude.daily_cap == frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.0
+    # The MiniBench day limit stays ($14.70 with Fable, $15.40 without, as here).
+    assert planner.claude.minibench_daily_cap == pytest.approx(15.40)
