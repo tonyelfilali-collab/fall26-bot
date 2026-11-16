@@ -100,9 +100,11 @@ from llm_throttle import RequestPacer
 from replay import ReplayChainLlm, _RecordedAnswer
 from spend import SpendGuard, utc_day
 
-# Any reset day: the cycle started 2 days ago, so 26+ days are left and the
-# step-downs apply (15 Nov: none in the last 48 hours of a cycle).
-RESET = date.today() - timedelta(days=2)
+# Mid-cycle on any run day: the cycle started 15 days ago, so the pacing line
+# is about half the budget (a cycle only days old would pace the long burst
+# phases) and 13+ days are left, so the step-downs apply (15 Nov: none in the
+# last 48 hours of a cycle).
+RESET = date.today() - timedelta(days=15)
 # A cycle that ends at the next UTC midnight: inside its last 48 hours.
 RESET_ENDING = date.today() + timedelta(days=1)
 BUDGET = 170.0
