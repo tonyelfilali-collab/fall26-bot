@@ -147,7 +147,7 @@ from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
 from frontier import FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
 from spend import SPEND_PATH, SpendCapReached, SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
-from window_baseline import fetch_full_history, window_baseline
+from window_baseline import fetch_full_history, typical_change_line, window_baseline
 import bot_config
 import gpt_shadow as gpt
 import kimi_shadow as kimi
@@ -1826,14 +1826,25 @@ class FallBot2026(ForecastBot):
             return research
         record = self._record_for(question)
         record["official_data"] = {"line": line.text, "exact": line.exact}
-        self._save_section(question, "official_data", line.text)
+        text = line.text
+        # Architect, 16 Nov: one more line, the series' typical change to resolution.
+        try:
+            typical = typical_change_line(question, found)
+        except Exception as e:
+            typical = None
+            logger.warning(f"Question {question.id_of_post}: typical change line skipped ({type(e).__name__})")
+        if typical:
+            record["official_data"]["typical_change"] = typical
+            text = f"{text}\n{typical}"
+        self._save_section(question, "official_data", text)
         if line.exact:
             record["official_current_value"] = line.latest
         logger.info(
             f"Question {question.id_of_post}: official data line added "
-            f"({'exact: feeds the unit check' if line.exact else 'stand-in: not used by the unit check'})"
+            f"({'exact: feeds the unit check' if line.exact else 'stand-in: not used by the unit check'}"
+            f"{'; typical change line added' if typical else ''})"
         )
-        return with_official_line(research, line.text)
+        return with_official_line(research, text)
 
     # ------------------------------------------------ shadow forecaster (Build 1b)
 
