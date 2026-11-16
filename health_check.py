@@ -54,6 +54,7 @@ import bot_config  # noqa: E402
 import claude_health  # noqa: E402
 import standings  # noqa: E402
 from aggregation import STATUS_PATH as CLAUDE_FIRST_STATUS_PATH  # noqa: E402
+from stretch_monitor import STATUS_PATH as STRETCH_STATUS_PATH  # noqa: E402
 from gemini_budget import GitHubFileStore, quota_day  # noqa: E402
 from comment_post import COMMENT_FAILED_ANNOTATION  # noqa: E402
 from question_log import DATA_REPO, LOG_FAILURE_ANNOTATION  # noqa: E402
@@ -497,6 +498,15 @@ def check_claude_first(status: dict | None, mode_now: str, report: Report) -> No
     (report.warnings if warn else report.ok).append(line)
 
 
+def check_stretch(status: dict | None, report: Report) -> None:
+    """The stretch monitor (stretch_monitor.py; architect, 16 Nov), as the last
+    Scoreboard run saw it. Counts only; warns when the report is due (30)."""
+    import stretch_monitor
+
+    line, warn = stretch_monitor.health_line(status)
+    (report.warnings if warn else report.ok).append(line)
+
+
 def add_standings(now: datetime, minibench_id: int | str, report: Report, store=None, get=None) -> None:
     """Mondays: our Fall and MiniBench standing (standings.py). Fails soft:
     one line "standings: unavailable", never red."""
@@ -549,6 +559,8 @@ def run(simulate_miss: bool) -> Report:
         ("claude_first rule", lambda: check_claude_first(
             GitHubFileStore(DATA_REPO, CLAUDE_FIRST_STATUS_PATH, os.environ["DATA_REPO_TOKEN"]).load(),
             bot_config.AGGREGATION_MODE, report)),
+        ("stretch monitor", lambda: check_stretch(
+            GitHubFileStore(DATA_REPO, STRETCH_STATUS_PATH, os.environ["DATA_REPO_TOKEN"]).load(), report)),
     ]
     for name, check in checks:
         try:

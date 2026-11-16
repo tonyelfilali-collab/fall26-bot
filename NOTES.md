@@ -104,6 +104,13 @@ predictions (currently 1 × 5 = 5), then:
 - **Numeric / discrete / date:** each prediction becomes a CDF on the same x-axis; the
   **median at each point** of the CDF is taken.
 
+**Stretch monitor (16 Nov 2026, `stretch_monitor.py`; monitor only, no live change).** Every Scoreboard
+run scores agent-era resolved binary questions: the submitted p stretched in log-odds by k = 1.2 / 1.5
+(then the 2-98% clip) vs submitted, the logged "stretch-1.2" / "stretch-1.5" shadows (stretch of the
+every-forecast median), and a leave-one-out best k (1.0 / 1.2 / 1.5). Numbers in fall26-data
+`status/stretch_monitor.json` and the private Scoreboard report; the daily health check shows the count
+and warns "report due" at 30 questions (Claude Code reports to the architect).
+
 **Aggregation mode (8 Nov 2026, `aggregation.py`; ON since 14 Nov: `bot_config.AGGREGATION_MODE = "claude_first"`).**
 `"claude_first"` combines only the Claude Opus forecasts (agent1, agent2, plain Opus 5.5,
 Opus fallbacks, Fable 5.2; not Haiku) when 1+ was read (architect, 16 Nov; was 2+): exactly one

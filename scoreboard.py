@@ -498,6 +498,7 @@ def main() -> None:
     # Per-model and subset tables: only in the saved fall26-data file, never on the job page.
     private = f"\n**Per model and binary subsets (private):**\n\n{per_model_markdown(score_models(records, resolution_of))}\n"
     private += claude_first_check(records, resolution_of, token)
+    private += stretch_check(records, resolution_of, token)
     save_markdown(f"scoreboard/{stamp}.md", report + private, token, f"Scoreboard {stamp}")
 
 
@@ -529,6 +530,32 @@ def claude_first_check(records: list[dict], resolution_of, token: str) -> str:  
         print(f"claude_first rule: status not saved ({type(e).__name__})")
     print(aggregation.health_line(status, bot_config.AGGREGATION_MODE)[0])
     return "\n" + aggregation.rule_markdown(result, rows) + "\n"
+
+
+def stretch_check(records: list[dict], resolution_of, token: str) -> str:  # type: ignore[no-untyped-def]
+    """The stretch monitor (stretch_monitor.py; architect, 16 Nov), on every Scoreboard
+    run: numbers to fall26-data (status/stretch_monitor.json + the private report);
+    the job page gets one public-safe line (counts only)."""
+    import stretch_monitor
+
+    try:
+        result = stretch_monitor.result(stretch_monitor.rows(records, resolution_of))
+    except Exception as e:
+        print(f"Stretch monitor: could not be checked ({type(e).__name__})")
+        return f"\n**Stretch monitor:** could not be checked ({type(e).__name__}).\n"
+    status = {**result, "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    body = {"message": f"Stretch monitor {status['checked_at'][:10]}",
+            "content": base64.b64encode(json.dumps(status, indent=2, sort_keys=True).encode()).decode()}
+    try:
+        try:
+            body["sha"] = _github(f"contents/{stretch_monitor.STATUS_PATH}", token)["sha"]
+        except requests.HTTPError:
+            pass
+        _github(f"contents/{stretch_monitor.STATUS_PATH}", token, method="PUT", body=body)
+    except Exception as e:
+        print(f"Stretch monitor: status not saved ({type(e).__name__})")
+    print(stretch_monitor.health_line(status)[0])
+    return "\n" + stretch_monitor.markdown(result) + "\n"
 
 
 if __name__ == "__main__":
