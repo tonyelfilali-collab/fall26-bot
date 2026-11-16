@@ -163,10 +163,11 @@ FRONTIER_ENABLED = True
 # handled by the 1-hour safety (no retry, never charged).
 CLAUDE_BUDGET_PER_CYCLE = 200.0  # dollars of Console credits per billing cycle (the one budget setting)
 # A day the monthly credits reset (any month, "YYYY-MM-DD"; None = no Claude).
-# Tony, 14 Nov: the credits renew on the 16th (was 18, Tony 21 Oct), so a new
-# cycle starts on the 16th of each month. Merge only once the new credits show
-# in the Console: before the 16th this would read a 16 Oct cycle with no spend.
-CLAUDE_CYCLE_RESET_DATE: str | None = "2026-11-16"
+# Architect, 16 Nov (Tony's Console): cycles run from the 18th 00:00 UTC to the
+# next 18th. Two credits overlap: $39.58 left of the old one, expiring 18 Nov
+# 00:00 UTC; a new $200 granted 15 Nov, expiring 18 Dec 00:00 UTC (the 16th was
+# only a grant date). Auto-reload stays OFF.
+CLAUDE_CYCLE_RESET_DATE: str | None = "2026-11-18"
 # GPT-5.6 Sol in the frontier lineup (architect, 21 Oct: OFF; doubled in price,
 # GPT bots score badly on the Fall leaderboard).
 FRONTIER_GPT_ENABLED = False

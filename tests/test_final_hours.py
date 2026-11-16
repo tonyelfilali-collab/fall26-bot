@@ -12,7 +12,7 @@ import frontier
 from frontier import ClaudeBudget
 from gemini_budget import MemoryStore
 
-RESET = date(2026, 11, 16)  # cycle 16 Nov - 15 Dec; the next starts 16 Dec 00:00 UTC
+RESET = date(2026, 11, 16)  # a test cycle 16 Nov - 15 Dec; the next starts 16 Dec 00:00 UTC
 BUDGET = 200.0
 
 
@@ -81,5 +81,15 @@ def test_pacing_and_day_cap_unchanged():
 
 def test_live_config():
     assert bot_config.CLAUDE_BUDGET_PER_CYCLE == 200.0
-    assert bot_config.CLAUDE_CYCLE_RESET_DATE == "2026-11-16"
+    assert bot_config.CLAUDE_CYCLE_RESET_DATE == "2026-11-18"
     assert frontier.FINAL_HOURS.total_seconds() == 48 * 3600
+
+
+def test_now_16_nov_is_in_the_last_48_hours_of_the_live_cycle():
+    # Architect, 16 Nov 00:25 UK: the live cycle ends 18 Nov 00:00 UTC, so from 16 Nov 00:00 the bot is full.
+    reset = frontier.reset_date(bot_config.CLAUDE_CYCLE_RESET_DATE)
+    claude = ClaudeBudget(MemoryStore({"days": {}}), BUDGET, reset, today=date(2026, 11, 16))
+    claude.cycles[claude.cycle.isoformat()] = BUDGET - 4.0
+    assert claude.cycle == date(2026, 10, 18)
+    assert frontier.claude_mode(claude, now=datetime(2026, 11, 16, 0, 30, tzinfo=timezone.utc))[0] == "full"
+    assert frontier.claude_mode(claude, now=datetime(2026, 11, 15, 23, 59, tzinfo=timezone.utc))[0] == "minimal"
