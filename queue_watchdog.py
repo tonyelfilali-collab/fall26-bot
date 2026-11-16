@@ -11,6 +11,13 @@ NO job started (no runner, no step).
 If GitHub refuses the plain cancel (16 Nov: HTTPError on every try for 30
 minutes), it force-cancels; the log gives the HTTP codes.
 
+When GitHub refuses BOTH with HTTP 409 (16 Nov: a ghost run with no job that
+GitHub won't cancel) while the queue is moving (a newer live run has started
+and finished since the stuck one was queued, and a live run started in the
+last 30 minutes), it is a WARNING, not red (architect, 16 Nov): the stuck run
+blocks nothing. Any other refusal, or no live run started in 30 minutes,
+stays red. The once-a-day alert issue is kept either way.
+
 Standing rule (pre-approved): it may cancel only never-started runs of the
 live tournament workflow. A started run, or a run "pending" behind another
 run in the queue (normal), is never touched. When it cancels anything it
@@ -33,6 +40,12 @@ STUCK_AFTER = timedelta(minutes=10)
 # "pending" = waiting for the run ahead in the forecast-bot queue: normal, never cancelled.
 STUCK_STATUSES = ("queued", "waiting")
 API = "https://api.github.com"
+# Both cancels refused with this text = GitHub's "conflict": the run can't be cancelled now.
+REFUSED_409 = "cancel failed (HTTP 409; force-cancel: HTTP 409)"
+# The queue counts as moving only if a live run started within this time.
+RECENT_START = timedelta(minutes=30)
+# Newest live runs looked at for "is the queue moving" (10 min apart: ~100 min).
+RECENT_RUNS = 10
 
 
 def _parse_time(text: str) -> datetime:
@@ -83,6 +96,28 @@ def cancel_run(run_id: int, post: Callable[..., Any], headers: dict, repo: str) 
         return f"cancel failed ({plain}; force-cancel: {_failure(e)})"
 
 
+def queue_moving(stuck_created: datetime, recent: list[dict], jobs_of: Callable[[int], list[dict]],
+                 now: datetime) -> tuple[bool, int | None]:
+    """(moving, minutes since the last live run start). Moving = a live run
+    created after the stuck one has started and finished, AND a live run
+    started in the last 30 minutes."""
+    newer_finished, last_start = False, None
+    for run in recent:
+        if run.get("status") not in ("in_progress", "completed") or not run.get("created_at"):
+            continue
+        started = [job for job in jobs_of(run["id"]) if job_started(job)]
+        if not started:
+            continue
+        for job in started:
+            if job.get("started_at"):
+                at = _parse_time(job["started_at"])
+                last_start = at if last_start is None else max(last_start, at)
+        if run["status"] == "completed" and _parse_time(run["created_at"]) > stuck_created:
+            newer_finished = True
+    minutes = None if last_start is None else int((now - last_start).total_seconds() // 60)
+    return newer_finished and last_start is not None and now - last_start <= RECENT_START, minutes
+
+
 def open_alert_issue(title: str, body: str, get: Callable[..., Any], post: Callable[..., Any],
                      headers: dict, repo: str) -> bool:
     """ensemble.open_alert_issue without its imports (this workflow installs
@@ -112,10 +147,21 @@ def main(now: datetime | None = None, get: Callable[..., Any] = requests.get,
     runs: list[dict] = []
     for status in STUCK_STATUSES:
         runs += api(f"actions/workflows/{TOURNAMENT_WORKFLOW}/runs", status=status, per_page=50)["workflow_runs"]
-    stuck = stuck_runs(runs, lambda run_id: api(f"actions/runs/{run_id}/jobs")["jobs"], now)
+    jobs_of = lambda run_id: api(f"actions/runs/{run_id}/jobs")["jobs"]  # noqa: E731
+    stuck = stuck_runs(runs, jobs_of, now)
+    created = {run["id"]: _parse_time(run["created_at"]) for run in runs if run.get("created_at")}
     lines = []
+    recent: list[dict] | None = None
     for run_id, minutes in stuck:
-        lines.append(f"run {run_id}: waited {minutes} min with no job started; " + cancel_run(run_id, post, headers, repo))
+        result = cancel_run(run_id, post, headers, repo)
+        if result == REFUSED_409:
+            if recent is None:
+                recent = api(f"actions/workflows/{TOURNAMENT_WORKFLOW}/runs", per_page=RECENT_RUNS)["workflow_runs"]
+            moving, since = queue_moving(created[run_id], recent, jobs_of, now)
+            if moving:
+                result = (f"cancel refused (HTTP 409; force-cancel: HTTP 409); WARNING: the queue is moving "
+                          f"(a newer live run started and finished; last live start {since} min ago)")
+        lines.append(f"run {run_id}: waited {minutes} min with no job started; " + result)
     if not stuck:
         lines.append(f"No stuck tournament run ({len(runs)} queued/waiting, none over 10 min with no job started)")
     else:
@@ -136,6 +182,9 @@ if __name__ == "__main__":
         output, failed = [f"Queue watchdog could not run ({type(e).__name__})"], True
     text = "\n".join(output)
     print(text)
+    for line in output:
+        if "WARNING:" in line:
+            print(f"::warning title=Queue watchdog::{line}")
     summary = os.getenv("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
