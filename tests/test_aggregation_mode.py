@@ -114,8 +114,12 @@ def test_choose():
     models = [AGENT, FLASH, OPUS, FLASH_FREE]
     assert aggregation.choose(models, "all") == ([0, 1, 2, 3], "all")
     assert aggregation.choose(models, "claude_first") == ([0, 2], "claude")
-    assert aggregation.choose([AGENT, FLASH, FLASH_FREE], "claude_first") == ([0, 1, 2], "all")
-    assert aggregation.choose([AGENT, HAIKU, FLASH], "claude_first") == ([0, 1, 2], "all")  # Haiku is not counted
+    # Architect, 16 Nov: one Claude forecast is submitted alone; Flash only with 0 Claude forecasts.
+    assert aggregation.choose([AGENT, FLASH, FLASH_FREE], "claude_first") == ([0], "claude")
+    assert aggregation.choose([FLASH, OPUS, FLASH_FREE], "claude_first") == ([1], "claude")
+    assert aggregation.choose([AGENT, HAIKU, FLASH], "claude_first") == ([0], "claude")  # Haiku is not counted
+    assert aggregation.choose([HAIKU, FLASH], "claude_first") == ([0, 1], "all")
+    assert aggregation.choose([FLASH, FLASH_FREE], "claude_first") == ([0, 1], "all")
     with pytest.raises(ValueError):
         aggregation.choose(models, "flash_first")
 
@@ -131,9 +135,16 @@ def test_binary_two_claude_two_flash_ignores_flash():
     assert record["shadow"]["mean"] == pytest.approx((0.70 + 0.10 + 0.60 + 0.12) / 4)
 
 
-def test_binary_one_claude_two_flash_uses_all():
+def test_binary_one_claude_two_flash_submits_claude_alone():
+    # Architect, 16 Nov: exactly one Claude forecast -> Claude alone (no Flash mix).
     result, record = _run(_bot("claude_first"), _binary(), [(OPUS, 0.70), (FLASH, 0.10), (FLASH_FREE, 0.12)])
-    assert result == pytest.approx(adjust_binary([0.70, 0.10, 0.12]))
+    assert result == pytest.approx(adjust_binary([0.70]))
+    assert record["aggregation"] == {"mode": "claude_first", "used": "claude", "claude_forecasts": 1, "forecasts": 3}
+
+
+def test_binary_no_claude_uses_flash():
+    result, record = _run(_bot("claude_first"), _binary(), [(FLASH, 0.10), (FLASH_FREE, 0.20)])
+    assert result == pytest.approx(adjust_binary([0.10, 0.20]))
     assert record["aggregation"]["used"] == "all"
 
 
@@ -158,12 +169,12 @@ def test_multiple_choice_two_claude_two_flash_ignores_flash():
     assert record["aggregation"]["used"] == "claude"
 
 
-def test_multiple_choice_one_claude_uses_all():
+def test_multiple_choice_one_claude_submits_claude_alone():
     tagged = [(AGENT, _options(0.7, 0.2, 0.1)), (FLASH, _options(0.1, 0.1, 0.8)), (FLASH, _options(0.1, 0.2, 0.7))]
     result, record = _run(_bot("claude_first"), _mc(), tagged)
-    expected = median_multiple_choice([v for _, v in tagged])
+    expected = median_multiple_choice([tagged[0][1]])
     assert [o.probability for o in result.predicted_options] == pytest.approx([o.probability for o in expected.predicted_options])
-    assert record["aggregation"]["used"] == "all"
+    assert record["aggregation"]["used"] == "claude"
 
 
 @pytest.mark.parametrize("make", [_numeric, _discrete], ids=["numeric", "discrete"])
@@ -178,12 +189,13 @@ def test_numeric_two_claude_two_flash_ignores_flash(make):  # type: ignore[no-un
 
 
 @pytest.mark.parametrize("make", [_numeric, _discrete], ids=["numeric", "discrete"])
-def test_numeric_one_claude_two_flash_uses_all(make):  # type: ignore[no-untyped-def]
+def test_numeric_one_claude_two_flash_submits_claude_alone(make):  # type: ignore[no-untyped-def]
     q = make()
     tagged = [(OPUS, _claude_high(q)), (FLASH, _flash_low(q)), (FLASH_FREE, _flash_low(q))]
     result, record = _run(_bot("claude_first"), q, tagged)
-    assert _same_cdf(result, combine_numeric([v for _, v in tagged], q))
-    assert record["aggregation"]["used"] == "all"
+    assert _same_cdf(result, combine_numeric([tagged[0][1]], q))
+    assert not _same_cdf(result, combine_numeric([v for _, v in tagged], q))
+    assert record["aggregation"]["used"] == "claude"
 
 
 def test_untagged_forecasts_count_as_not_claude():
@@ -234,17 +246,17 @@ def _median_combine(snapshot, values):  # type: ignore[no-untyped-def]
 def test_rule_rows_simulate_claude_first():
     records = [
         _record(1, "binary", 0.40, [(AGENT, 0.8), (OPUS, 0.6), (FLASH, 0.1), (FLASH, 0.1)]),  # Claude-only -> 0.7
-        _record(2, "binary", 0.30, [(AGENT, 0.8), (FLASH, 0.1), (FLASH, 0.1)]),  # 1 Claude -> submitted
+        _record(2, "binary", 0.30, [(AGENT, 0.8), (FLASH, 0.1), (FLASH, 0.1)]),  # 1 Claude -> Claude alone (16 Nov)
         _record(3, "binary", 0.50, [(AGENT, 0.8), (OPUS, 0.6)], started="2026-10-10T00:00:00+00:00"),  # before: left out
         _record(4, "binary", 0.50, [(AGENT, 0.8), (OPUS, 0.6)]),  # not resolved: left out
     ]
     resolutions = {1: "yes", 2: "no", 3: "yes"}
     rows = aggregation.rule_rows(records, resolutions.get, SWITCH_ON, combine=_median_combine)
-    assert [(r["post"], r["used"], r["claude"]) for r in rows] == [(1, "claude", 2), (2, "all", 1)]
+    assert [(r["post"], r["used"], r["claude"]) for r in rows] == [(1, "claude", 2), (2, "claude", 1)]
     import math
 
     assert rows[0]["submitted"] == pytest.approx(math.log(0.40)) and rows[0]["claude_first"] == pytest.approx(math.log(0.7))
-    assert rows[1]["claude_first"] == rows[1]["submitted"]
+    assert rows[1]["claude_first"] == pytest.approx(math.log(0.2))  # Claude alone 0.8, resolved no
 
 
 def _rows(n: int, gain: float, binary_gain: float, binary: int = 5) -> list[dict]:
@@ -293,7 +305,7 @@ def test_health_check_reports_the_rule():
 def test_rule_rows_score_all_separately():
     records = [
         _record(1, "binary", 0.70, [(AGENT, 0.8), (OPUS, 0.6), (FLASH, 0.1), (FLASH, 0.1)]),  # submitted = claude_first
-        _record(2, "binary", 0.10, [(AGENT, 0.8), (FLASH, 0.1), (FLASH, 0.1)]),  # 1 Claude: all
+        _record(2, "binary", 0.10, [(AGENT, 0.8), (FLASH, 0.1), (FLASH, 0.1)]),  # 1 Claude
     ]
     rows = aggregation.rule_rows(records, {1: "yes", 2: "no"}.get, SWITCH_ON, combine=_median_combine)
     import math

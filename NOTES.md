@@ -106,7 +106,8 @@ predictions (currently 1 × 5 = 5), then:
 
 **Aggregation mode (8 Nov 2026, `aggregation.py`; ON since 14 Nov: `bot_config.AGGREGATION_MODE = "claude_first"`).**
 `"claude_first"` combines only the Claude Opus forecasts (agent1, agent2, plain Opus 5.5,
-Opus fallbacks; not Haiku) when 2+ were read, the same way as now; fewer than 2: everything.
+Opus fallbacks, Fable 5.2; not Haiku) when 1+ was read (architect, 16 Nov; was 2+): exactly one
+Claude forecast is submitted alone (no Flash mix); 0 Claude forecasts: everything (Flash).
 Flash still runs, is saved and scored; the free shadow variants still use every forecast; a
 Claude-only combine that fails falls back to everything. The private question log notes the
 choice (`aggregation`: mode, used, Claude forecasts, forecasts). Test Bot input
