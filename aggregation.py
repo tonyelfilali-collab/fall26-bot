@@ -9,6 +9,8 @@ are combined into the submitted one. bot_config.AGGREGATION_MODE.
   median + floor, numeric pointwise median + 5% uniform), then the same
   clipping and checks. Fewer than 2: everything, as now. Flash keeps running
   and is saved and scored (the question log keeps every forecast).
+  Architect, 16 Nov: CLAUDE_FIRST_MIN is 1: with exactly one Claude forecast,
+  that one alone is submitted (no Flash mix); Flash only with 0 Claude forecasts.
   Fable 5.2 (12 Nov) counts as a Claude forecast.
   Haiku (the last Claude backup) does not count as a Claude forecast here.
 
@@ -37,7 +39,7 @@ import statistics
 from typing import Any, Callable, Iterable
 
 MODES = ("all", "claude_first")
-CLAUDE_FIRST_MIN = 2
+CLAUDE_FIRST_MIN = 1  # architect, 16 Nov (was 2): one Claude forecast is submitted alone
 
 # The forecast kinds the live combine sees (lab._live_predictions).
 LIVE_KINDS = ("planned", "round2", "quick", "emergency", "backup")
@@ -101,7 +103,8 @@ def rule_rows(records: Iterable[dict], resolution_of: Callable[[Any], str | None
     """One row per agent-era resolved question (latest submitted log):
     {"post", "type", "submitted", "claude_first", "used", "claude"}.
     "claude_first" = the score claude_first would have had: the Claude-only
-    combine when it had 2+ Claude forecasts, else the submitted forecast."""
+    combine when it had CLAUDE_FIRST_MIN+ Claude forecasts (1 since 16 Nov),
+    else the submitted forecast."""
     from scoreboard import forecast_score, live_score, period_of
 
     rows = []
@@ -185,7 +188,7 @@ def rule_markdown(result: dict, rows: list[dict]) -> str:
         f"(need > +{RULE_MIN_GAIN_ALL:.2f}): {'yes' if c['gain_all'] else 'no'}",
         f"- Binary ({result['binary_questions']}): {num(result['gain_binary'])} per question "
         f"(need >= {RULE_MIN_GAIN_BINARY:+.2f}): {'yes' if c['gain_binary'] else 'no'}",
-        f"- Claude-only combine used on {result['claude_only_questions']} question(s) (2+ Claude forecasts); the rest = submitted",
+        f"- Claude-only combine used on {result['claude_only_questions']} question(s) ({CLAUDE_FIRST_MIN}+ Claude forecasts); the rest = submitted",
         f"- **Rule {'MET' if result['met'] else 'not met'}**",
         "", f"**Monitor (claude_first ON since 14 Nov):** claude_first minus \"all\" (every live forecast combined): "
         f"{num((result.get('monitor') or {}).get('gain_vs_all'))} per question on {result['questions']} question(s); "

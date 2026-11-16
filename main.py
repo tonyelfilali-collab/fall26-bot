@@ -611,7 +611,7 @@ class FallBot2026(ForecastBot):
         if not _in_shadow.get():
             self.__dict__.setdefault("_live_predictions", {})[id(question)] = list(predictions)
             # Aggregation mode (aggregation.py): claude_first combines only the
-            # Claude forecasts when 2+ were read; the shadows below still see all.
+            # Claude forecasts when 1+ was read (16 Nov; was 2+); the shadows below still see all.
             chosen = self._chosen_for_mode(question, predictions)
             if chosen is not predictions:
                 try:

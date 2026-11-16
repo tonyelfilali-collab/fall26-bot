@@ -858,8 +858,11 @@ def report() -> tuple[bool, str]:
         ("X: on binary the Flash-free result differs from the all-forecast one (Opus 70%, Flash 20%)",
          all(not i["final_is_all"] and i["final_binary"] is not None and i["final_binary"] > 0.6
              for i in infos("X", True) if i["type"] == "binary")),
-        ("X: MiniBench (1 Claude + Flash x2): fewer than 2 Claude -> every forecast combined, as now",
-         all(i["aggregation"] == "all" and i["final_is_all"] and i["submitted"] for i in infos("X", False))),
+        ("X: MiniBench (1 Claude + Flash x2): Claude alone submitted, no Flash mix (architect, 16 Nov)",
+         all(i["aggregation"] == "claude" and i["final_is_claude"] and not i["final_is_all"] and i["submitted"]
+             for i in infos("X", False))),
+        ("B ($10 left, live claude_first): one Opus per question -> Opus alone submitted on every question (16 Nov)",
+         all(i["aggregation"] == "claude" and i["final_is_claude"] and i["opus"] == 1 and i["submitted"] for i in infos("B"))),
         ("Y (claude_first, two seasonal agents): seasonal agent + agent2 combined only; MiniBench agent + plain Opus only",
          all(i["aggregation"] == "claude" and i["final_is_claude"] and i["flash"] == 2 and i["submitted"] for i in infos("Y"))
          and all(i["agent"] == 1 and i["agent2"] == 1 for i in infos("Y", True))),
