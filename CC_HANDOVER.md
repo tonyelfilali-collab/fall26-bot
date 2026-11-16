@@ -1,153 +1,170 @@
 # CC_HANDOVER.md — for a fresh Claude Code session
 
-Updated 21 Oct 2026, at the end of the third session (watch-and-report, 7–21 Oct). Section 1 lists
-what changed since 7 Oct; section 6 the items waiting for the architect.
-**Local folder: `~/code/fall26-bot`** (outside iCloud). Open Claude Code there. Local Python must be
-**3.11** (`poetry env use python3.11`, `poetry install`); on 3.14 ~51 tests fail.
-**Helper scripts (not in the repo): `~/code/fall26-tools/`** (daily report, MiniBench section,
-slow-Flash watcher, `slow_flash_scan.py` for any date range; past daily reports in `reports/`;
-watcher alarms in `watch/`). Never keep scripts in the session scratchpad: macOS clears `/private/tmp` after
-~3 days (it deleted some on 6 Oct).
-**Private notes (not in the public repo):** the architect's HANDOVER.md and ARCHITECT_LOG.md live in
-fall26-data `notes/`; Tony's upload copies are in `~/code/fall26-private-notes/`. Never put private
-notes or anything about Tony in this public repo (CLAUDE.md rule).
+Updated **16 Nov 2026, ~16:00 UTC** (end of the session that ran 14–16 Nov). A new session should be
+able to pick up from this file alone. Read it with: `CLAUDE.md` (the rules; they override this file),
+NOTES.md "What's live" (every switch, value and PR), the progress log at the bottom of `PLAN.md`.
 
-Read with: `CLAUDE.md` (rules), NOTES.md "What's live" (every switch, value and PR), the progress log
-at the bottom of `PLAN.md`, `REPORT.md`. Tony is a novice who relays an architect; explain in plain,
-short language.
+- **Local folder: `~/code/fall26-bot`** (outside iCloud). Local Python must be **3.11**
+  (`poetry env use python3.11`, `poetry install`). Tests: `poetry run pytest -q` (~1,080, no network).
+- **Helper scripts (not in the repo): `~/code/fall26-tools/`** (old daily-report scripts, watcher
+  alarm files in `watch/`, past reports in `reports/`). Keep scripts there, never in the session
+  scratchpad (macOS clears `/private/tmp` after ~3 days).
+- **Private notes** (architect's notes, reviews, scores, forecasts) live only in the private repo
+  `tonyelfilali-collab/fall26-data`. This repo is public: no research, forecasts, reasoning,
+  secrets or private notes here or in any log.
+- The owner is a novice who relays an architect. Plain, short language; give a paste-ready message
+  for the architect with every report. Always pass `-R tonyelfilali-collab/fall26-bot` to `gh`.
 
-## 1. Current state (21 Oct)
+## 1. What's live (16 Nov)
 
-- **New since 7 Oct (session 3):** 0 missed questions every day 7–20 Oct (audit: seasonal and
-  MiniBench all forecast; 19 Oct MiniBench burst of 36, all forecast). Paid Flash $0.00–$0.35/day;
-  key **$2.70 of $8 used on 20 Oct** = ledger. **AskNews answers 402 on every call since 12 Oct
-  09:03 UTC** (free news used instead; health warns daily, never red). **Replay lab grew to 14–15 min
-  and timed out on 20 Oct** (it shares the live queue: see section 6). PR #135: Credit check method.
-- **Last merged PR: #136 (this handover). No open PRs.** `main` requires the "Validate workflows" check (ruleset).
-- **Live:** `run_bot_on_tournament.yaml`, started every 10 min by cron-job.org; `BOT_ENABLED=true`.
-  Lineup `gemini-free` (free AI Studio key: 3.6/3.7/3.8/3.5 Flash forecasters, Flash-Lite helpers).
-- **Paid-Flash fallback ON** (since 1 Oct): a Flash slot whose free chain fails makes ONE paid call to
-  OpenRouter `google/gemini-3.6-flash`. Paid only up to 3 real forecasts per question; extra slots
-  free only; $0.10/question; $1.00/UTC day; **MiniBench paid only while the day's paid spend is under
-  $0.50** (each call reserves $0.03, so refusals start at ~$0.47). Fail closed. Alert under $2 left.
-  Key limit **$25** (raised from $8 to $15 on 21 Oct, Credit check 39681912561; to $25 on 22 Oct, Credit check 39776533155); used $0.95 on 7 Oct morning = spend ledger.
-- **No credits this season** (Metaculus, 5 Oct): credits lineup OFF all season, no cleanup.
-- Backup chain (Nemotron x2, then Flash-Lite), extra forecasts on spare quota, follow-up search,
-  Wikipedia, official data + **window baseline** shadow, run timing caps, consistency shadow, Replay lab
-  (nightly, started by the bot), install cache, daily Keepalive, health checks: see NOTES.md.
-- **MiniBench round 33129** (5–23 Oct) is live: 45 questions on 5 Oct, 10 on 6 Oct, **0 missed**.
-- Failed calls now record the HTTP status code + provider error type (#132; ledger + private log).
-- Health's "last successful run" check now also reads the plain run list (#133; GitHub's
-  success-only list went stale twice: false reds on 6 and 7 Oct).
+- **Live workflow:** `run_bot_on_tournament.yaml`, started every 10 min at **:x2** by **cron-job.org**
+  (workflow_dispatch); GitHub's own schedule is only a backup. Master switch: repo variable
+  `BOT_ENABLED=true` (emergency stop = `false`). Seasonal and MiniBench in one run queue.
+- **MiniBench round 33169** (16 Nov – 4 Dec, found by the slug `minibench`).
+- **Lineup:** `ACTIVE_LINEUP = "gemini-free"` with `FRONTIER_ENABLED = True` (frontier.py):
+  - Seasonal: Claude agent (Opus 5.5 + web search/fetch) + agent2 + plain Fable 5.2 + Flash x2.
+    **Pending (#212):** + plain Opus 5.5 (see section 3).
+  - MiniBench: agent + plain Opus + Fable + Flash x2 (agent only within the MiniBench rules below).
+  - GPT-5.6 Sol: OFF (`FRONTIER_GPT_ENABLED = False`).
+- **Aggregation: `AGGREGATION_MODE = "claude_first"`**, `CLAUDE_FIRST_MIN = 1` (#211): when 1+ Claude
+  forecasts were read, only the Claude forecasts are combined (one Claude forecast is submitted alone);
+  Flash is used only when there is no Claude forecast. Haiku never counts as a Claude forecast.
+- **Claude caps (frontier.py):** $20 per UTC day with two seasonal agents; per question $1.50 seasonal
+  / $0.60 MiniBench, raised while the agent runs ($5.30 seasonal with two agents, $1.60 MiniBench),
+  each + $0.72 while plain Fable runs (full mode only). MiniBench day limit = $20 − one seasonal
+  question's reservation ($14.70 with Fable; $14.40 once #212 is merged).
+  - MiniBench agent: only under $5 of MiniBench's own day spend and $10 of the whole day's;
+    **lifted in the last 48 hours of a cycle** (#210).
+  - Step-downs: "low" under $12 of the cycle left, "minimal" under $5, **only while more than 48
+    hours of the cycle remain**. In the last 48 hours: full until the credit runs out (#199).
+  - Pacing: over the line ($200 × share of the cycle gone) + $10 → MiniBench drops the agent;
+    + $20 → seasonal also drops agent2.
+- **Nemotron-only hold (#216):** if only the free Nemotron backup answered and the question closes after
+  the next 00:30 UTC, nothing is submitted; a later run retries. Inside 45 min of the close every run
+  still submits whatever it has (never miss).
+- **Dossier:** official data line (FRED / CoinGecko / Yahoo; Yahoo answers 429) + **typical change line**
+  (#217: "Typical change over <horizon>: 10-90% range of past moves = …", horizon = latest data date →
+  resolution). Free news (AskNews is 402, see section 6), Wikipedia, follow-up search.
+- **Paid OpenRouter:** paid Flash fallback ON (`google/gemini-3.6-flash`, $0.10/question, $1.00/UTC day,
+  MiniBench $1.00); Kimi shadow ON (`moonshotai/kimi-k3`, pinned `relace/fp4`, $0.25/question,
+  $1.50/day, never submitted); GPT shadow OFF.
+- **Free shadows (never submitted):** Nemotron shadow forecaster, stretch 1.2 / 1.5, mean variants,
+  window baseline, window blend, consistency, referee (Opus via the Claude budget).
+- **Queue watchdog** (`queue_watchdog.yaml`, every 10 min at **:x0** by cron-job.org, GitHub schedule
+  as backup): cancels a never-started live run after 10 min; since #218 it force-cancels when GitHub
+  refuses the plain cancel, and logs HTTP codes. Opens one alert issue a day when it acts.
+- **Other automation:** daily health check (started by the first live run after 06:00 UTC), Keepalive
+  05:00 UTC, Replay lab (~05:00 UTC, started by the bot, own queue), Scoreboard (Mon 06:30 UTC;
+  daily 06:45 schedule check; GitHub often runs these hours late), Unit tests + "Validate workflows"
+  on every PR (required check on `main`).
 
-## 2. Rules
+## 2. Money
 
-- **Merge tiers: CLAUDE.md "Merging"** (A: tests → merge; B: + replay Test Bot on 4 types; C: + real
-  free-model Test Bot after 00:00 UTC, merge only after "the architect says merge"). Always: the
-  "Validate workflows" check, next live run checked, revert if red, one forecast-path merge between
-  two live runs, a progress-log row per merge, never `--admin`.
-- Spend (architect, 21 Oct; CLAUDE.md): never buy credits. Allowed paid use: Claude via
-  `ANTHROPIC_API_KEY` (Console credits from Tony's Max plan, PR 2 caps), GPT-5.6 Sol on OpenRouter
-  (seasonal only, PR 2 caps) and paid Flash within its caps. Spend check: key usage = key usage at the
-  start of the day + today's spend; if above, or OpenRouter above $3.50 in a UTC day: stop everything
-  and report.
-- A notes PR at least every 21 days (standing rule).
-- Public logs and this repo: no forecast values, research or reasoning; nothing about Tony.
+### Claude (Anthropic Console, `ANTHROPIC_API_KEY`, workspace "fall26-bot", no card, auto-reload OFF)
+- **Cycles run 18th 00:00 UTC → 18th** (`CLAUDE_CYCLE_RESET_DATE = "2026-11-18"`), **$200 per cycle**
+  (`CLAUDE_BUDGET_PER_CYCLE`). Two credits overlap now: the old one ($39.58 left on 16 Nov, expires
+  18 Nov 00:00 UTC) and a new $200 (granted 15 Nov, expires 18 Dec 00:00 UTC).
+- **We are in the last 48 hours of the 18 Oct – 18 Nov cycle:** mode "full", ~$27 of the cycle
+  budget left at 15:32 UTC 16 Nov (16 Nov spend $13.74 by mid-afternoon).
+- Ledgers (fall26-data): `status/claude_spend.json` (live: days, cycles, minibench_days,
+  credit_off, credit_errors) and `status/claude_lab_spend.json` (Replay lab, written only by the lab;
+  counts in the cycle spend and pacing).
+- **Credit error rule:** never retry a "credit balance is too low" error. After one, Claude is off for
+  1 hour, then ONE tiny `claude-haiku-5-5` test call (max_tokens 5) per hour; when it answers, Claude is
+  back on. Failed calls are never charged.
+- The daily health check shows each day's Claude $, the cycle total and the mode.
 
-## 3. Daily routine and watchers (restart all in a new session)
+### OpenRouter (`OPENROUTER_API_KEY`)
+- **New key since 15 Nov 23:31:40 UTC** (the owner's other account, $10 of credit). The ledger note
+  is in fall26-data `status/spend.json` `key_changes`; `key_day_start["2026-11-16"] = 0.00`.
+  **Key limit: should be $10**; on 16 Nov the key still showed a $25 limit; the owner was asked to
+  set it to $10 on openrouter.ai (account credit is the real ceiling either way).
+- **Spend check (CLAUDE.md):** Credit check workflow usage = `key_day_start[today]` + `days[today]`.
+  If usage is ever above that, or OpenRouter spend is above $3.50 in a UTC day: **stop everything**
+  (`BOT_ENABLED=false`) and tell the architect. 16 Nov so far: $1.01.
+  ```bash
+  gh api repos/tonyelfilali-collab/fall26-data/contents/status/spend.json -q .content | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); t=max(d["key_day_start"]); print(t, round(d["key_day_start"][t]+d["days"].get(t,0),6))'
+  ```
+- Free models: under 600 requests a day. Free Gemini key: Flash 20/day, Flash-Lite 500/day, every
+  attempt counts (don't rerun Gemini Test Bots casually).
+- Never buy credits, never turn on auto-reload (Anthropic or OpenRouter). No Metaculus credits.
 
-Run with the Bash tool, `run_in_background: true`. Re-arm a watcher after it fires. macOS deletes
-the background output files after a few days, so each watcher also writes its alarm to
-`~/code/fall26-tools/watch/` (red.log, slow_flash.log): read those if a watcher ends with no output.
+## 3. Scheduled and pending items (exact times, pass conditions)
 
-**a) Red live run or health check:**
+1. **#212 — seasonal plain Opus (Tier C, pre-approved by the architect, 16 Nov).** Branch
+   `seasonal-plain-opus`, rebased on main, unit tests green (1074), rehearsal 79/79.
+   - **At 00:04 UTC 17 Nov** (after the Claude day reset; only when no live run is queued/waiting):
+     `gh workflow run test_bot.yaml -R tonyelfilali-collab/fall26-bot --ref seasonal-plain-opus -f lineup=frontier-agents2 -f frontier_path=seasonal`
+     (it shares the live queue and charges the live Claude ledger).
+   - **Pass:** all 4 seasonal types get agent + agent2 + plain Opus + Fable; all 4 Claude forecasts
+     parsed on each; no cap overrun; all 4 submitted.
+   - **If green:** merge #212 (pre-approved), check the next live run's lineup line says
+     "seasonal plain Opus on" and is green, add a PLAN row, report. If red: read the log, one fix
+     at most, then report (stop after 2 failures).
+2. **18 Nov 00:00 UTC — cycle switch check.** The first live run after 00:00 UTC 18 Nov should show
+   the new cycle: "full ($200.00 of the cycle budget left)" or close to it, not "last 48 hours". Check
+   `cycles` in `status/claude_spend.json` gets a `2026-11-18` entry. If Claude hits a credit error
+   instead, the 1-hour safety applies; tell the architect (the new $200 credit should cover it).
+3. **Monday report (next: Mon 23 Nov, ~06:00 UTC health check).** Health shows standings: rank,
+   score, prize shown, and the **top-50 line** (#213: "#50 score / prize; us rank / score / prize;
+   gap and its change since last Monday"). 16 Nov: rank 112, score 212.28, prize shown $102.
+   Send the architect the line.
+4. **claude_first monitor.** Every Scoreboard writes fall26-data `status/claude_first.json`; health
+   shows the line. Alert the architect at once if, at 25+ agent-era resolved questions, claude_first
+   is worse than "all" by more than 0.05 per question (`aggregation.MONITOR_*`).
+5. **Stretch report at 30 (#214).** Every Scoreboard writes `status/stretch_monitor.json` (agent-era
+   resolved binary: k = 1.2 / 1.5 vs submitted, logged shadows, leave-one-out). Health warns
+   "report due: tell the architect" at 30 questions; then send the private numbers (from the file /
+   the private Scoreboard report in fall26-data `scoreboard/`). Monitor only: no live change.
+6. **Typical change line, first real use (#217):** confirm on the first live numeric/discrete question
+   matched to a data series (log line "typical change line added"); report it.
+7. **Numeric review (done 16 Nov):** fall26-data `reviews/numeric_2026-11-16.md`; its two suggestions
+   became #216 and #217.
+8. **Standing rules:** Kimi re-pin only after 24 h of every call failing (pre-approved: re-pin to
+   Relace's current endpoint, replay Test Bot, merge, tell the architect); a notes PR into `main` at
+   least every 21 days.
+
+**Open PRs:** #212 only (waiting for item 1). Everything else from 14–16 Nov is merged (#199, #208–
+#211, #213, #214, #216, #217, #218). Issue #215 is the watchdog's 16 Nov alert (open; close it once the owner has seen it).
+
+## 4. Watchers and timers (restart them in a new session)
+
+Session timers (CronCreate) die with the session: **re-create the #212 one** if the new session starts
+before 00:04 UTC 17 Nov:
+- CronCreate, one-shot, `4 0 17 11 *` (local time = UTC on this Mac): "Run the #212 Test Bot as in
+  CC_HANDOVER.md section 3 item 1".
+
+Waiting for a run without blocking: Bash with `run_in_background: true`, an until-loop, e.g. the
+first live run after a merge:
 ```bash
-R=tonyelfilali-collab/fall26-bot; since=$(date -u +%FT%TZ); while true; do for wf in run_bot_on_tournament.yaml health.yml; do bad=$(gh run list -R $R -w $wf -L 30 --created ">$since" --json databaseId,conclusion,event,url,createdAt -q '.[] | select(.conclusion=="failure" and .event!="pull_request") | "\(.createdAt) \(.url)"' 2>/dev/null | head -1); if [ -n "$bad" ]; then echo "RED $wf $bad" | tee -a ~/code/fall26-tools/watch/red.log; exit 0; fi; done; sleep 300; done
+R=tonyelfilali-collab/fall26-bot; after="<ISO time of the merge>"; until gh run list -R $R -w run_bot_on_tournament.yaml -L 4 --json createdAt,status --jq ".[] | select(.createdAt > \"$after\" and .status==\"completed\") | .status" | grep -q .; do sleep 30; done; gh run list -R $R -w run_bot_on_tournament.yaml -L 4 --json databaseId,createdAt,conclusion,headSha --jq ".[] | select(.createdAt > \"$after\") | \"\(.databaseId) \(.conclusion) \(.headSha[:7])\""
 ```
-On red: find the failed step (`gh api repos/$R/actions/runs/<id>/jobs`, then the job's annotations).
-Seen so far: PyPI timeout (fixed by the install cache), GitHub runner outage ("job was not acquired
-by Runner"; check githubstatus.com), stale GitHub answer in health (fixed, #133).
+Red live run or health check: check the failed step's annotations (`gh api repos/$R/actions/runs/<id>/jobs`).
+A tool call can't `sleep` in a chain; use an until-loop or `run_in_background`.
 
-**b) Slow Flash:** `python3 -u ~/code/fall26-tools/slow_flash_watch.py 2>&1 | tee -a ~/code/fall26-tools/watch/slow_flash.log` (exits on a NEW log with a Flash
-forecast over 360 s; skips existing logs). 6 Oct hit (45940) was a hung connection cut at minute 9,
-not a slow model: report such cases, the 9-minute cut stays. Missed alarm? `python3
-~/code/fall26-tools/slow_flash_scan.py <YYYY-MM-DD>` lists every slow Flash since that date.
-Also check for **cancelled** runs: a live run cancelled with no job is the shared queue (normal); a
-Replay lab "cancelled" after 15 min is its timeout (section 6).
+## 5. Daily routine
 
-**c) Daily report** (architect asks for it every day; run after 00:10 UTC for the previous UTC day):
-```bash
-python3 ~/code/fall26-tools/paid_daily_report.py <YYYY-MM-DD>; python3 ~/code/fall26-tools/minibench_section.py <YYYY-MM-DD>
-```
-The first gives paid calls, $, failed calls by HTTP status, $/question, key remaining (fresh Credit
-check), days left; the second starts a Tournament info audit and gives MiniBench + seasonal opened /
-submitted / missed, forecasts per question, sources, when paid refusals started. **Done up to 19 Oct
-(in `~/code/fall26-tools/reports/`); next due: 20 Oct.** Always confirm key usage = ledger (section 4).
-Days that are already reported can be run late, one at a time (each starts a workflow run).
+- After each live run of interest: `gh run view <id> -R … --log | grep "fall26 - "` (public lines:
+  question id, status, cost) and the "Frontier lineup:" line (mode, $ left, agents, Fable).
+- Daily: health check result; Claude $ for the day; OpenRouter spend check (section 2); any missed
+  question (`gh workflow run tournament_info.yaml -R … -f audit=true` is the source of truth).
+- Merge tiers (CLAUDE.md): A tests → merge; B + replay Test Bot on 4 types; C + real free-model
+  Test Bot just after 00:00 UTC and "the architect says merge" (unless pre-approved). One
+  forecast-path merge between two live runs; check the next live run; PLAN.md row per PR; never `--admin`.
+- Test Bot queues: `frontier*`, `gemini-free` and paid-shadow tests share the live `forecast-bot`
+  queue (one dispatch at a time, only when nothing is waiting, or a live run gets cancelled);
+  `replay*` / rehearsal lineups use `test-bot-no-gemini` (safe any time).
 
-**d) Missed questions:** the **Tournament info audit** (`gh workflow run tournament_info.yaml -R $R -f
-audit=true`; raw `/api/posts/` listing + library audit) is the source of truth: "closed without our
-forecast: N". Run it during MiniBench bursts (every ~2 h until 9 Oct was the plan) and tell the
-architect at once about any miss. Don't trust ad-hoc log-search watchers (two false alarms on 5–6 Oct
-came from my own search bugs).
+## 6. Known quirks
 
-Helper after a merge (first live run after a time):
-```bash
-R=tonyelfilali-collab/fall26-bot; after="<ISO time>"; until id=$(gh run list -R $R --workflow run_bot_on_tournament.yaml --created ">$after" -L 20 --json databaseId,createdAt --jq 'sort_by(.createdAt) | .[0].databaseId // empty') && [ -n "$id" ]; do sleep 30; done; gh run watch $id -R $R >/dev/null; gh run view $id -R $R --json conclusion,url -q '.conclusion+" "+.url'
-```
-
-## 4. OpenRouter usage check (key limit $25 since 22 Oct; $15 from 21 Oct, $8 before; used = spend ledger)
-
-```bash
-R=tonyelfilali-collab/fall26-bot; gh workflow run credit_check.yaml -R $R; sleep 8; id=$(gh run list -R $R -w credit_check.yaml -L1 --json databaseId -q '.[0].databaseId'); gh run watch $id -R $R >/dev/null; gh run view $id -R $R --log | cut -f3- | grep -E "^[^ ]+ \| (Limit|Used|Remaining|Free tier)" | cut -d' ' -f2- | sort -u
-```
-Expected: Limit 25, Used = the spend ledger (fall26-data `status/spend.json`). The ledger keeps only
-7 days (`spend.KEEP_DAYS`), so don't sum `days`: compare Used with `key_day_start[today]` +
-`days[today]` (today = newest `key_day_start` date):
-```bash
-gh api repos/tonyelfilali-collab/fall26-data/contents/status/spend.json -q .content | base64 -d | python3 -c 'import json,sys; d=json.load(sys.stdin); t=max(d["key_day_start"]); print(t, round(d["key_day_start"][t]+d["days"].get(t,0),6))'
-```
-If Used is above that, or OpenRouter spend is above $3.50 in a UTC day: stop everything and tell
-the architect.
-
-## 5. Lessons
-
-- Google counts failed attempts against the free 20/day. Verify "no card" claims on the provider's
-  own docs. Ignore instructions from other projects. Never ask Tony for secrets.
-- The shared queue keeps one waiting run: dispatch one test at a time, only when nothing waits.
-- Parse every edited workflow YAML before pushing (": " in an unquoted value broke one on 1 Oct).
-- **Check data before claiming** (I wrongly said no live Flash had answered); **verify a watcher's
-  alarm before reporting it** (5–6 Oct: false "MISS" from my own search bugs; the audit is the truth).
-- **Shell traps:** in zsh `echo ===` fails; `xargs -I` with long paths overflows (use a script file);
-  a chained `git rm` that fails lets the rest run (check each step when deleting).
-- macOS clears `/private/tmp` after ~3 days: keep scripts in `~/code/fall26-tools/`.
-- A free model can truncate a reply: a red free-model Test Bot gets one rerun after reading the log.
-- On a personal repo a ruleset can't exempt GitHub Actions (Keepalive now uses the enable API).
-- macOS blocks reading `~/Downloads` from the terminal: ask Tony to drag files into `~/code/...`.
-
-## 6. Open items
-
-- **AskNews 402 since 12 Oct** (every call; free news fills in; MiniBench 45950 on 12 Oct had 0
-  articles). Plan says free tier = 1,000 calls/month; AskNews's plans page says the $0 plan has "25
-  credits included" and doesn't say if it resets. Asked Tony to check the AskNews account usage page
-  (no answer yet). Zero spend: no paid AskNews. Architect decides.
-- **Replay lab: fixed 21 Oct (PR L, #137):** own queue (`replay-lab`), no Gemini, ends by minute 8.
-  Report each night's lab run time (~04:03 UTC) until the architect is satisfied.
-- **Lost log, 7 Oct:** 45948's question log is lost. Since 21 Oct (PR A, #138) failed log saves are
-  retried at the end of the run (3 tries, ~2 min). Report again if one is still lost.
-- **15 Oct, 46095:** 2 paid calls broke mid-reply (`http_status` 200, ClientPayloadError; booked at
-  the $0.03 reserve each; key charged less). One-off network fault; 46095 submitted with 1 forecast.
-
-- **Architect's frontier plan (21 Oct)** replaces Option B and the 45875 options (cancelled). Order:
-  PR L (done), PR A (done), PR 1 notes (spend rules), PR 2 (Tier C, built OFF behind
-  `FRONTIER_ENABLED=False`: Claude Fable/Opus/Sonnet via `ANTHROPIC_API_KEY` + GPT-5.6 Sol + Flash;
-  budget `CLAUDE_BUDGET_PER_CYCLE`, caps, step-downs; replay rehearsal, then one real Test Bot; then
-  STOP and send the architect the branch name), PR 3 (switch ON after "merge" and a green live run;
-  a short report after each of the first 10 questions). Next after PR 3: a Claude web-search
-  research step to replace AskNews (the architect will send the prompt).
-- **The 6 Oct paid-call refusals** (22, 14:13–15:23 UTC, charged $0; 402 or 403): the next failure
-  will show the code (#132); report it.
-- MiniBench round 33129 runs to 23 Oct; watch the $0.50 limit and misses, then check the bot finds
-  the next round (Tournament info audit).
-- ~mid-Oct: first Replay lab results; Nemotron 2-week review. 19 Oct: Ubuntu change (we're pinned to
-  24.04, nothing to do). 31 Jan 2027: tokens expire.
+- **GitHub queued runs:** a live run can sit "queued" with no runner (16 Nov 14:22–15:12; 30 Oct).
+  Later runs still go; the watchdog now force-cancels it. GitHub also runs scheduled workflows
+  (Scoreboard, health backup) hours late: cron-job.org drives the important ones.
+- **AskNews 402** on every call (again since ~03:53 UTC 16 Nov; free tier used up): free news sources
+  fill in; architect: no change, no spend.
+- **Kimi provider blips:** single `relace/fp4` failures happen (31 Oct); not a reason to re-pin
+  (rule in section 3 item 8).
+- **Yahoo Finance answers 429:** the official data line skips stocks gracefully.
+- Free models sometimes truncate a reply: a red free-model Test Bot gets one rerun after reading the log.
+- A PR that edits PLAN.md conflicts with the next one merged: rebase, keep both rows.
+- Shell: zsh `echo ===` fails; macOS blocks reading `~/Downloads` from the terminal.
