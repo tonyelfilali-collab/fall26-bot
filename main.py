@@ -422,6 +422,33 @@ QUICK_FORECAST_PASSES = 3
 EMERGENCY_WINDOW = timedelta(minutes=45)
 QUICK_FORECAST_RETRY_WAIT_SECONDS = 30
 
+# Nemotron-only hold (architect, 16 Nov): when only the Nemotron backup
+# answered (any type) and the question closes after the next 00:30 UTC
+# (the daily reset is behind us by then), nothing is submitted: a later run
+# retries with fresh quotas. The last-chance window (EMERGENCY_WINDOW, every
+# run tries) still submits whatever we have, so no question is missed.
+NEMOTRON_HOLD_UNTIL = (0, 30)  # UTC hour, minute
+
+
+def next_hold_end(now: datetime) -> datetime:
+    """The next 00:30 UTC strictly after now."""
+    hour, minute = NEMOTRON_HOLD_UNTIL
+    end = now.astimezone(timezone.utc).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return end if end > now else end + timedelta(days=1)
+
+
+def holds_nemotron_only(close_time: datetime | None, now: datetime) -> bool:
+    """True: a Nemotron-only forecast is held (not submitted) because the
+    question closes after the next 00:30 UTC. Unknown close: never held."""
+    if close_time is None:
+        return False
+    close = close_time if close_time.tzinfo else close_time.replace(tzinfo=timezone.utc)
+    return close > next_hold_end(now)
+
+
+class NemotronOnlyHeld(RuntimeError):
+    """Only Nemotron answered and a later run (after 00:30 UTC) can retry."""
+
 # The forecaster chain for the forecast running in the current asyncio task.
 _planned_forecaster: contextvars.ContextVar = contextvars.ContextVar(
     "planned_forecaster", default=None
@@ -940,6 +967,8 @@ class FallBot2026(ForecastBot):
         self._store_finished(question, record)
         await asyncio.to_thread(self.planner.save)
         if len(valid_predictions) == 0:
+            if record.get("nemotron_held"):
+                raise NemotronOnlyHeld(f"Question {question.id_of_post}: only Nemotron answered; held for a later run")
             if exception_group is None:
                 raise RuntimeError(
                     f"Question {question.id_of_post}: no forecast could be made"
@@ -995,6 +1024,17 @@ class FallBot2026(ForecastBot):
             if valid:
                 record["emergency"] = f"{prefix}: nemotron"
                 logger.info(f"Question {question.id_of_post}: backup chain: {len(valid)} Nemotron forecast(s)")
+                if not in_window and holds_nemotron_only(question.close_time, datetime.now(timezone.utc)):
+                    # Architect, 16 Nov: never submit Nemotron alone while a run
+                    # after the next 00:30 UTC can still retry the question.
+                    record["emergency"] = f"{prefix}: nemotron only, held (closes after the next 00:30 UTC)"
+                    record["nemotron_held"] = True
+                    self.__dict__.setdefault("nemotron_held_posts", set()).add(question.id_of_post)
+                    logger.warning(
+                        f"Question {question.id_of_post}: only Nemotron answered; not submitted, "
+                        "a later run retries (closes after the next 00:30 UTC)"
+                    )
+                    return [], errors, None
                 return valid, errors, group
         time_left = quick_forecast_timeout(question.close_time)
         flash_lite = pool.emergency_forecasters(allow_reserve=in_window) if time_left != 0 else []
@@ -3184,6 +3224,14 @@ if __name__ == "__main__":
     if failures and runaway_ok and args.rehearsal == "runaway":
         # A runaway rehearsal: no forecast is expected; the caps held.
         print(f"{failures} question(s) got no forecast, as expected: every model timed out")
+        failures = 0
+    held = template_bot.__dict__.get("nemotron_held_posts", set())
+    if held:
+        print(f"{len(held)} question(s) held: only Nemotron answered, closes after the next 00:30 UTC; a later run retries")
+    if failures and args.exhaust_flash and held and failures <= len(held):
+        # The exhaust-flash rehearsal: test questions close far ahead, so the
+        # Nemotron-only hold (architect, 16 Nov) is the expected outcome.
+        print(f"Exhaust-flash rehearsal: {len(held)} Nemotron-only forecast(s) held, as expected")
         failures = 0
     if failures and args.real_regression:
         # A report run: failures are what the table is for.
