@@ -35,11 +35,14 @@ def test_cycle_start(today, start):
     assert frontier.cycle_start(today, RESET) == start
 
 
-def test_this_cycle_ends_17_nov():
+def test_cycles_run_18th_to_18th():
+    # Architect, 16 Nov: the old credit expires 18 Nov 00:00 UTC, the new one 18 Dec 00:00 UTC.
     reset = frontier.reset_date(bot_config.CLAUDE_CYCLE_RESET_DATE)
-    assert frontier.cycle_start(date(2026, 10, 21), reset) == date(2026, 10, 18)
+    assert frontier.cycle_start(date(2026, 11, 16), reset) == date(2026, 10, 18)
     assert frontier.cycle_start(date(2026, 11, 17), reset) == date(2026, 10, 18)
     assert frontier.cycle_start(date(2026, 11, 18), reset) == date(2026, 11, 18)
+    assert frontier.cycle_start(date(2026, 12, 17), reset) == date(2026, 11, 18)
+    assert frontier.cycle_end(date(2026, 11, 18), reset) == date(2026, 12, 18)
 
 
 def test_cycle_start_in_short_months():
@@ -307,7 +310,7 @@ def test_off_is_todays_setup():
 
 def test_frontier_is_built_off():
     assert bot_config.FRONTIER_ENABLED is True  # PR 3: switched on
-    assert bot_config.CLAUDE_BUDGET_PER_CYCLE == 200.0  # architect, 15 Nov (was 170)
+    assert bot_config.CLAUDE_BUDGET_PER_CYCLE == 200.0  # architect, 15 Nov (was 170; 190 planned 14 Nov)
     assert bot_config.FRONTIER_GPT_ENABLED is False
     assert bot_config.get_lineup("frontier").test_only
 

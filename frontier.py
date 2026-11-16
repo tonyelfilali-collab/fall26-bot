@@ -29,6 +29,8 @@ in price):
   10% of the cycle budget): under $12 of the cycle budget left -> seasonal
   Opus x1; under $5 -> seasonal Opus x1, no Claude on MiniBench; a
   credit error, an unreadable ledger or no reset date -> no Claude: today's setup.
+  Architect, 15 Nov: in the last 48 hours of the cycle there is no step-down
+  (nor the "used up" stop): full until a credit error (FINAL_HOURS).
 - Agent (PR 4, behind bot_config.FRONTIER_AGENT_ENABLED, ON): in full mode one
   Opus slot becomes an agent (Opus 5.5 with Anthropic's web_search + web_fetch
   server tools, same prompt and answer format, the dossier as its start).
@@ -133,6 +135,12 @@ GPT_MIN_KEY_LEFT = 2.00  # dollars left on the OpenRouter key; under it, no GPT
 # of the cycle budget left. Pacing handles overspend earlier in the cycle.
 STEP_DOWN_LOW = 12.00
 STEP_DOWN_MINIMAL = 5.00
+# Architect, 15 Nov (Tony's rule: never leave Claude credit unused at cycle
+# end): the step-downs (and the "used up" stop) apply only while MORE than 48
+# hours of the cycle remain. In the last 48 hours Claude stays "full" until the
+# credit runs out (a credit error -> the 1-hour safety; never charged). Pacing,
+# the day cap and the per-question caps are unchanged.
+FINAL_HOURS = timedelta(hours=48)
 # Pacing (architect, 22 Oct): dollars of cycle spend over the line.
 PACE_STEP_1 = 10.00  # over it: "paced-1" (no MiniBench agent)
 PACE_STEP_2 = 20.00  # over it: "paced-2" (also no seasonal agent2)
@@ -419,6 +427,18 @@ class ClaudeBudget(SpendGuard):
     def dollars_left(self) -> float:
         return self.budget - self.cycle_spent()
 
+    def _now(self) -> datetime:
+        # Real time, or noon on the given day when the budget was built for another day (tests).
+        now = datetime.now(timezone.utc)
+        return now if now.date() == self.today else datetime.combine(self.today, day_time(12), timezone.utc)
+
+    def in_final_hours(self, now: datetime | None = None) -> bool:
+        """Within the last FINAL_HOURS (48 h) of the billing cycle."""
+        if self.cycle is None or self.reset is None:
+            return False
+        end = datetime.combine(cycle_end(self.cycle, self.reset), day_time(), timezone.utc)
+        return timedelta(0) < end - (now or self._now()) <= FINAL_HOURS
+
     def credit_error_this_cycle(self) -> bool:
         """Claude is off after a credit error (until a test call answers)."""
         return bool(self.credit_off)
@@ -506,7 +526,7 @@ def credit_test_call() -> bool:
         return False
 
 
-def claude_mode(budget: ClaudeBudget | None, api_key: bool = True) -> tuple[str, str]:
+def claude_mode(budget: ClaudeBudget | None, api_key: bool = True, now: datetime | None = None) -> tuple[str, str]:
     """(mode, why): 'full', 'low', 'minimal' or 'off' (today's setup)."""
     if budget is None:
         return "off", "frontier lineup off"
@@ -521,6 +541,9 @@ def claude_mode(budget: ClaudeBudget | None, api_key: bool = True) -> tuple[str,
     if budget.credit_error_this_cycle():
         return "off", "credit error, a test call every hour"
     left = budget.dollars_left()
+    if budget.in_final_hours(now):
+        # Last 48 hours of the cycle: no step-down; full until a credit error.
+        return "full", f"${left:.2f} of the cycle budget left; last 48 hours of the cycle, full until the credit runs out"
     if left <= 0:
         return "off", "cycle budget used up"
     why = f"${left:.2f} of the cycle budget left"
