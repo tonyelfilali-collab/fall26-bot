@@ -171,3 +171,38 @@ def window_baseline(question: Any, found: dict, history: list) -> tuple[Any | No
         detail["skipped"] = "broke the platform rules"
         return None, detail
     return distribution, detail
+
+
+# ---------------------------------------------------------------- typical change (architect, 16 Nov)
+
+TYPICAL_RANGE = (0.10, 0.90)
+
+
+def typical_change_line(question: Any, found: dict | None) -> str | None:
+    """One dossier line for a question matched to a data series (architect,
+    16 Nov): "Typical change over <horizon>: 10-90% range of past moves =
+    <low> to <high> (<n> past periods)". The window baseline's method
+    (window_sample: every past window of that length, those starting within
+    25% of today's level when there are 30+, ratio scaling for prices and
+    coins, plain changes otherwise) on the end value, over the horizon from
+    the latest data date to the question's resolution. None when there is no
+    usable data or fewer than MIN_WINDOWS past periods."""
+    if not found or "latest" not in found or not found.get("history"):
+        return None
+    end = _day(getattr(question, "scheduled_resolution_time", None) or getattr(question, "close_time", None))
+    latest_day = _day(found["latest"].get("date"))
+    if end is None or latest_day is None:
+        return None
+    days = (end - latest_day).days
+    today_value = float(found["latest"]["value"])
+    ratio = found.get("source") == "coingecko" or found.get("series") in RATIO_SERIES
+    if days < 1 or (ratio and today_value <= 0):
+        return None
+    sample, _ = window_sample(found["history"], days, "end", today_value, ratio)
+    if len(sample) < MIN_WINDOWS:
+        return None
+    moves = sorted((s / today_value - 1) * 100 if ratio else s - today_value for s in sample)
+    low, high = (_quantile(moves, p) for p in TYPICAL_RANGE)
+    shown = (lambda m: f"{m:+.1f}%") if ratio else (lambda m: f"{m:+.4g}")
+    return (f"Typical change over {days} day{'s' if days != 1 else ''}: 10-90% range of past moves = "
+            f"{shown(low)} to {shown(high)} ({len(sample)} past periods).")
