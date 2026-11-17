@@ -262,12 +262,16 @@ def agent_reserve(seasonal: bool, name: str = AGENT) -> float:
     return (caps.input_tokens * prompt + caps.output_tokens * completion) / 1_000_000 + caps.searches * AGENT_SEARCH_PRICE
 
 
-def seasonal_reserve(agents: int, fable: bool = False) -> float:
+def seasonal_reserve(agents: int, fable: bool = False, opus: bool = False) -> float:
     """One seasonal question's Claude reservation, rounded up to 10 cents:
     agent + agent2 = $4.60; agent + plain Opus = $3.30. With Fable 5.2 (architect,
-    12 Nov) + $0.72: $5.24 -> $5.30 (MiniBench $14.70); $3.96 -> $4.00. MiniBench keeps it free."""
+    12 Nov) + $0.72: $5.24 -> $5.30 (MiniBench $14.70); $3.96 -> $4.00. With the
+    seasonal plain Opus (architect, 16 Nov; two agents only) + $0.36: $5.60
+    (MiniBench $14.40); $4.88 -> $4.90 without Fable. MiniBench keeps it free."""
     second = agent_reserve(True, AGENT2) if agents >= 2 else claude_reserve(OPUS_55)
     extra = claude_reserve(FABLE) if fable else 0.0
+    if opus and agents >= 2:
+        extra += claude_reserve(OPUS_55)
     return math.ceil(round((agent_reserve(True) + second + extra) * 10, 6)) / 10
 
 
@@ -875,6 +879,7 @@ class FrontierPlanner(bot_config.GeminiPool):
     agent_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_AGENT_ENABLED)
     seasonal_agents: int = field(default_factory=lambda: bot_config.FRONTIER_SEASONAL_AGENTS)
     fable_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_FABLE_ENABLED)
+    seasonal_opus_enabled: bool = field(default_factory=lambda: bot_config.FRONTIER_SEASONAL_OPUS_ENABLED)
     # The hourly test call after a credit error (None: credit_test_call; tests and the rehearsal swap in a fake).
     credit_test: Any = None
     # The class and model-name prefix of the Claude and GPT slots (the
@@ -910,6 +915,7 @@ class FrontierPlanner(bot_config.GeminiPool):
         line = f"Frontier lineup: {self.mode} ({self.mode_reason}); GPT-5.6 Sol {gpt}"
         self.pace = PACE_FULL
         fable = self.fable_enabled and self.mode == "full"  # its $0.72 joins the seasonal reservation
+        opus = self.seasonal_opus_enabled and self.mode == "full"  # 16 Nov: its $0.36 too (two agents)
         if self.agent_enabled:
             line += f"; agent {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
             pacing = self.claude.pacing() if self.mode == "full" and self.claude is not None else None
@@ -917,12 +923,15 @@ class FrontierPlanner(bot_config.GeminiPool):
                 self.pace = pacing[0]
                 line += f"; pacing {self.pace}"  # the mode name only (public log)
             if self.seasonal_agents >= 2 and self.claude is not None:
-                self.claude.set_daily_cap(CLAUDE_DAILY_CAP_TWO_AGENTS, seasonal_reserve(2, fable))  # $20: MiniBench $14.70 ($15.40 without Fable)
+                # $20: MiniBench $14.40 with Fable + seasonal plain Opus ($14.70 without the Opus; $15.40 without both)
+                self.claude.set_daily_cap(CLAUDE_DAILY_CAP_TWO_AGENTS, seasonal_reserve(2, fable, opus))
                 line += "; 2 seasonal agents"
             elif self.claude is not None:
                 self.claude.set_daily_cap(CLAUDE_DAILY_CAP, seasonal_reserve(1, fable))  # $15: MiniBench $11.00 ($11.70 without Fable)
         if self.fable_enabled:
             line += f"; Fable 5.2 {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
+        if self.seasonal_opus_enabled and self.agent_enabled and self.seasonal_agents >= 2:
+            line += f"; seasonal plain Opus {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
         return line
 
     def _claude_chain(self, model: str, deadline_aware: bool = False) -> ThrottledLlm:
@@ -952,6 +961,21 @@ class FrontierPlanner(bot_config.GeminiPool):
             model=self.model_prefix + FABLE, pacer=self.claude_pacer, backup=None, spend=self.claude,
             temperature=None, timeout=CLAUDE_TIMEOUT_SECONDS, allowed_tries=1,
         )
+
+    def _add_seasonal_opus(self, question: str | None) -> bool:
+        """Plain Opus 5.5 next to the two seasonal agents (architect, 16 Nov; full
+        mode). The question cap rises by its reservation; refused (day or question
+        cap): skipped, cap as before."""
+        if not (self.seasonal_opus_enabled and self.mode == "full" and self.claude is not None):
+            return False
+        before = self.claude.caps.get(question)
+        if before is None:
+            return False
+        self.claude.set_cap(question, round(before + claude_reserve(OPUS_55), 2))
+        if self._claude_ok(OPUS_55):
+            return True
+        self.claude.set_cap(question, before)
+        return False
 
     def _add_fable(self, question: str | None, seasonal: bool, claude_models: list[str]) -> bool:
         """Fable 5.2 as an extra Claude voice (full mode only): seasonal next to
@@ -1050,6 +1074,8 @@ class FrontierPlanner(bot_config.GeminiPool):
                 if two and second == OPUS_55:
                     self.claude.set_cap(question, AGENT_SEASONAL_QUESTION_CAP)
                 slots = [AGENT, second]
+                if second == AGENT2 and self._add_seasonal_opus(question):
+                    slots.append(OPUS_55)
             else:  # refused (e.g. the day cap): plain Opus slots and caps, as without the agent
                 self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
         # A slot whose model a cap refuses now is left out (its backups may still fit).
@@ -1086,6 +1112,8 @@ class FrontierPlanner(bot_config.GeminiPool):
                 self.last_plan["burst"] = True
         if self.fable_enabled:
             self.last_plan["fable"] = FABLE in claude_models
+        if self.seasonal_opus_enabled and seasonal:
+            self.last_plan["seasonal_opus"] = AGENT2 in claude_models and OPUS_55 in claude_models
         return chains
 
     def round2(self, seasonal: bool, used_models: list[str]) -> list[ThrottledLlm]:

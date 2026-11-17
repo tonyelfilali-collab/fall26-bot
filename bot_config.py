@@ -185,6 +185,12 @@ FRONTIER_SEASONAL_AGENTS = 2
 # (Fable follows the plain-Opus limits on busy days). Question caps rise by its $0.72
 # reservation; the $20 day cap and pacing unchanged. A failure or refusal: skipped.
 FRONTIER_FABLE_ENABLED = True
+# Seasonal plain Opus (architect, 16 Nov, Tier C pre-approved): with two seasonal
+# agents in full mode, seasonal = agent + agent2 + Fable + plain Opus 5.5 + Flash x2
+# (plain Opus was the best replay model, +0.110/q, ~$0.05/q). The seasonal
+# question cap rises by its $0.36 reservation; so does the seasonal room kept
+# under the $20 day cap (MiniBench day limit $14.70 -> $14.40). Refused: skipped.
+FRONTIER_SEASONAL_OPUS_ENABLED = True
 
 # GPT shadow (architect, 22 Oct; gpt_shadow.py; built OFF): at the end of the
 # run, one OpenRouter GPT-6.1 Sol call per live question (OpenRouter native web
