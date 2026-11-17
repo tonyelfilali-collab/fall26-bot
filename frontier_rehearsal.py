@@ -481,6 +481,16 @@ def run() -> dict:
         # T6 (a) Claude off (ledger unreadable), every free Flash 503: paid Flash as before (today's setup).
         phase("T6", 56000, ClaudeBudget(Unreadable(), BUDGET, RESET), fail={m: lambda: litellm.ServiceUnavailableError(
             message="rehearsal: overloaded", llm_provider="gemini", model="gemini") for m in bot_config.GEMINI_FORECAST_MODELS})
+        # T7 (a) (architect, 17 Nov 11:20 UK): Claude off AND every free Flash at 0 -> ONE paid
+        # Flash call (the quick forecast) before Nemotron; T8: the paid day used up -> Nemotron + the hold as now.
+        phase("T7", 54000, ClaudeBudget(Unreadable(), BUDGET, RESET), free_used_up=True)
+        records, planner, calls = run_phase([_question(53999, "binary", minutes=60)], [], ClaudeBudget(Unreadable(), BUDGET, RESET),
+                                            free_used_up=True, openrouter_day=1.00)
+        out["T8"] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": calls,
+                     "held": [bool(r.get("nemotron_held")) for r in records],
+                     "should_hold": [main.holds_nemotron_only(r["question"]["close_time"] if isinstance(r["question"]["close_time"], datetime)
+                                                              else datetime.fromisoformat(str(r["question"]["close_time"])),
+                                                              datetime.now(timezone.utc)) for r in records]}
         main.PLANNED_WAIT_SECONDS = 3
         phase("I", 99000, _budget(), slow={OPUS_55: 6.0})
         main.PLANNED_WAIT_SECONDS = wait
@@ -722,6 +732,16 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          all(i["submitted"] and i["claude"] == 0 and i["paid_flash"] >= 1 and i["paid_reason"] == frontier.PAID_SKIPPED
              and i["paid_after_claude"] for i in infos("T5"))
          and all(i["openrouter_spent"] <= bot_config.PAID_FLASH_QUESTION_CAP + 1e-9 for i in infos("T5"))),
+        ("T7 (a): Claude off AND every free Flash at 0 -> exactly ONE paid Flash call per question (quick forecast), "
+         "no Nemotron, all submitted",
+         out["T7"]["planner"].mode == "off" and out["T7"]["calls"].count(bot_config.PAID_FLASH_MODEL.removeprefix("replay/")) == 5
+         and not any("nemotron" in c for c in out["T7"]["calls"])
+         and all(i["submitted"] and i["models"] == [bot_config.PAID_FLASH_MODEL] for i in infos("T7"))),
+        ("T8 (a): same, paid day used up ($1.00) -> no paid call; Nemotron, and the hold exactly as the rule says",
+         bot_config.PAID_FLASH_MODEL.removeprefix("replay/") not in out["T8"]["calls"]
+         and any("nemotron" in c for c in out["T8"]["calls"])
+         and out["T8"]["held"] == out["T8"]["should_hold"]
+         and all(i["submitted"] != held for i, held in zip(infos("T8"), out["T8"]["held"]))),
         ("T6 (a): Claude off (ledger unreadable), every free Flash 503 -> paid Flash as before; all submitted",
          out["T6"]["planner"].mode == "off" and all(i["submitted"] and i["paid_flash"] >= 1 and i["paid_reason"] == frontier.PAID_NO_CLAUDE
                                      for i in infos("T6"))),
@@ -964,7 +984,9 @@ def report() -> tuple[bool, str]:
               "T2": "T2. Free Flash at 0, paid day at $0.98", "T3": "T3. Free Flash at 0, paid day at $0.48",
               "T4": "T4. Free Flash at 0, closing within 45 min (paid allowed)",
               "T5": "T5. Free Flash at 0, every Claude call fails (paid after Claude)",
-              "T6": "T6. Claude off, every free Flash 503 (paid allowed)", "S2": "S2. Two seasonal agents both past their cap",
+              "T6": "T6. Claude off, every free Flash 503 (paid allowed)",
+              "T7": "T7. Claude off, every free Flash at 0 (one paid call)",
+              "T8": "T8. Claude off, every free Flash at 0, paid day used up (Nemotron)", "S2": "S2. Two seasonal agents both past their cap",
               "U1": "U1. Pacing: paced-1 (line + $15)", "U2": "U2. Pacing: paced-2 (line + $25)",
               "V": "V. MiniBench burst of 60 from a $0 Claude day",
               "W": "W. $11 seasonal day, then a MiniBench burst of 40",
