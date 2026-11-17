@@ -131,6 +131,12 @@ CLAUDE_DAILY_CAP = 15.00
 # MiniBench keeps agent + Opus + Fable until the $14.70 MiniBench day limit; the
 # $20 day cap stays.
 CLAUDE_MINIBENCH_AGENT_DAY_LIMIT = 5.00
+# Paid Flash only when Claude can't help (architect, 17 Nov): the reason, one
+# word-phrase in the public plan line ("paid Flash: ...").
+PAID_SKIPPED = "skipped (Claude planned)"
+PAID_NO_CLAUDE = "allowed (no Claude)"
+PAID_WINDOW = "allowed (45-min window)"
+PAID_CLAUDE_FAILED = "allowed (Claude failed)"
 CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT = 10.00
 CLAUDE_SEASONAL_QUESTION_CAP = 1.50
 CLAUDE_MINIBENCH_QUESTION_CAP = 0.60
@@ -904,6 +910,9 @@ class FrontierPlanner(bot_config.GeminiPool):
     calls_before: dict = field(default_factory=dict)
     pace: str = PACE_FULL  # this run's pacing mode (full Claude mode with the agent only)
     minibench_questions: set = field(default_factory=set)  # this run's MiniBench question keys (burst-day rule)
+    # Paid Flash only when Claude can't help (architect, 17 Nov): main.py sets this
+    # per question before plan(): True when it closes within the 45-min emergency window.
+    paid_window: bool = False
 
     def start_run(self, key_left: float | None, api_key: bool | None = None) -> str:
         """Once per run, before forecasting: this run's mode and GPT."""
@@ -1061,10 +1070,17 @@ class FrontierPlanner(bot_config.GeminiPool):
     def _frontier_on(self) -> bool:
         return self.mode != "off" and not (self.claude is not None and self.claude.blocked)
 
+    def _note_paid(self, reason: str) -> None:
+        """The paid-Flash decision for this question (a word, public log)."""
+        if self.paid_flash is not None:
+            self.last_plan["paid_flash"] = reason
+
     def plan(self, seasonal: bool, only_model: str | None = None, binary: bool = True, limit: int | None = None) -> list[ThrottledLlm]:
         if only_model or not self._frontier_on():
             self._todays_setup()
-            return super().plan(seasonal, only_model=only_model, binary=binary, limit=limit)
+            plan = super().plan(seasonal, only_model=only_model, binary=binary, limit=limit)
+            self._note_paid(PAID_NO_CLAUDE)  # (a) Claude off, credit error
+            return plan
         question = current_question_key.get()
         assert self.claude is not None
         self.claude.set_cap(question, CLAUDE_SEASONAL_QUESTION_CAP if seasonal else CLAUDE_MINIBENCH_QUESTION_CAP)
@@ -1108,19 +1124,29 @@ class FrontierPlanner(bot_config.GeminiPool):
             self.last_plan = {"frontier": self.mode, "claude": [], "reason": "no Claude slot: today's setup"}
             plan = super().plan(seasonal, binary=binary)
             self.last_plan.update(frontier=self.mode, claude=[])
+            self._note_paid(PAID_NO_CLAUDE)  # (a) every Claude slot refused (caps)
             return plan
-        # At most 2 Flash, no top-ups; paid Flash may fill both of them (the
-        # 'enough forecasts' rule would count the Claude forecasts).
-        flash = super().plan(seasonal, binary=binary, limit=FLASH_FORECASTS)
-        if self.spend is not None:
-            self.spend.forecast_target = None
-            if gpt:
-                # After the pool set its $0.10: GPT + paid Flash share $0.30 per seasonal question.
-                self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
-        claude_chains = [self._agent_chain(m) if m in AGENTS else self._fable_chain() if m == FABLE else self._claude_chain(m)
-                         for m in claude_models]
-        chains = claude_chains + ([self._gpt_chain()] if gpt else []) + flash
+        # At most 2 Flash, no top-ups. Paid Flash only when Claude can't help
+        # (architect, 17 Nov): with a Claude forecast planned the Flash slots are
+        # free only (no paid tail, no paid slots), unless the question closes within
+        # the 45-min window (c). If every Claude slot then gives nothing readable,
+        # main.py's quick forecast may use paid Flash (b).
+        skip_paid = bool(claude_models) and not self.paid_window
+        self.paid_skip = skip_paid
+        try:
+            flash = super().plan(seasonal, binary=binary, limit=FLASH_FORECASTS)
+            if self.spend is not None:
+                self.spend.forecast_target = None
+                if gpt:
+                    # After the pool set its $0.10: GPT + paid Flash share $0.30 per seasonal question.
+                    self.spend.set_cap(question, OPENROUTER_SEASONAL_QUESTION_CAP)
+            claude_chains = [self._agent_chain(m) if m in AGENTS else self._fable_chain() if m == FABLE else self._claude_chain(m)
+                             for m in claude_models]
+            chains = claude_chains + ([self._gpt_chain()] if gpt else []) + flash
+        finally:
+            self.paid_skip = False
         self.last_plan.update(frontier=self.mode, claude=claude_models, gpt=gpt, flash=len(flash), count=len(chains))
+        self._note_paid(PAID_SKIPPED if skip_paid else PAID_WINDOW if claude_models else PAID_NO_CLAUDE)
         if self.agent_enabled:
             self.last_plan["agent"] = AGENT in claude_models
             self.last_plan["pace"] = self.pace

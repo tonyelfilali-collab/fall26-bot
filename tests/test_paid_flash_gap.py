@@ -1,4 +1,6 @@
-"""Frontier (Claude on): free Flash quota at 0 -> the Flash slots are planned straight to paid Flash, within its caps."""
+"""Frontier (Claude on): free Flash quota at 0 -> the Flash slots are planned straight to paid Flash, within its caps.
+Since 17 Nov (architect: paid Flash only when Claude can't help) only inside the 45-min
+window when a Claude forecast is planned; otherwise no paid slot (tests/test_paid_flash_gate.py)."""
 from __future__ import annotations
 
 import pytest
@@ -20,7 +22,8 @@ def _planner(used_up=(), openrouter_day: float = 0.0):
     return planner
 
 
-def _flash(planner, seasonal=True, question="51"):
+def _flash(planner, seasonal=True, question="51", window=False):
+    planner.paid_window = window
     token = current_question_key.set(question)
     try:
         return [c.model for c in planner.plan(seasonal) if not c.model.startswith("anthropic/")]
@@ -34,7 +37,10 @@ def test_free_quota_left_plans_free_flash():
 
 def test_free_quota_at_zero_plans_two_paid_flash():
     planner = _planner(used_up=bot_config.GEMINI_FORECAST_MODELS)
-    assert _flash(planner) == [bot_config.PAID_FLASH_MODEL] * 2
+    assert _flash(planner) == []  # 17 Nov: Claude planned, outside the window -> no paid slot
+    assert "paid_flash_planned" not in planner.last_plan
+    planner = _planner(used_up=bot_config.GEMINI_FORECAST_MODELS)
+    assert _flash(planner, window=True) == [bot_config.PAID_FLASH_MODEL] * 2
     assert planner.last_plan["paid_flash_planned"] == 2
     assert planner.spend.caps["51"] == bot_config.PAID_FLASH_QUESTION_CAP
 
@@ -42,7 +48,9 @@ def test_free_quota_at_zero_plans_two_paid_flash():
 def test_one_free_model_left_fills_the_other_slot_with_paid():
     left = bot_config.GEMINI_FORECAST_MODELS[0]
     planner = _planner(used_up=[m for m in bot_config.GEMINI_FORECAST_MODELS if m != left])
-    assert _flash(planner) == [left, bot_config.PAID_FLASH_MODEL]
+    assert _flash(planner) == [left]  # 17 Nov: no paid slot while Claude is planned
+    planner = _planner(used_up=[m for m in bot_config.GEMINI_FORECAST_MODELS if m != left])
+    assert _flash(planner, window=True) == [left, bot_config.PAID_FLASH_MODEL]
 
 
 @pytest.mark.parametrize("seasonal, day, refused", [(True, 0.98, "daily cap"), (False, 0.98, "daily cap"), (False, 0.48, None), (True, 0.48, None)])
@@ -50,6 +58,7 @@ def test_the_caps_still_refuse(seasonal, day, refused):
     planner = _planner(used_up=bot_config.GEMINI_FORECAST_MODELS, openrouter_day=day)
     token, kind = current_question_key.set("52"), question_seasonal.set(seasonal)
     try:
+        planner.paid_window = True  # the caps still apply where paid Flash is allowed
         planner.plan(seasonal)
         assert planner.spend.refusal(bot_config.PAID_FLASH_MODEL) == refused
     finally:
