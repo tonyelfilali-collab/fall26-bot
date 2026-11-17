@@ -563,6 +563,22 @@ def run() -> dict:
         infos_w48 += [_info(r, planner) for r in records]
         out["W48"] = {"infos": infos_w48, "planner": planner, "calls": [], "fake": fake,
                       "before_seasonal": w48_before_seasonal, "report": frontier.frontier_report(planner)}
+        # F48 (architect, 17 Nov): a final-hours day: $8 of Claude spend already today, $17.59 of
+        # the cycle left -> day cap max($20, $8 + $17.59) = $25.59, MiniBench limit $25.59 - $5.60 =
+        # $19.99. A MiniBench burst of 80 (2 per run, seasonal plain Opus + Fable on), then one
+        # seasonal question: MiniBench runs past the old $14.40, the seasonal keeps its full lineup.
+        claude, fake, infos_f48 = ClaudeBudget(MemoryStore({"days": {}}), BUDGET, RESET_ENDING), RecordedAnthropic("full"), []
+        claude.cycles[claude.cycle.isoformat()] = BUDGET - 17.59
+        claude.days[utc_day()] = 8.0
+        for run_no in range(40):
+            burst = [_question(60000 + 2 * run_no + i, SEASONAL_TYPES[(2 * run_no + i) % 4], minutes=60) for i in range(2)]
+            records, planner, _ = run_agent_phase([], burst, claude, fake, 2, None, True, True)
+            infos_f48 += [_info(r, planner) for r in records]
+        f48_before_seasonal = claude.day_spent()
+        records, planner, _ = run_agent_phase([_question(59999, "binary", minutes=600)], [], claude, fake, 2, None, True, True)
+        infos_f48 += [_info(r, planner) for r in records]
+        out["F48"] = {"infos": infos_f48, "planner": planner, "calls": [], "fake": fake,
+                      "before_seasonal": f48_before_seasonal, "report": frontier.frontier_report(planner)}
         return out
     finally:
         for attr, value in times.items():
@@ -787,6 +803,8 @@ def report() -> tuple[bool, str]:
     w48_mini = infos("W48", False)
     w48_agent_spent = sum(i["claude_spent"] for i in w48_mini if i["agent"])
     w48_agent = sum(i["agent"] for i in w48_mini)
+    f48_budget = out["F48"]["planner"].claude
+    f48_mini = infos("F48", False)
     w_first_plain = next((n for n, i in enumerate(w_mini) if i["agent"] == 0), len(w_mini))
     checks = [
         ("A: seasonal, every type = Opus 5.5 x2 + Flash x2 (4 forecasts)",
@@ -862,9 +880,26 @@ def report() -> tuple[bool, str]:
          w48_budget.in_final_hours() and w48_agent > v_agent
          and w48_agent_spent > frontier.CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT and all(i["submitted"] for i in w48_mini)),
         (f"W48: MiniBench stops at its day limit: day before the seasonal question ${out['W48']['before_seasonal']:.2f} <= "
-         f"${w48_budget.minibench_daily_cap:.2f}; after it ${w48_budget.day_spent():.2f} <= ${frontier.CLAUDE_DAILY_CAP_TWO_AGENTS:.2f}",
+         f"${w48_budget.minibench_daily_cap:.2f}; after it ${w48_budget.day_spent():.2f} <= the day cap "
+         f"${w48_budget.daily_cap:.2f} ($30 left: max($20, $0 + $30), 17 Nov)",
          out["W48"]["before_seasonal"] <= w48_budget.minibench_daily_cap + 1e-9
-         and w48_budget.day_spent() <= frontier.CLAUDE_DAILY_CAP_TWO_AGENTS + 1e-9),
+         and w48_budget.daily_cap == 30.0 and w48_budget.day_spent() <= w48_budget.daily_cap + 1e-9),
+        (f"F48: final-hours day ($8 spent, $17.59 left): day cap ${f48_budget.daily_cap:.2f}, "
+         f"MiniBench limit ${f48_budget.minibench_daily_cap:.2f}",
+         f48_budget.in_final_hours() and _close(f48_budget.daily_cap, 25.59) and _close(f48_budget.minibench_daily_cap, 19.99)),
+        (f"F48: MiniBench runs past the old $14.40 and stops at its limit: day before the seasonal question "
+         f"${out['F48']['before_seasonal']:.2f} (in ($14.40, ${f48_budget.minibench_daily_cap:.2f}]); "
+         f"{sum(1 for i in f48_mini if i['claude'])} of {len(f48_mini)} MiniBench with Claude, all submitted",
+         14.40 < out["F48"]["before_seasonal"] <= f48_budget.minibench_daily_cap + 1e-9
+         and all(i["submitted"] for i in f48_mini)),
+        (f"F48: the seasonal question after the burst keeps agent + agent2 + Fable + plain Opus; "
+         f"day after it ${f48_budget.day_spent():.2f} <= ${f48_budget.daily_cap:.2f}",
+         [(i["agent"], i["agent2"], i["fable"], i["opus"]) for i in infos("F48", True)] == [(1, 1, 1, 1)]
+         and f48_budget.day_spent() <= f48_budget.daily_cap + 1e-9),
+        (f"F48: every question's Claude spend within its cap (seasonal ${frontier.AGENT2_SEASONAL_QUESTION_CAP + 0.36 + 0.72:.2f}, "
+         f"MiniBench ${frontier.AGENT_MINIBENCH_QUESTION_CAP + 0.72:.2f})",
+         all(i["claude_spent"] <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 0.36 + 0.72 + 1e-9 for i in infos("F48", True))
+         and all(i["claude_spent"] <= frontier.AGENT_MINIBENCH_QUESTION_CAP + 0.72 + 1e-9 for i in f48_mini)),
         ("W48: the seasonal question after the burst still gets both agents",
          [(i["agent"], i["agent2"]) for i in infos("W48", True)] == [(1, 1)]),
         ("W: the seasonal question after the burst still gets both agents",
@@ -909,6 +944,7 @@ def report() -> tuple[bool, str]:
               "V": "V. MiniBench burst of 60 from a $0 Claude day",
               "W": "W. $11 seasonal day, then a MiniBench burst of 40",
               "W48": "W48. MiniBench burst of 60 in the last 48 hours of a cycle",
+              "F48": "F48. Final-hours day: $8 spent, $17.59 left (day cap $25.59), MiniBench burst of 80",
               "X": "X. Aggregation claude_first (test switch): Opus x2 + Flash x2",
               "Y": "Y. Aggregation claude_first (test switch): two seasonal agents",
               "Z": "Z. Fable 5.2 extra voice (test switch): two seasonal agents",

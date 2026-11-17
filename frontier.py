@@ -448,6 +448,16 @@ class ClaudeBudget(SpendGuard):
         end = datetime.combine(cycle_end(self.cycle, self.reset), day_time(), timezone.utc)
         return timedelta(0) < end - (now or self._now()) <= FINAL_HOURS
 
+    def final_hours_day_cap(self, base: float, now: datetime | None = None) -> float:
+        """The UTC day's Claude cap. In the last 48 hours of a cycle (architect,
+        17 Nov): max(base, today's Claude spend + the dollars left in the cycle),
+        so the expiring credit can be used today; outside them: base, as before.
+        Per-question caps, pacing, seasonal-first and the credit-error safety are
+        unchanged (the MiniBench limit stays this cap minus one seasonal reservation)."""
+        if not self.in_final_hours(now):
+            return base
+        return max(base, round(self.day_spent() + self.dollars_left(), 2))
+
     def credit_error_this_cycle(self) -> bool:
         """Claude is off after a credit error (until a test call answers)."""
         return bool(self.credit_off)
@@ -924,10 +934,16 @@ class FrontierPlanner(bot_config.GeminiPool):
                 line += f"; pacing {self.pace}"  # the mode name only (public log)
             if self.seasonal_agents >= 2 and self.claude is not None:
                 # $20: MiniBench $14.40 with Fable + seasonal plain Opus ($14.70 without the Opus; $15.40 without both)
-                self.claude.set_daily_cap(CLAUDE_DAILY_CAP_TWO_AGENTS, seasonal_reserve(2, fable, opus))
+                # Last 48 hours of a cycle (17 Nov): max($20, today's spend + the cycle's dollars left).
+                self.claude.set_daily_cap(self.claude.final_hours_day_cap(CLAUDE_DAILY_CAP_TWO_AGENTS),
+                                          seasonal_reserve(2, fable, opus))
                 line += "; 2 seasonal agents"
             elif self.claude is not None:
-                self.claude.set_daily_cap(CLAUDE_DAILY_CAP, seasonal_reserve(1, fable))  # $15: MiniBench $11.00 ($11.70 without Fable)
+                # $15: MiniBench $11.00 ($11.70 without Fable); last 48 hours: max($15, today's spend + dollars left)
+                self.claude.set_daily_cap(self.claude.final_hours_day_cap(CLAUDE_DAILY_CAP), seasonal_reserve(1, fable))
+            base_cap = CLAUDE_DAILY_CAP_TWO_AGENTS if self.seasonal_agents >= 2 else CLAUDE_DAILY_CAP
+            if self.claude is not None and self.claude.daily_cap is not None and self.claude.daily_cap > base_cap + 1e-9:
+                line += f"; day cap ${self.claude.daily_cap:.2f} (last 48 hours)"
         if self.fable_enabled:
             line += f"; Fable 5.2 {'on' if self.mode == 'full' else 'off (' + self.mode + ' mode)'}"
         if self.seasonal_opus_enabled and self.agent_enabled and self.seasonal_agents >= 2:
