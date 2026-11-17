@@ -328,8 +328,13 @@ class GeminiPool:
     # end of every Flash forecasting chain, and its spend guard. None = off.
     paid_flash: Callable[[], ThrottledLlm] | None = None
     spend: SpendGuard | None = None
+    # Architect, 17 Nov: True while a frontier plan builds Flash chains for a
+    # question with a Claude forecast planned: no paid tail, no paid slots.
+    paid_skip: bool = False
 
     def _paid_tail(self) -> ThrottledLlm | None:
+        if self.paid_skip:
+            return None
         return self.paid_flash() if self.paid_flash is not None else None
 
     def _forecaster(self, model: str, **kwargs) -> ThrottledLlm:
@@ -452,7 +457,7 @@ class GeminiPool:
             self.ledger.book(repeat)
             chains.append(self._chain([repeat, *[m for m in ranked if m != repeat]], allow_reserve=False,
                                       paid=len(chains) < PAID_FLASH_TARGET_FORECASTS))
-        if limit is not None and self.paid_flash is not None and len(chains) < limit:
+        if limit is not None and self.paid_flash is not None and not self.paid_skip and len(chains) < limit:
             # Frontier (Claude on): free Flash quota used up, so the rest of the
             # Flash slots are paid Flash straight away, within its caps ($0.10 a
             # question, $1.00 a day, MiniBench too since 3 Nov); a refusal ends the slot.

@@ -213,6 +213,8 @@ def _info(record: dict, planner: FrontierPlanner) -> dict:
         "fable": models.count(FABLE),
         "agent_runs": [a for f in record.get("forecasts", []) for a in f.get("agent", [])],
         "paid_flash": models.count(bot_config.PAID_FLASH_MODEL), "submitted": record.get("final_forecast") is not None,
+        "paid_reason": (record.get("extra_forecasts") or {}).get("paid_flash"),
+        "paid_after_claude": bool(record.get("paid_flash_after_claude")),
         "claude_spent": planner.claude.question_spent(post) if planner.claude else 0.0,
         "openrouter_spent": planner.spend.question_spent(post) if planner.spend else 0.0,
         "failed": [f.get("planned_model", "").removeprefix("replay/") for f in record.get("forecasts", []) if f.get("status") == "failed"],
@@ -469,6 +471,16 @@ def run() -> dict:
         phase("T", 79000, _budget(), free_used_up=True)
         phase("T2", 78000, _budget(), free_used_up=True, openrouter_day=0.98)
         phase("T3", 77000, _budget(), free_used_up=True, openrouter_day=0.48)
+        # Paid Flash only when Claude can't help (architect, 17 Nov), free Flash at 0:
+        # T4 (c) every question closes within 45 min: paid Flash allowed next to Claude.
+        records, planner, calls = run_phase([_question(58000 + i, k, minutes=30) for i, k in enumerate(SEASONAL_TYPES)],
+                                            [_question(58009, "binary", minutes=30)], _budget(), free_used_up=True)
+        out["T4"] = {"infos": [_info(r, planner) for r in records], "planner": planner, "calls": calls}
+        # T5 (b) every Claude call fails (not a credit error): after the Claude slots, the quick forecast uses paid Flash.
+        phase("T5", 57000, _budget(), free_used_up=True, fail={m: lambda: _Broken("rehearsal: Claude down") for m in frontier.CLAUDE_PRICES})
+        # T6 (a) Claude off (ledger unreadable), every free Flash 503: paid Flash as before (today's setup).
+        phase("T6", 56000, ClaudeBudget(Unreadable(), BUDGET, RESET), fail={m: lambda: litellm.ServiceUnavailableError(
+            message="rehearsal: overloaded", llm_provider="gemini", model="gemini") for m in bot_config.GEMINI_FORECAST_MODELS})
         main.PLANNED_WAIT_SECONDS = 3
         phase("I", 99000, _budget(), slow={OPUS_55: 6.0})
         main.PLANNED_WAIT_SECONDS = wait
@@ -693,16 +705,26 @@ def agent_checks(out: dict, infos: Any) -> list[tuple[str, bool]]:
          and all(out["U2"]["planner"].claude.caps[str(i["post"])] == (frontier.AGENT_SEASONAL_QUESTION_CAP if i["seasonal"]
                  else frontier.CLAUDE_MINIBENCH_QUESTION_CAP) for i in infos("U2"))
          and out["U2"]["planner"].claude.daily_cap == frontier.CLAUDE_DAILY_CAP_TWO_AGENTS),
-        ("T: free Flash quota at 0 with Claude on -> 2 paid Flash per question (seasonal and MiniBench), within $0.10 a question",
-         all(i["submitted"] and i["claude"] >= 1 and i["paid_flash"] == 2 for i in infos("T"))
-         and all(i["openrouter_spent"] <= bot_config.PAID_FLASH_QUESTION_CAP + 1e-9 for i in infos("T"))
-         and out["T"]["planner"].spend.day_spent() <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
+        ("T: free Flash quota at 0 with Claude on -> no paid Flash (Claude planned, 17 Nov); every question submitted from Claude",
+         all(i["submitted"] and i["claude"] >= 1 and i["paid_flash"] == 0 and i["paid_reason"] == frontier.PAID_SKIPPED
+             for i in infos("T"))
+         and out["T"]["planner"].spend.day_spent() == 0.0),
         ("T2: same, paid day at $0.98 -> the $1.00 day cap refuses paid Flash; Claude still forecasts every question",
          all(i["submitted"] and i["claude"] >= 1 and i["paid_flash"] == 0 for i in infos("T2"))
          and out["T2"]["planner"].spend.day_spent() <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
-        ("T3: same, paid day at $0.48 -> seasonal and MiniBench both get paid Flash (MiniBench limit $1.00 since 3 Nov)",
-         all(i["paid_flash"] >= 1 for i in infos("T3", True)) and all(i["submitted"] and i["paid_flash"] >= 1 for i in infos("T3", False))
-         and out["T3"]["planner"].spend.day_spent() <= bot_config.PAID_FLASH_DAILY_CAP + 1e-9),
+        ("T3: same, paid day at $0.48 -> still no paid Flash while Claude is planned (17 Nov); paid day unchanged",
+         all(i["submitted"] and i["paid_flash"] == 0 for i in infos("T3"))
+         and abs(out["T3"]["planner"].spend.day_spent() - 0.48) < 1e-9),
+        ("T4 (c): free Flash at 0, every question closes within 45 min -> paid Flash allowed next to Claude, within $0.10 a question",
+         all(i["submitted"] and i["claude"] >= 1 and i["paid_flash"] >= 1 and i["paid_reason"] == frontier.PAID_WINDOW for i in infos("T4"))
+         and all(i["openrouter_spent"] <= bot_config.PAID_FLASH_QUESTION_CAP + 1e-9 for i in infos("T4"))),
+        ("T5 (b): free Flash at 0, every Claude call fails -> after the Claude slots the quick forecast uses paid Flash; all submitted",
+         all(i["submitted"] and i["claude"] == 0 and i["paid_flash"] >= 1 and i["paid_reason"] == frontier.PAID_SKIPPED
+             and i["paid_after_claude"] for i in infos("T5"))
+         and all(i["openrouter_spent"] <= bot_config.PAID_FLASH_QUESTION_CAP + 1e-9 for i in infos("T5"))),
+        ("T6 (a): Claude off (ledger unreadable), every free Flash 503 -> paid Flash as before; all submitted",
+         out["T6"]["planner"].mode == "off" and all(i["submitted"] and i["paid_flash"] >= 1 and i["paid_reason"] == frontier.PAID_NO_CLAUDE
+                                     for i in infos("T6"))),
         ("Agent phases: 0 real calls (every Anthropic request went to the recorded client)",
          all(out[p]["fake"].agent_requests or out[p]["fake"].plain_requests
              for p in ("K", "L", "M", "N", "N2", "O", "P", "Q", "S", "S2", "U1", "U2", "Z", "Z2", "Z3"))),
@@ -847,8 +869,8 @@ def report() -> tuple[bool, str]:
          all(i["gpt"] == 0 and i["opus"] == 2 and i["flash"] == 2 for i in infos("H", True)) and GPT_SOL not in out["H"]["calls"]),
         ("I: Opus slower than the planned wait -> cut; every question forecast with Flash",
          all(i["submitted"] and i["opus"] == 0 for i in infos("I"))),
-        ("J: every free Flash 503 -> both Flash slots paid, with the Opus forecasts in",
-         all(i["paid_flash"] == 2 and i["opus"] >= 1 for i in infos("J"))),
+        ("J: every free Flash 503 -> no paid Flash while Claude is planned (17 Nov); submitted from the Opus forecasts",
+         all(i["paid_flash"] == 0 and i["opus"] >= 1 and i["submitted"] for i in infos("J"))),
         (f"R: 40-question MiniBench burst from $8: MiniBench Claude stopped by ${out['R']['planner'].claude.minibench_daily_cap:.0f} "
          f"({r_mini_claude} with Claude), day ${r_day:.2f} <= ${frontier.CLAUDE_DAILY_CAP:.0f}",
          r_mini_spent <= out["R"]["planner"].claude.minibench_daily_cap + 1e-9 and r_day <= frontier.CLAUDE_DAILY_CAP + 1e-9
@@ -939,7 +961,10 @@ def report() -> tuple[bool, str]:
               "N2": "N2. Agent tool caps used at a pause", "O": "O. Agent credit error", "P": "P. Question near its cap",
               "Q": "Q. Claude day at $14.00", "R": "R. MiniBench burst of 40 from a $8 Claude day",
               "S": "S. Two seasonal agents (test switch)", "T": "T. Free Flash quota at 0: paid Flash planned",
-              "T2": "T2. Free Flash at 0, paid day at $0.98", "T3": "T3. Free Flash at 0, paid day at $0.48", "S2": "S2. Two seasonal agents both past their cap",
+              "T2": "T2. Free Flash at 0, paid day at $0.98", "T3": "T3. Free Flash at 0, paid day at $0.48",
+              "T4": "T4. Free Flash at 0, closing within 45 min (paid allowed)",
+              "T5": "T5. Free Flash at 0, every Claude call fails (paid after Claude)",
+              "T6": "T6. Claude off, every free Flash 503 (paid allowed)", "S2": "S2. Two seasonal agents both past their cap",
               "U1": "U1. Pacing: paced-1 (line + $15)", "U2": "U2. Pacing: paced-2 (line + $25)",
               "V": "V. MiniBench burst of 60 from a $0 Claude day",
               "W": "W. $11 seasonal day, then a MiniBench burst of 40",

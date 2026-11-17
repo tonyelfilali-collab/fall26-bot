@@ -144,7 +144,7 @@ from comment_post import CommentRecordingClient
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
-from frontier import FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
+from frontier import PAID_CLAUDE_FAILED, FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
 from spend import SPEND_PATH, SpendCapReached, SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, typical_change_line, window_baseline
@@ -804,6 +804,9 @@ class FallBot2026(ForecastBot):
             return max(0.0, stages_end - loop.time())
 
         is_binary = isinstance(question, BinaryQuestion)
+        if hasattr(self.planner, "paid_window"):
+            # Paid Flash only when Claude can't help (architect, 17 Nov): (c) the 45-min window.
+            self.planner.paid_window = question.close_time is not None and closes_within(question.close_time, EMERGENCY_WINDOW)
         forecasters = self.planner.plan(
             seasonal=self.forecasting_seasonal,
             only_model=self.only_model,
@@ -817,6 +820,8 @@ class FallBot2026(ForecastBot):
             # Build 4: how many forecasts and why (the Scoreboard can split by it).
             record["extra_forecasts"] = dict(self.planner.last_plan)
             plan_note = f"; {self.planner.last_plan.get('reason')}"
+            if self.planner.last_plan.get("paid_flash"):
+                plan_note += f"; paid Flash: {self.planner.last_plan['paid_flash']}"
         logger.info(
             f"Question {question.id_of_post}: {len(forecasters)} forecast(s) planned "
             f"({', '.join(f.model for f in forecasters) or 'none: no quota left'}){plan_note}"
@@ -927,6 +932,14 @@ class FallBot2026(ForecastBot):
         # Nothing finished: one quick forecast with whichever model has quota.
         # Google's free tier is often briefly overloaded, so it gets a few
         # passes through the models, while time before the close allows.
+        # Architect, 17 Nov (b): paid Flash was skipped because Claude was
+        # planned, and every planned slot finished with nothing readable: the
+        # quick forecast may use paid Flash (its chain's last slot), even with
+        # every free Flash out of quota.
+        paid_after_claude = (
+            isinstance(self.planner, GeminiPool) and self.planner.paid_flash is not None
+            and str((record.get("extra_forecasts") or {}).get("paid_flash", "")).startswith("skipped")
+        )
         for quick_pass in range(QUICK_FORECAST_PASSES):
             if valid_predictions:
                 break
@@ -935,8 +948,11 @@ class FallBot2026(ForecastBot):
                 quick_timeout = capped(quick_timeout, stage_left())
             if quick_timeout is not None and quick_timeout < MIN_QUICK_FORECAST_SECONDS:
                 break  # no time left (to the close, or in the 12-minute limit)
-            if not self.planner.any_quota_left():
+            if not self.planner.any_quota_left() and not paid_after_claude:
                 break
+            if paid_after_claude and not record.get("paid_flash_after_claude"):
+                record["paid_flash_after_claude"] = True
+                logger.info(f"Question {question.id_of_post}: paid Flash: {PAID_CLAUDE_FAILED}")
             if quick_pass > 0:
                 await asyncio.sleep(QUICK_FORECAST_RETRY_WAIT_SECONDS)
                 if stage_left() < MIN_QUICK_FORECAST_SECONDS:
