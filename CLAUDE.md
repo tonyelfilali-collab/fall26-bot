@@ -29,7 +29,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   caps ($0.10/question, $1.00/UTC day, MiniBench paid too (its limit $1.00 since 3 Nov, was $0.50),
   paid only until a question has 3 real forecasts); openai/gpt-6.1-sol as the GPT shadow only,
   $0.25/question, $1.50/UTC day (ON 22-28 Oct, OFF since 28 Oct; never submitted); moonshotai/kimi-k3 as the Kimi
-  shadow only, the same caps (one pinned provider; ON since 28 Oct; never submitted). Every other paid model stays refused. The key
+  shadow only, the same caps (one pinned provider; ON 28 Oct-17 Nov, OFF since 17 Nov; never submitted). Every other paid model stays refused. The key
   limit is the hard ceiling: $10 since 15 Nov (architect: a new key on Tony's other account, which holds $10 of credit;
   OPENROUTER_API_KEY changed 15 Nov 23:31:40 UTC; was $25 on the old key). The spend check compares the new key from
   that point (`status/spend.json` `key_changes`; `key_day_start` 16 Nov = $0.00). Keep free-model use under 600 requests a day. GPT-5.6 Sol is OFF
