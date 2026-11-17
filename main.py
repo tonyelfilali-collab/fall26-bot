@@ -144,7 +144,7 @@ from comment_post import CommentRecordingClient
 from consistency import INDEX_PATH, ForecastIndex
 from consistency import shadow_for as consistency_shadow_for
 from hard_data import MAX_LINE_WORDS, hard_data_for, official_line
-from frontier import PAID_CLAUDE_FAILED, FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
+from frontier import PAID_CLAUDE_FAILED, PAID_NO_CLAUDE, FrontierPlanner, agent_log, agent_overrun_alert, forecast_deadline, frontier_report
 from spend import SPEND_PATH, SpendCapReached, SpendGuard, error_details, guard_tier, key_limit_alert, paid_fallback_guard, unknown_cost_alert, utc_day
 from spend import question_seasonal as spend_question_seasonal
 from window_baseline import fetch_full_history, typical_change_line, window_baseline
@@ -932,13 +932,18 @@ class FallBot2026(ForecastBot):
         # Nothing finished: one quick forecast with whichever model has quota.
         # Google's free tier is often briefly overloaded, so it gets a few
         # passes through the models, while time before the close allows.
-        # Architect, 17 Nov (b): paid Flash was skipped because Claude was
-        # planned, and every planned slot finished with nothing readable: the
-        # quick forecast may use paid Flash (its chain's last slot), even with
-        # every free Flash out of quota.
-        paid_after_claude = (
+        # Architect, 17 Nov: the quick forecast may use paid Flash (its chain's
+        # last slot) even with every free Flash out of quota, when
+        # (b) paid Flash was skipped because Claude was planned and every planned
+        #     slot finished with nothing readable, or
+        # (a) no Claude slot was planned (11:20 UK: ONE paid call before Nemotron).
+        # With every free Flash at 0 that is one pass only: ONE paid call; if the
+        # paid caps refuse it, the backup chain (Nemotron + the hold) as before.
+        plan_paid = str((record.get("extra_forecasts") or {}).get("paid_flash", ""))
+        paid_after_claude = plan_paid.startswith("skipped")
+        paid_quick = (
             isinstance(self.planner, GeminiPool) and self.planner.paid_flash is not None
-            and str((record.get("extra_forecasts") or {}).get("paid_flash", "")).startswith("skipped")
+            and (paid_after_claude or plan_paid == PAID_NO_CLAUDE)
         )
         for quick_pass in range(QUICK_FORECAST_PASSES):
             if valid_predictions:
@@ -948,11 +953,13 @@ class FallBot2026(ForecastBot):
                 quick_timeout = capped(quick_timeout, stage_left())
             if quick_timeout is not None and quick_timeout < MIN_QUICK_FORECAST_SECONDS:
                 break  # no time left (to the close, or in the 12-minute limit)
-            if not self.planner.any_quota_left() and not paid_after_claude:
-                break
-            if paid_after_claude and not record.get("paid_flash_after_claude"):
-                record["paid_flash_after_claude"] = True
-                logger.info(f"Question {question.id_of_post}: paid Flash: {PAID_CLAUDE_FAILED}")
+            if not self.planner.any_quota_left() and (not paid_quick or quick_pass > 0):
+                break  # every free Flash at 0: only the one paid try (pass 1)
+            if paid_quick and not record.get("paid_flash_quick"):
+                record["paid_flash_quick"] = True
+                record["paid_flash_after_claude"] = paid_after_claude
+                logger.info(f"Question {question.id_of_post}: paid Flash: "
+                            f"{PAID_CLAUDE_FAILED if paid_after_claude else PAID_NO_CLAUDE}, quick forecast")
             if quick_pass > 0:
                 await asyncio.sleep(QUICK_FORECAST_RETRY_WAIT_SECONDS)
                 if stage_left() < MIN_QUICK_FORECAST_SECONDS:

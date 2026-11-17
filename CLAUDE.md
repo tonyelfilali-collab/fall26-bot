@@ -28,7 +28,8 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
 - OpenRouter: paid models allowed only: google/gemini-3.6-flash via PAID_FLASH_FALLBACK, within its
   caps ($0.10/question, $1.00/UTC day, MiniBench paid too (its limit $1.00 since 3 Nov, was $0.50),
   paid only until a question has 3 real forecasts; 17 Nov: only when Claude can't help: no Claude forecast
-  planned, or every Claude slot finished with nothing readable, or closing within 45 min); openai/gpt-6.1-sol as the GPT shadow only,
+  planned (then ONE paid call before Nemotron even with every free Flash at 0), or every Claude slot finished
+  with nothing readable, or closing within 45 min); openai/gpt-6.1-sol as the GPT shadow only,
   $0.25/question, $1.50/UTC day (ON 22-28 Oct, OFF since 28 Oct; never submitted); moonshotai/kimi-k3 as the Kimi
   shadow only, the same caps (one pinned provider; ON 28 Oct-17 Nov, OFF since 17 Nov; never submitted). Every other paid model stays refused. The key
   limit is the hard ceiling: $10 since 15 Nov (architect: a new key on Tony's other account, which holds $10 of credit;
