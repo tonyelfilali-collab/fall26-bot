@@ -14,7 +14,7 @@ The owner is a novice: an architect plans, the owner relays. Explain everything 
   never turn on auto-reload or top-up (Anthropic or OpenRouter). No Metaculus credits this season.
 - Anthropic (architect, 21 Oct): Claude models via `ANTHROPIC_API_KEY` (Console org, workspace
   "fall26-bot", no card, no auto-reload) are allowed, within the frontier caps (#140): `CLAUDE_BUDGET_PER_CYCLE`
-  ($200 per cycle (architect, 15 Nov; was $170); cycles run 18th 00:00 UTC -> 18th (architect, 16 Nov: old credit $39.58 left, expires 18 Nov 00:00 UTC; new $200 granted 15 Nov, expires 18 Dec 00:00 UTC; auto-reload stays OFF)), $20 per UTC day (two seasonal agents; $15 with one), MiniBench Claude only while the day's Claude spend
+  ($200 per cycle (architect, 15 Nov; was $170); cycles run 18th 00:00 UTC -> 18th (architect, 16 Nov: old credit $39.58 left, expires 18 Nov 00:00 UTC; new $200 granted 15 Nov, expires 18 Dec 00:00 UTC; auto-reload stays OFF)), $20 per UTC day (two seasonal agents; $15 with one; 17 Nov: in the last 48 hours of a cycle the day cap is max($20, today's Claude spend + the cycle's dollars left), MiniBench limit = that cap minus one seasonal reservation), MiniBench Claude only while the day's Claude spend
   (running calls included) is under the day cap minus one seasonal question's reservation ($14.40 with Fable 5.2 + the seasonal plain Opus, 16 Nov; $14.70 with Fable only, 12 Nov; $15.40 without; $11.70 with one
   agent; 3 Nov, was $9); the MiniBench agent only under $5 of MiniBench's own day spend and $10 of the whole day's
   (burst days, 2-3 Nov; plain Opus after; 16 Nov: not in the last 48 hours of a cycle, where the agent + Opus + Fable run until the MiniBench day limit), $1.50 per seasonal question, $0.60 per MiniBench question

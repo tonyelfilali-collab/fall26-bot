@@ -93,3 +93,74 @@ def test_now_16_nov_is_in_the_last_48_hours_of_the_live_cycle():
     assert claude.cycle == date(2026, 10, 18)
     assert frontier.claude_mode(claude, now=datetime(2026, 11, 16, 0, 30, tzinfo=timezone.utc))[0] == "full"
     assert frontier.claude_mode(claude, now=datetime(2026, 11, 15, 23, 59, tzinfo=timezone.utc))[0] == "minimal"
+
+
+# ---- Final-hours day cap (architect, 17 Nov): in the last 48 hours of a cycle the
+# day cap = max($20, today's Claude spend + the cycle's dollars left); MiniBench's
+# limit stays the cap minus one seasonal reservation ($5.60). Outside: $20 as before.
+from datetime import timedelta  # noqa: E402
+
+from spend import utc_day  # noqa: E402
+from tests.test_fable import _start  # noqa: E402
+
+
+def _today(left: float, today_spent: float, final: bool = True) -> ClaudeBudget:
+    """A budget for the real today: its cycle ends tomorrow 00:00 UTC (final) or in 10 days."""
+    today = datetime.now(timezone.utc).date()
+    claude = ClaudeBudget(MemoryStore({"days": {}}), BUDGET, today + timedelta(days=1 if final else 10), today=today)
+    claude.cycles[claude.cycle.isoformat()] = BUDGET - left  # today's spend is part of the cycle's
+    claude.days[utc_day()] = today_spent
+    return claude
+
+
+@pytest.fixture
+def fable_and_opus_on(monkeypatch):
+    monkeypatch.setattr(bot_config, "FRONTIER_FABLE_ENABLED", True)
+    monkeypatch.setattr(bot_config, "FRONTIER_SEASONAL_OPUS_ENABLED", True)
+
+
+def test_final_hours_cap_rises_to_spend_plus_left(fable_and_opus_on):
+    claude = _today(17.59, 8.0)
+    assert claude.in_final_hours() and claude.final_hours_day_cap(20.0) == pytest.approx(25.59)
+    planner, line = _start(claude)
+    assert planner.claude.daily_cap == pytest.approx(25.59)
+    assert planner.claude.minibench_daily_cap == pytest.approx(19.99)  # $25.59 - $5.60
+    assert "; day cap $25.59 (last 48 hours)" in line and "seasonal plain Opus on" in line
+
+
+def test_final_hours_little_left_keeps_20(fable_and_opus_on):
+    planner, line = _start(_today(3.0, 8.0))  # $8 + $3 = $11 < $20
+    assert planner.claude.daily_cap == 20.0 and planner.claude.minibench_daily_cap == pytest.approx(14.40)
+    assert "day cap $" not in line
+
+
+def test_not_final_hours_keeps_20(fable_and_opus_on):
+    claude = _today(17.59, 8.0, final=False)
+    assert not claude.in_final_hours() and claude.final_hours_day_cap(20.0) == 20.0
+    planner, line = _start(claude)
+    assert planner.claude.daily_cap == 20.0 and planner.claude.minibench_daily_cap == pytest.approx(14.40)
+    assert "day cap $" not in line
+
+
+def test_final_hours_cap_never_below_base_even_over_budget():
+    assert _today(-2.0, 8.0).final_hours_day_cap(20.0) == 20.0  # ledger past the budget: $20, not less
+
+
+def test_final_hours_cap_is_what_the_refusal_uses(fable_and_opus_on):
+    # MiniBench at $15.00 of the day: refused under the old $14.40 limit, allowed under $19.99.
+    from frontier import OPUS_55
+    from gemini_budget import current_question_key
+    from spend import question_seasonal
+
+    planner, _ = _start(_today(17.59, 8.0))  # cap $25.59, MiniBench $19.99 for the whole run
+    q, s = current_question_key.set("mb1"), question_seasonal.set(False)
+    try:
+        planner.claude.days[utc_day()] = 15.00  # later in the day
+        assert planner.claude.refusal(OPUS_55) is None
+        planner.claude.days[utc_day()] = 19.80  # $19.80 + Opus's $0.36 > $19.99
+        assert planner.claude.refusal(OPUS_55) == "daily cap"
+    finally:
+        current_question_key.reset(q)
+        question_seasonal.reset(s)
+    # Per-question caps unchanged by the day cap.
+    assert frontier.CLAUDE_SEASONAL_QUESTION_CAP == 1.50 and frontier.CLAUDE_MINIBENCH_QUESTION_CAP == 0.60
