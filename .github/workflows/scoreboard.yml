@@ -28,6 +28,10 @@ on:
         description: "Only the resolved Fall review (peer score per question, Metaculus vs our log), saved to fall26-data reviews/ only"
         type: boolean
         default: false
+      peer_compare:
+        description: "Only the peer score by type and era, us vs reference bots (leaderboard contributions), saved to fall26-data reviews/ only"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -58,7 +62,7 @@ jobs:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
       - name: Score resolved questions
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration != true && inputs.schedule_check != true && inputs.resolved_review != true) || github.event.schedule == '30 6 * * 1' || steps.schedule.outputs.run == 'true' }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.calibration != true && inputs.schedule_check != true && inputs.resolved_review != true && inputs.peer_compare != true) || github.event.schedule == '30 6 * * 1' || steps.schedule.outputs.run == 'true' }}
         run: poetry run python scoreboard.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
@@ -72,6 +76,12 @@ jobs:
       - name: Resolved review
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.resolved_review == true }}
         run: poetry run python resolved_review.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+      - name: Peer compare
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.peer_compare == true }}
+        run: poetry run python peer_compare.py
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
