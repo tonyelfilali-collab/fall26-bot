@@ -97,7 +97,7 @@ def test_now_16_nov_is_in_the_last_48_hours_of_the_live_cycle():
 
 # ---- Final-hours day cap (architect, 17 Nov): in the last 48 hours of a cycle the
 # day cap = max($20, today's Claude spend + the cycle's dollars left); MiniBench's
-# limit stays the cap minus one seasonal reservation ($5.60). Outside: $20 as before.
+# limit stays the cap minus one seasonal reservation ($7.50 since 20 Nov; was $5.60). Outside: $20 as before.
 from datetime import timedelta  # noqa: E402
 
 from spend import utc_day  # noqa: E402
@@ -124,13 +124,13 @@ def test_final_hours_cap_rises_to_spend_plus_left(fable_and_opus_on):
     assert claude.in_final_hours() and claude.final_hours_day_cap(20.0) == pytest.approx(25.59)
     planner, line = _start(claude)
     assert planner.claude.daily_cap == pytest.approx(25.59)
-    assert planner.claude.minibench_daily_cap == pytest.approx(19.99)  # $25.59 - $5.60
+    assert planner.claude.minibench_daily_cap == pytest.approx(18.09)  # $25.59 - $7.50
     assert "; day cap $25.59 (last 48 hours)" in line and "seasonal plain Opus on" in line
 
 
 def test_final_hours_little_left_keeps_20(fable_and_opus_on):
     planner, line = _start(_today(3.0, 8.0))  # $8 + $3 = $11 < $20
-    assert planner.claude.daily_cap == 20.0 and planner.claude.minibench_daily_cap == pytest.approx(14.40)
+    assert planner.claude.daily_cap == 20.0 and planner.claude.minibench_daily_cap == pytest.approx(12.50)
     assert "day cap $" not in line
 
 
@@ -138,7 +138,7 @@ def test_not_final_hours_keeps_20(fable_and_opus_on):
     claude = _today(17.59, 8.0, final=False)
     assert not claude.in_final_hours() and claude.final_hours_day_cap(20.0) == 20.0
     planner, line = _start(claude)
-    assert planner.claude.daily_cap == 20.0 and planner.claude.minibench_daily_cap == pytest.approx(14.40)
+    assert planner.claude.daily_cap == 20.0 and planner.claude.minibench_daily_cap == pytest.approx(12.50)
     assert "day cap $" not in line
 
 
@@ -147,12 +147,12 @@ def test_final_hours_cap_never_below_base_even_over_budget():
 
 
 def test_final_hours_cap_is_what_the_refusal_uses(fable_and_opus_on):
-    # MiniBench at $15.00 of the day: refused under the old $14.40 limit, allowed under $19.99.
+    # MiniBench at $15.00 of the day: refused under the normal $12.50 limit, allowed under $18.09.
     from frontier import OPUS_55
     from gemini_budget import current_question_key
     from spend import question_seasonal
 
-    planner, _ = _start(_today(17.59, 8.0))  # cap $25.59, MiniBench $19.99 for the whole run
+    planner, _ = _start(_today(17.59, 8.0))  # cap $25.59, MiniBench $18.09 for the whole run
     q, s = current_question_key.set("mb1"), question_seasonal.set(False)
     try:
         planner.claude.days[utc_day()] = 15.00  # later in the day

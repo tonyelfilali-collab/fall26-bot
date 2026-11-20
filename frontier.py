@@ -192,10 +192,12 @@ PARSE_MARGIN_SECONDS = 20  # a deadline-aware fallback ends this long before the
 FALLBACK_MIN_SECONDS = 45  # under this, the fallback is not started
 AGENT_MAX_CONTINUATIONS = 3  # pause_turn continuations per agent turn
 AGENT_MIN_OUTPUT_TOKENS = 2000  # a continuation needs at least this much output left
-AGENT_SEASONAL_QUESTION_CAP = 3.60  # 22 Oct: agent $2.88 + plain Opus + its Opus fallback ($0.72)
-# Two seasonal agents (architect, 21 Oct; 22 Oct: agent 600k input): agent $2.88 +
-# agent2 $1.64 + their two Opus fallbacks ($0.72) = $5.24; the Claude day cap rises to $20 with them.
-AGENT2_SEASONAL_QUESTION_CAP = 5.30
+# Research depth (architect, 20 Nov; scaled to the projection): agent $3.51 + plain Opus
+# + its Opus fallback ($0.72) = $4.23 -> $4.30 (22 Oct: $2.88 + $0.72 = $3.60).
+AGENT_SEASONAL_QUESTION_CAP = 4.30
+# Two seasonal agents (architect, 21 Oct; 20 Nov): agent $3.51 + agent2 $2.86 + their two
+# Opus fallbacks ($0.72) = $7.09 -> $7.10 (was $5.30); the Claude day cap is $20 with them.
+AGENT2_SEASONAL_QUESTION_CAP = 7.10
 CLAUDE_DAILY_CAP_TWO_AGENTS = 20.00
 AGENT_MINIBENCH_QUESTION_CAP = 1.60
 
@@ -216,13 +218,19 @@ class AgentCaps:
 # agent's Opus fallback ($0.36) = $3.60 (was $3.00 at 450k); MiniBench $0.60 + $0.24 + $0.03 =
 # $0.87, + plain Opus ($0.36) + its fallback ($0.36) = $1.59 (cap $1.60;
 # architect, 21 Oct: MiniBench gets a plain Opus slot next to the agent).
+# Research depth (architect, 20 Nov; scaled to the cycle projection, <= ~$190): seasonal
+# searches 8 -> 11, fetches unchanged (not binding: 1.6 of 3 used; PDF fetches are the
+# overrun risk); input 600k -> 750k (+3 searches at ~20k each, with margin):
+# $3.00 + $0.40 + $0.11 = $3.51. MiniBench unchanged.
 AGENT_CAPS = {
-    True: AgentCaps(searches=8, fetches=3, output_tokens=20000, input_tokens=600000),
+    True: AgentCaps(searches=11, fetches=3, output_tokens=20000, input_tokens=750000),
     False: AgentCaps(searches=3, fetches=2, output_tokens=12000, input_tokens=150000),
 }
 # agent2 (seasonal only): $1.20 + $0.40 + $0.04 = $1.64 (architect, 21 Oct: a test
 # call read 215k input, so 300k; the dollar reservation is the guard).
-AGENT2_CAPS = AgentCaps(searches=4, fetches=2, output_tokens=20000, input_tokens=300000)
+# 20 Nov: searches 4 -> 6, fetches unchanged (0.8 of 2 used); input 300k -> 600k (a real
+# call read 556k on 18 Nov, 2 PDF fetches): $2.40 + $0.40 + $0.06 = $2.86.
+AGENT2_CAPS = AgentCaps(searches=6, fetches=2, output_tokens=20000, input_tokens=600000)
 
 
 def agent_caps(seasonal: bool, name: str = AGENT) -> AgentCaps:
@@ -273,7 +281,10 @@ def seasonal_reserve(agents: int, fable: bool = False, opus: bool = False) -> fl
     agent + agent2 = $4.60; agent + plain Opus = $3.30. With Fable 5.2 (architect,
     12 Nov) + $0.72: $5.24 -> $5.30 (MiniBench $14.70); $3.96 -> $4.00. With the
     seasonal plain Opus (architect, 16 Nov; two agents only) + $0.36: $5.60
-    (MiniBench $14.40); $4.88 -> $4.90 without Fable. MiniBench keeps it free."""
+    (MiniBench $14.40); $4.88 -> $4.90 without Fable. MiniBench keeps it free.
+    Research depth (20 Nov): agent $3.51 + agent2 $2.86 + Fable $0.72 + plain Opus
+    $0.36 = $7.45 -> $7.50 (MiniBench $12.50); one agent + Opus + Fable $4.59 -> $4.60
+    (MiniBench $10.40)."""
     second = agent_reserve(True, AGENT2) if agents >= 2 else claude_reserve(OPUS_55)
     extra = claude_reserve(FABLE) if fable else 0.0
     if opus and agents >= 2:
@@ -942,13 +953,13 @@ class FrontierPlanner(bot_config.GeminiPool):
                 self.pace = pacing[0]
                 line += f"; pacing {self.pace}"  # the mode name only (public log)
             if self.seasonal_agents >= 2 and self.claude is not None:
-                # $20: MiniBench $14.40 with Fable + seasonal plain Opus ($14.70 without the Opus; $15.40 without both)
+                # $20: MiniBench $12.50 with Fable + seasonal plain Opus (20 Nov; was $14.40)
                 # Last 48 hours of a cycle (17 Nov): max($20, today's spend + the cycle's dollars left).
                 self.claude.set_daily_cap(self.claude.final_hours_day_cap(CLAUDE_DAILY_CAP_TWO_AGENTS),
                                           seasonal_reserve(2, fable, opus))
                 line += "; 2 seasonal agents"
             elif self.claude is not None:
-                # $15: MiniBench $11.00 ($11.70 without Fable); last 48 hours: max($15, today's spend + dollars left)
+                # $15: MiniBench $10.40 (20 Nov; was $11.00); last 48 hours: max($15, today's spend + dollars left)
                 self.claude.set_daily_cap(self.claude.final_hours_day_cap(CLAUDE_DAILY_CAP), seasonal_reserve(1, fable))
             base_cap = CLAUDE_DAILY_CAP_TWO_AGENTS if self.seasonal_agents >= 2 else CLAUDE_DAILY_CAP
             if self.claude is not None and self.claude.daily_cap is not None and self.claude.daily_cap > base_cap + 1e-9:

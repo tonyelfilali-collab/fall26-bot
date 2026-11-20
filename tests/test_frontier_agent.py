@@ -158,12 +158,12 @@ def test_request_shape_tools_and_answer(monkeypatch):
     assert request["model"] == "claude-opus-5-5" and request["output_config"] == {"effort": "high"}
     assert "thinking" not in request and "temperature" not in request
     assert request["tools"] == [
-        {"type": "web_search_20260209", "name": "web_search", "max_uses": 8, "blocked_domains": ["metaculus.com"]},
+        {"type": "web_search_20260209", "name": "web_search", "max_uses": 11, "blocked_domains": ["metaculus.com"]},
         {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 3, "max_content_tokens": 3000,
          "blocked_domains": ["metaculus.com"]},
     ]
     assert request["messages"] == [{"role": "user", "content": "Forecast this. Probability: ZZ%"}]  # the same prompt
-    assert "8 searches" in request["system"] and "3 pages" in request["system"]
+    assert "11 searches" in request["system"] and "3 pages" in request["system"]
     assert "Polymarket, Kalshi or Manifold" in request["system"] and "base rate" in request["system"]
     assert "Before answering, make at least 3 searches: the latest news on the question, the resolution source " \
            "named in the criteria, and a base rate for similar events. Then write" in request["system"]
@@ -188,7 +188,7 @@ def test_pause_turn_is_continued_with_the_same_content(monkeypatch):
     second = fake.agent_requests()[1]
     assert second["messages"][0]["role"] == "user" and second["messages"][1] == {"role": "assistant", "content": first}
     assert len(second["messages"]) == 2  # no "continue" user message
-    assert second["tools"][0]["max_uses"] == 5 and second["tools"][1]["max_uses"] == 2  # what is left
+    assert second["tools"][0]["max_uses"] == 8 and second["tools"][1]["max_uses"] == 2  # what is left
     assert second["max_tokens"] == 16000  # min(16k, 20k - 4k)
     assert log[0]["requests"] == 2 and log[0]["searches"] == 4 and log[0]["fetches"] == 1
 
@@ -308,10 +308,11 @@ def test_worst_case_reservations_fit_the_raised_caps():
     assert frontier.agent_reserve(True) + frontier.agent_reserve(True, frontier.AGENT2) + 2 * plain <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
     # MiniBench: agent + the plain Opus slot + the agent's Opus fallback.
     assert frontier.agent_reserve(False) + 2 * plain <= frontier.AGENT_MINIBENCH_QUESTION_CAP + 1e-9
-    # 22 Oct: seasonal agent input 450k -> 600k ($2.88; a real call read 538k).
-    assert frontier.agent_reserve(True) == pytest.approx(2.88) and frontier.agent_reserve(False) == pytest.approx(0.87)
-    assert frontier.agent_caps(True).input_tokens == 600000
-    assert frontier.AGENT_SEASONAL_QUESTION_CAP == 3.60 and frontier.AGENT_MINIBENCH_QUESTION_CAP == 1.60
+    # 20 Nov (research depth): seasonal agent input 600k -> 750k, 11 searches ($3.51); MiniBench unchanged.
+    assert frontier.agent_reserve(True) == pytest.approx(3.51) and frontier.agent_reserve(False) == pytest.approx(0.87)
+    assert frontier.agent_caps(True).input_tokens == 750000
+    assert frontier.AGENT_SEASONAL_QUESTION_CAP == 4.30 and frontier.AGENT_MINIBENCH_QUESTION_CAP == 1.60
+    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 7.10
     assert frontier.AGENT_FETCH_MAX_CONTENT_TOKENS == 3000
 
 
@@ -322,9 +323,9 @@ def test_reservation_follows_the_question_kind():
         question_seasonal.set(seasonal)
         return claude.estimate(AGENT)
 
-    assert asyncio.run(go(True)) == pytest.approx(2.88)
+    assert asyncio.run(go(True)) == pytest.approx(3.51)
     assert asyncio.run(go(False)) == pytest.approx(0.87)
-    assert asyncio.run(go(None)) == pytest.approx(2.88)  # unknown: the larger one (fail closed)
+    assert asyncio.run(go(None)) == pytest.approx(3.51)  # unknown: the larger one (fail closed)
 
 
 def test_plan_raises_the_caps_and_replaces_one_opus_slot():
@@ -333,7 +334,7 @@ def test_plan_raises_the_caps_and_replaces_one_opus_slot():
     try:
         chains = planner.plan(True)
         assert [c.model for c in chains][:2] == [AGENT, OPUS_55] and len(chains) == 4
-        assert planner.claude.caps["21"] == 3.60 and planner.last_plan["agent"] is True
+        assert planner.claude.caps["21"] == 4.30 and planner.last_plan["agent"] is True
         assert chains[0]._backup.model == OPUS_55 and chains[0]._backup.deadline_aware
         assert chains[0]._backup_on_any_error and not chains[1].deadline_aware
     finally:
@@ -360,7 +361,7 @@ def test_daily_cap_refuses_the_agent_and_keeps_plain_opus():
 
 def test_a_cap_refused_agent_hands_over_to_plain_opus(monkeypatch):
     claude = _budget()
-    claude.questions["11"] = {"spent": 3.00}  # $2.30 left of $5.30: the agent ($2.88) would pass it
+    claude.questions["11"] = {"spent": 4.00}  # $3.10 left of $7.10: the agent ($3.51) would pass it
     reply, claude, _ = _run(monkeypatch, Fake([]), claude=claude)
     assert reply.data == "Probability: 30%" and [c["model"] for c in _calls(claude)] == [OPUS_55]
     assert claude.question_spent("11") <= frontier.AGENT2_SEASONAL_QUESTION_CAP
@@ -381,16 +382,16 @@ def test_step_downs_use_plain_opus(spent, mode):
 
 
 def test_paused_with_tool_caps_used_up_is_not_continued(monkeypatch):
-    fake = Fake([_reply([*_search(URL_FOUND)], stop="pause_turn", searches=8, fetches=2)])
+    fake = Fake([_reply([*_search(URL_FOUND)], stop="pause_turn", searches=11, fetches=2)])
     reply, claude, log = _run(monkeypatch, fake)
     assert len(fake.agent_requests()) == 1 and reply.data == "Probability: 30%"  # plain Opus
     agent = _calls(claude)[0]
-    assert agent["charged"] == pytest.approx((8000 * 4 + 1500 * 20) / 1e6 + 0.08)  # its real cost
+    assert agent["charged"] == pytest.approx((8000 * 4 + 1500 * 20) / 1e6 + 0.11)  # its real cost
     assert log[0]["outcome"] == "paused, not continued (tool caps)"
 
 
 def test_paused_over_the_reservation_is_not_continued(monkeypatch):
-    fake = Fake([_reply([_text("x")], stop="pause_turn", inp=300000, out=3000, searches=2)])
+    fake = Fake([_reply([_text("x")], stop="pause_turn", inp=600000, out=3000, searches=2)])
     _, claude, log = _run(monkeypatch, fake)
     assert len(fake.agent_requests()) == 1 and log[0]["outcome"] == "paused, not continued (reservation)"
 
@@ -419,7 +420,7 @@ def test_a_failed_continuation_is_charged_what_was_billed(monkeypatch):
 
 
 def test_over_the_reservation_switches_the_agent_off(monkeypatch):
-    fake = Fake([_reply([_text("Probability: 12%")], inp=750000, out=2000)])  # one request past the ASSUMED ceiling
+    fake = Fake([_reply([_text("Probability: 12%")], inp=900000, out=2000)])  # one request past the ASSUMED ceiling (750k)
     reply, claude, _ = _run(monkeypatch, fake)
     assert reply.data == "Probability: 12%" and claude.agent_off  # charged in full, agent off for the run
     assert claude.agent_overruns == 1
@@ -559,5 +560,5 @@ def test_research_floor_agent1_only_seasonal_and_minibench():
         assert frontier.AGENT1_RESEARCH_FLOOR in note and "{" not in note
     assert frontier.AGENT1_RESEARCH_FLOOR not in frontier.agent_note(frontier.AGENT2, frontier.agent_caps(True, frontier.AGENT2))
     assert frontier.AGENT1_RESEARCH_FLOOR in frontier.agent_note("replay/" + frontier.AGENT, frontier.agent_caps(True))
-    # The caps stay: 8 / 3 seasonal, 3 / 2 MiniBench.
-    assert (frontier.agent_caps(True).searches, frontier.agent_caps(False).searches) == (8, 3)
+    # The caps: 11 / 3 seasonal (20 Nov; was 8), 3 / 2 MiniBench.
+    assert (frontier.agent_caps(True).searches, frontier.agent_caps(False).searches) == (11, 3)

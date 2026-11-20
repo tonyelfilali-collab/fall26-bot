@@ -40,21 +40,22 @@ def test_one_seasonal_agent():
 
 def test_agent2_reserve_and_the_caps():
     plain = frontier.claude_reserve(OPUS_55)
-    assert frontier.agent_reserve(True, AGENT2) == pytest.approx(1.64)
-    assert frontier.agent_caps(True, AGENT2) == frontier.AgentCaps(searches=4, fetches=2, output_tokens=20000, input_tokens=300000)
+    # 20 Nov (research depth): 4 -> 6 searches, 300k -> 600k input ($1.64 -> $2.86).
+    assert frontier.agent_reserve(True, AGENT2) == pytest.approx(2.86)
+    assert frontier.agent_caps(True, AGENT2) == frontier.AgentCaps(searches=6, fetches=2, output_tokens=20000, input_tokens=600000)
     # agent + agent2 + one plain Opus fallback each.
     assert frontier.agent_reserve(True) + frontier.agent_reserve(True, AGENT2) + 2 * plain <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
-    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 5.30 and frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.00
+    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 7.10 and frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.00
 
 
 def test_two_agents_seasonal_and_minibench_unchanged():
     planner, line = _two()
     assert "2 seasonal agents" in line
-    assert planner.claude.daily_cap == 20.00 and planner.claude.minibench_daily_cap == 15.40
+    assert planner.claude.daily_cap == 20.00 and planner.claude.minibench_daily_cap == 13.60  # $20 - $6.40 (20 Nov)
     chains = _plan(planner, True, "32")
     assert [c.model for c in chains][:2] == [AGENT, AGENT2] and len(chains) == 4
     assert all("flash" in c.model for c in chains[2:])
-    assert planner.claude.caps["32"] == 5.30
+    assert planner.claude.caps["32"] == 7.10
     # Each agent has its own plain Opus fallback, with only the planned wait's time left.
     assert chains[0]._backup is not chains[1]._backup
     assert all(c._backup.model == OPUS_55 and c._backup.deadline_aware and c._backup_on_any_error for c in chains[:2])
@@ -105,7 +106,7 @@ def test_agent2_call_uses_its_caps_and_both_calls_keep_their_stats(monkeypatch):
     first, second, log = asyncio.run(go())
     assert (first.data, second.data) == ("Probability: 61%", "Probability: 58%")
     tools = [r["tools"] for r in fake.agent_requests()]
-    assert [t["max_uses"] for t in tools[0]] == [8, 3] and [t["max_uses"] for t in tools[1]] == [4, 2]
+    assert [t["max_uses"] for t in tools[0]] == [11, 3] and [t["max_uses"] for t in tools[1]] == [6, 2]
     # Both agents get the same research lines (markets, base rate).
     assert all("Polymarket, Kalshi or Manifold" in r["system"] and "base rate" in r["system"] for r in fake.agent_requests())
     # The research floor (architect, 25 Oct): agent 1 only.
@@ -113,7 +114,7 @@ def test_agent2_call_uses_its_caps_and_both_calls_keep_their_stats(monkeypatch):
     assert floor in fake.agent_requests()[0]["system"] and floor not in fake.agent_requests()[1]["system"]
     calls = claude.questions["36"]["calls"]
     assert [(c["model"], c["searches"], c["fetches"]) for c in calls] == [(AGENT, 1, 1), (AGENT2, 2, 0)]
-    assert [e["model"] for e in log] == [AGENT, AGENT2] and log[1]["reserve"] == pytest.approx(1.64)
+    assert [e["model"] for e in log] == [AGENT, AGENT2] and log[1]["reserve"] == pytest.approx(2.86)
     assert claude.question_spent("36") <= frontier.AGENT2_SEASONAL_QUESTION_CAP
 
 
