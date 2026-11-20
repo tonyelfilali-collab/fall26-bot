@@ -14,6 +14,7 @@ import json
 import os
 import statistics
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
@@ -30,6 +31,28 @@ REFERENCE_BOTS = ("metac-claude-opus-5-5-high+asknews", "metac-agent-claude-opus
 NEIGHBOURS = 2  # bots ranked just above and just below us
 ERA_CUT = "2026-10-21T18:41"
 TYPES = ("binary", "multiple_choice", "numeric", "discrete")
+# Where the per-question contributions live (the first answer 200 wins; 20 Nov: the
+# leaderboard path answered 404).
+CONTRIBUTION_PATHS = ("medals/contributions/", "leaderboards/project/{tid}/contributions/")
+PAUSE_SECONDS = 3  # between API calls (429 seen at full speed)
+
+
+def fetch_contributions(uid: int, get=requests.get, sleep=time.sleep) -> tuple[list[dict] | None, str]:
+    """One bot's contributions: (items, note). Tries each path; waits and retries once on 429."""
+    notes = []
+    for path in CONTRIBUTION_PATHS:
+        for attempt in range(2):
+            sleep(PAUSE_SECONDS * (1 + 4 * attempt))
+            response = get(f"{API}/{path.format(tid=TOURNAMENT)}", params={"user_id": uid, "project_id": TOURNAMENT},
+                           headers=_headers(), timeout=60)
+            if response.status_code != 429:
+                break
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get("contributions", data.get("results", data)) if isinstance(data, dict) else data
+            return [c for c in (items or []) if isinstance(c, dict)], f"{path.split('{')[0]} 200"
+        notes.append(f"{path.split('{')[0]} HTTP {response.status_code}")
+    return None, "; ".join(notes)
 
 
 def _headers() -> dict:
@@ -131,14 +154,10 @@ def main() -> None:
     per_user: dict[str, list[tuple[int, float]]] = {}
     ranks, keys = {}, set()
     for name, uid, rank in users:
-        response = requests.get(f"{API}/leaderboards/project/{TOURNAMENT}/contributions/", params={"user_id": uid},
-                                headers=_headers(), timeout=60)
-        if response.status_code != 200:
-            print(f"contributions for one bot: HTTP {response.status_code}")
+        items, note = fetch_contributions(uid)
+        print(f"contributions for one bot: {note}")
+        if items is None:
             continue
-        data = response.json()
-        items = data.get("contributions", data.get("results", data)) if isinstance(data, dict) else data
-        items = [c for c in (items or []) if isinstance(c, dict)]
         keys |= {k for c in items for k in c}
         per_user[name] = [(p, s) for c in items if (p := contribution_post(c)) is not None
                           and (s := contribution_score(c)) is not None]
