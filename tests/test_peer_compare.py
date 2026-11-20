@@ -32,3 +32,31 @@ def test_eras_and_table():
     lines = pc.table({"us": [(1, 10.0), (11, 20.0), (2, -5.0)]}, info, {"us": 112})
     assert "| us (112) | before | +15.0 (n=2) | - | - | - | +15.0 (n=2) |" in lines
     assert "| us (112) | after | - | - | -5.0 (n=1) | - | -5.0 (n=1) |" in lines
+
+
+class _Resp:
+    def __init__(self, status, data=None):
+        self.status_code, self._data = status, data
+
+    def json(self):
+        return self._data
+
+
+def test_fetch_tries_the_next_path_and_retries_429(monkeypatch):
+    monkeypatch.setenv("METACULUS_TOKEN", "x")
+    answers = iter([_Resp(429), _Resp(404), _Resp(200, {"contributions": [{"post_id": 1, "score": 2.0}, "junk"]})])
+    seen = []
+
+    def get(url, **kw):
+        seen.append(url)
+        return next(answers)
+
+    items, note = pc.fetch_contributions(5, get=get, sleep=lambda s: None)
+    assert items == [{"post_id": 1, "score": 2.0}] and note.endswith("200")
+    assert "medals/contributions/" in seen[0] and "medals/contributions/" in seen[1] and "leaderboards/project/" in seen[2]
+
+
+def test_fetch_gives_up_with_the_statuses(monkeypatch):
+    monkeypatch.setenv("METACULUS_TOKEN", "x")
+    items, note = pc.fetch_contributions(5, get=lambda url, **kw: _Resp(404), sleep=lambda s: None)
+    assert items is None and note.count("HTTP 404") == 2
