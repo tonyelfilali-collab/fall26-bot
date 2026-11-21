@@ -198,7 +198,11 @@ AGENT_SEASONAL_QUESTION_CAP = 4.30
 # Two seasonal agents (architect, 21 Oct; 20 Nov): agent $3.51 + agent2 $2.86 + their two
 # Opus fallbacks ($0.72) = $7.09 -> $7.10 (was $5.30); the Claude day cap is $20 with them.
 AGENT2_SEASONAL_QUESTION_CAP = 7.10
-CLAUDE_DAILY_CAP_TWO_AGENTS = 20.00
+# Architect, 20 Nov (side-effect fix of the research depth): $20 -> $25, so 3 seasonal
+# questions' worst case fits at once (3 x $7.50 = $22.50); MiniBench keeps an explicit
+# $12.50 day limit (not cap minus reservation), so it can't use the extra $5.
+CLAUDE_DAILY_CAP_TWO_AGENTS = 25.00
+CLAUDE_MINIBENCH_DAY_LIMIT_TWO_AGENTS = 12.50
 AGENT_MINIBENCH_QUESTION_CAP = 1.60
 
 
@@ -409,10 +413,19 @@ class ClaudeBudget(SpendGuard):
         self.agent_off: str | None = None  # set: no agent for the rest of this run
         self.agent_overruns = 0  # agent calls over their reservation this run
 
-    def set_daily_cap(self, dollars: float, seasonal_reserve: float) -> None:
-        """The day cap, and MiniBench's limit: the day cap - one seasonal question's reservation."""
+    def set_daily_cap(self, dollars: float, seasonal_reserve: float, minibench: float | None = None) -> None:
+        """The day cap, and MiniBench's limit: the day cap - one seasonal question's reservation,
+        or an explicit limit (two agents, architect 20 Nov: $12.50)."""
         self.daily_cap = dollars
-        self.minibench_daily_cap = round(dollars - seasonal_reserve, 2)
+        self.minibench_daily_cap = round(dollars - seasonal_reserve, 2) if minibench is None else round(minibench, 2)
+
+    def final_hours_minibench_limit(self, base: float, seasonal_reserve: float, now: datetime | None = None) -> float:
+        """MiniBench's explicit day limit (two agents). In the last 48 hours of a cycle the
+        17 Nov rule is unchanged: max(base, today's spend + the dollars left - one seasonal
+        reservation), i.e. the raised cap minus the reservation whenever the credit left raises it."""
+        if not self.in_final_hours(now):
+            return base
+        return max(base, round(self.day_spent() + self.dollars_left() - seasonal_reserve, 2))
 
     def minibench_day_spent(self, day: str | None = None) -> float:
         return self.minibench_days.get(day or utc_day(), 0.0)
@@ -953,10 +966,12 @@ class FrontierPlanner(bot_config.GeminiPool):
                 self.pace = pacing[0]
                 line += f"; pacing {self.pace}"  # the mode name only (public log)
             if self.seasonal_agents >= 2 and self.claude is not None:
-                # $20: MiniBench $12.50 with Fable + seasonal plain Opus (20 Nov; was $14.40)
-                # Last 48 hours of a cycle (17 Nov): max($20, today's spend + the cycle's dollars left).
-                self.claude.set_daily_cap(self.claude.final_hours_day_cap(CLAUDE_DAILY_CAP_TWO_AGENTS),
-                                          seasonal_reserve(2, fable, opus))
+                # $25 (20 Nov; was $20); MiniBench an explicit $12.50 (not cap minus reservation).
+                # Last 48 hours of a cycle (17 Nov): max($25, today's spend + the cycle's dollars left);
+                # MiniBench max($12.50, today's spend + dollars left - one seasonal reservation).
+                reserve = seasonal_reserve(2, fable, opus)
+                self.claude.set_daily_cap(self.claude.final_hours_day_cap(CLAUDE_DAILY_CAP_TWO_AGENTS), reserve,
+                                          self.claude.final_hours_minibench_limit(CLAUDE_MINIBENCH_DAY_LIMIT_TWO_AGENTS, reserve))
                 line += "; 2 seasonal agents"
             elif self.claude is not None:
                 # $15: MiniBench $10.40 (20 Nov; was $11.00); last 48 hours: max($15, today's spend + dollars left)

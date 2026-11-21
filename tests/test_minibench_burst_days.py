@@ -63,16 +63,16 @@ def test_from_10_dollars_of_the_whole_day_plain_opus_still_comes(seasonal):
 def test_running_minibench_reservations_count_for_the_10_dollars_seasonal_ones_dont():
     planner, _ = _two(5.0)
     _day(planner, 1.00, seasonal=8.00)
-    planner.claude.in_flight["seasonal-running"] = 3.00  # (20 Nov: under the $13.60 MiniBench limit with the agent)
-    assert _plan(planner, False, "59")[:2] == [AGENT, OPUS_55]  # 9.00 (+ 3.00 seasonal running): agent
+    planner.claude.in_flight["seasonal-running"] = 2.00  # (20 Nov: under the $12.50 MiniBench limit with the agent)
+    assert _plan(planner, False, "59")[:2] == [AGENT, OPUS_55]  # 9.00 (+ 2.00 seasonal running): agent
     planner.minibench_questions.add("mini-running")
     planner.claude.in_flight["mini-running"] = 1.00
     assert AGENT not in _plan(planner, False, "60")  # 9.00 + 1.00 MiniBench running = $10
 
 
-@pytest.mark.parametrize("whole_day, claude", [(13.24, True), (13.30, False), (13.60, False)])
-def test_plain_opus_until_13_60_of_the_whole_day(whole_day, claude):
-    # MiniBench limit $13.60 (20 Nov; was $15.40): 13.24 + Opus $0.36 = 13.60 fits; 13.30 + 0.36 does not.
+@pytest.mark.parametrize("whole_day, claude", [(12.14, True), (12.20, False), (12.50, False)])
+def test_plain_opus_until_12_50_of_the_whole_day(whole_day, claude):
+    # MiniBench limit $12.50 (explicit, 20 Nov; was $15.40): 12.14 + Opus $0.36 = 12.50 fits; 12.20 + 0.36 does not.
     planner, _ = _two(5.0)
     _day(planner, 6.00, seasonal=whole_day - 6.00)
     models = _plan(planner, False, "52")
@@ -99,7 +99,7 @@ def test_seasonal_keeps_both_agents_on_a_burst_day():
 def test_the_limits():
     assert frontier.CLAUDE_MINIBENCH_AGENT_DAY_LIMIT == 5.00 and frontier.CLAUDE_MINIBENCH_AGENT_WHOLE_DAY_LIMIT == 10.00
     planner, _ = _two(5.0)
-    assert planner.claude.daily_cap == 20.00 and planner.claude.minibench_daily_cap == 13.60  # $20 - $6.40 (20 Nov)
+    assert planner.claude.daily_cap == 25.00 and planner.claude.minibench_daily_cap == 12.50  # explicit (20 Nov)
 
 
 @pytest.mark.parametrize("flag, counted", [(False, True), (None, True), (True, False)])
@@ -133,7 +133,7 @@ def test_a_running_seasonal_question_does_not_take_the_minibench_agent():
 
 
 # Architect, 16 Nov: in the last 48 hours of a cycle the $5 / $10 sub-limits are lifted:
-# MiniBench keeps agent + Opus (+ Fable) until the MiniBench day limit ($13.60 here, 20 Nov); the $20 day cap stays.
+# MiniBench keeps agent + Opus (+ Fable) until the MiniBench day limit ($12.50, 20 Nov); the $25 day cap stays.
 def _final_hours(planner, monkeypatch):  # type: ignore[no-untyped-def]
     monkeypatch.setattr(planner.claude, "in_final_hours", lambda now=None: True)
 
@@ -161,8 +161,8 @@ def test_last_48_hours_still_stop_at_the_minibench_day_limit(whole_day, monkeypa
 def test_last_48_hours_seasonal_unchanged_and_day_cap_stays(monkeypatch):
     planner, _ = _two(5.0)
     _final_hours(planner, monkeypatch)
-    _day(planner, 0.0, seasonal=19.90)
-    assert not any(m.startswith("anthropic/") for m in _plan(planner, True, "64"))  # $20 day cap
-    assert planner.claude.daily_cap == frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.0
-    # The MiniBench day limit stays ($12.90 with Fable, $13.60 without, as here; 20 Nov).
-    assert planner.claude.minibench_daily_cap == pytest.approx(13.60)
+    _day(planner, 0.0, seasonal=24.90)
+    assert not any(m.startswith("anthropic/") for m in _plan(planner, True, "64"))  # $25 day cap
+    assert planner.claude.daily_cap == frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 25.0
+    # The MiniBench day limit stays $12.50 (explicit, 20 Nov).
+    assert planner.claude.minibench_daily_cap == pytest.approx(12.50)
