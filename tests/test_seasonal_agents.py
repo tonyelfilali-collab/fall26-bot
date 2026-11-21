@@ -45,13 +45,13 @@ def test_agent2_reserve_and_the_caps():
     assert frontier.agent_caps(True, AGENT2) == frontier.AgentCaps(searches=6, fetches=2, output_tokens=20000, input_tokens=600000)
     # agent + agent2 + one plain Opus fallback each.
     assert frontier.agent_reserve(True) + frontier.agent_reserve(True, AGENT2) + 2 * plain <= frontier.AGENT2_SEASONAL_QUESTION_CAP + 1e-9
-    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 7.10 and frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 20.00
+    assert frontier.AGENT2_SEASONAL_QUESTION_CAP == 7.10 and frontier.CLAUDE_DAILY_CAP_TWO_AGENTS == 25.00
 
 
 def test_two_agents_seasonal_and_minibench_unchanged():
     planner, line = _two()
     assert "2 seasonal agents" in line
-    assert planner.claude.daily_cap == 20.00 and planner.claude.minibench_daily_cap == 13.60  # $20 - $6.40 (20 Nov)
+    assert planner.claude.daily_cap == 25.00 and planner.claude.minibench_daily_cap == 12.50  # explicit (20 Nov)
     chains = _plan(planner, True, "32")
     assert [c.model for c in chains][:2] == [AGENT, AGENT2] and len(chains) == 4
     assert all("flash" in c.model for c in chains[2:])

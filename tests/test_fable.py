@@ -88,9 +88,9 @@ def test_seasonal_two_agents_plus_fable():
     assert models[:3] == [AGENT, AGENT2, FABLE] and len(models) == 5 and all("flash" in m for m in models[3:])
     assert planner.claude.caps["62"] == pytest.approx(frontier.AGENT2_SEASONAL_QUESTION_CAP + 0.72)
     assert planner.last_plan["fable"] is True
-    # The day cap is unchanged; the MiniBench limit leaves room for agent + agent2 + Fable
-    # (20 Nov: $3.51 + $2.86 + $0.72 = $7.09 -> $7.10): $20 - $7.10 = $12.90 (12 Nov: $14.70).
-    assert planner.claude.daily_cap == 20.00 and planner.claude.minibench_daily_cap == 12.90
+    # Day cap $25 with two agents and an explicit $12.50 MiniBench limit (architect, 20 Nov;
+    # was $20 and cap minus the $7.10 reservation = $12.90).
+    assert planner.claude.daily_cap == 25.00 and planner.claude.minibench_daily_cap == 12.50
     assert frontier.seasonal_reserve(2, fable=True) == 7.10 and frontier.seasonal_reserve(2) == 6.40
 
 
@@ -114,9 +114,9 @@ def test_minibench_burst_day_fable_follows_plain_opus():
     assert planner.claude.caps["65"] == pytest.approx(frontier.CLAUDE_MINIBENCH_QUESTION_CAP + 0.72)
 
 
-@pytest.mark.parametrize("day, claude", [(11.80, True), (12.60, False), (14.40, False), (15.20, False)])
-def test_minibench_day_limit_12_90_with_fable(day, claude):
-    # MiniBench limit $12.90 (20 Nov; was $14.70): 11.80 + Opus $0.36 + Fable $0.72 = $12.88 fits; 12.60 + 0.36 does not.
+@pytest.mark.parametrize("day, claude", [(11.40, True), (12.20, False), (14.40, False), (15.20, False)])
+def test_minibench_day_limit_12_50_with_fable(day, claude):
+    # MiniBench limit $12.50 (explicit, 20 Nov): 11.40 + Opus $0.36 + Fable $0.72 = $12.48 fits; 12.20 + 0.36 does not.
     planner, _ = _start(_budget(day=day))
     models = _plan(planner, False, "72")
     assert (OPUS_55 in models and FABLE in models) is claude
@@ -131,17 +131,17 @@ def test_low_mode_keeps_the_limit_without_fable():
     claude = _budget()
     claude.cycles[claude.cycle.isoformat()] = 170 - 10.0
     planner, _ = _start(claude)
-    assert planner.mode == "low" and planner.claude.minibench_daily_cap == 13.60  # $20 - $6.40 (20 Nov)
+    assert planner.mode == "low" and planner.claude.minibench_daily_cap == 12.50  # explicit (20 Nov)
 
 
 def test_minibench_over_its_day_limit_no_opus_no_fable():
-    planner, _ = _start(_budget(day=15.20))  # MiniBench limit $12.90 (20 Nov): plain Opus ($0.36) refused
+    planner, _ = _start(_budget(day=15.20))  # MiniBench limit $12.50 (20 Nov): plain Opus ($0.36) refused
     models = _plan(planner, False, "66")
     assert OPUS_55 not in models and FABLE not in models
 
 
 def test_fable_refused_by_the_day_cap_is_skipped_and_the_cap_kept():
-    planner, _ = _start(_budget(day=19.50))  # $20 day: Opus $0.36 fits, Fable $0.72 does not
+    planner, _ = _start(_budget(day=24.50))  # $25 day (20 Nov): Opus $0.36 fits, Fable $0.72 does not
     models = _plan(planner, True, "67")
     assert FABLE not in models and OPUS_55 in models
     assert planner.claude.caps["67"] == frontier.CLAUDE_SEASONAL_QUESTION_CAP

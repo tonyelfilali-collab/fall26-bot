@@ -40,8 +40,9 @@ def test_seasonal_two_agents_fable_and_plain_opus():
 
 def test_day_cap_unchanged_minibench_limit_lowered():
     planner, _ = _start()
-    # 20 Nov: agent $3.51 + agent2 $2.86 + Fable $0.72 + plain Opus $0.36 = $7.45 -> $7.50: $20 - $7.50 = $12.50.
-    assert planner.claude.daily_cap == 20.00 and planner.claude.minibench_daily_cap == pytest.approx(12.50)
+    # 20 Nov: agent $3.51 + agent2 $2.86 + Fable $0.72 + plain Opus $0.36 = $7.45 -> $7.50; day cap $25
+    # (3 seasonal questions' worst case at once), MiniBench an explicit $12.50.
+    assert planner.claude.daily_cap == 25.00 and planner.claude.minibench_daily_cap == pytest.approx(12.50)
     assert frontier.seasonal_reserve(2, fable=True, opus=True) == pytest.approx(7.50)
     assert frontier.seasonal_reserve(2, opus=True) == pytest.approx(6.80)
     assert frontier.seasonal_reserve(2, fable=True) == pytest.approx(7.10)  # without the Opus
@@ -71,7 +72,7 @@ def test_low_mode_unchanged():
     assert planner.mode == "low" and "seasonal plain Opus off (low mode)" in line
     models = _plan(planner, True, "84")
     assert [m for m in models if m.startswith("anthropic/")] == [OPUS_55]
-    assert planner.claude.minibench_daily_cap == 13.60  # $20 - $6.40 (20 Nov)
+    assert planner.claude.minibench_daily_cap == 12.50  # explicit (20 Nov)
 
 
 def test_paced_2_drops_agent2_no_extra_opus():
@@ -96,4 +97,4 @@ def test_switch_off_is_the_old_lineup(monkeypatch):
     planner, line = _start()
     assert "seasonal plain Opus" not in line
     assert _plan(planner, True, "87")[:3] == [AGENT, AGENT2, FABLE]
-    assert planner.claude.minibench_daily_cap == 12.90  # $20 - $7.10 (20 Nov)
+    assert planner.claude.minibench_daily_cap == 12.50  # explicit (20 Nov)
